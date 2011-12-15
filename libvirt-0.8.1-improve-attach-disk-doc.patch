@@ -1,0 +1,89 @@
+http://bugzilla.redhat.com/601143, part 1 - document existing
+behavior.  Ever since Mar 2010 (commit ced154cb), the use of
+'attach-disk' or 'attach-device' to change cdrom/floppy media has been
+documented but deprecated, but the replacement to use 'update-device'
+was not documented.
+
+* tools/virsh.c (cmdAttachInterface, cmdAttachDisk): Fix bad error
+message.
+* tools/virsh.pod (attach-device, attach-disk): Refer to
+update-device for cdrom and floppy behavior.
+(update-device): Add documentation.
+---
+ tools/virsh.c   |    9 ++++++---
+ tools/virsh.pod |   13 ++++++++++++-
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index e9d0519..28ab83b 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -7202,7 +7202,8 @@ cmdAttachInterface(vshControl *ctl, const vshCmd *cmd)
+     } else if (STREQ(type, "bridge")) {
+         typ = 2;
+     } else {
+-        vshError(ctl, _("No support %s in command 'attach-interface'"), type);
++        vshError(ctl, _("No support for %s in command 'attach-interface'"),
++                 type);
+         goto cleanup;
+     }
+
+@@ -7464,14 +7465,16 @@ cmdAttachDisk(vshControl *ctl, const vshCmd *cmd)
+         if (STREQ(driver, "file") || STREQ(driver, "tap")) {
+             isFile = 1;
+         } else if (STRNEQ(driver, "phy")) {
+-            vshError(ctl, _("No support %s in command 'attach-disk'"), driver);
++            vshError(ctl, _("No support for %s in command 'attach-disk'"),
++                     driver);
+             goto cleanup;
+         }
+     }
+
+     if (mode) {
+         if (STRNEQ(mode, "readonly") && STRNEQ(mode, "shareable")) {
+-            vshError(ctl, _("No support %s in command 'attach-disk'"), mode);
++            vshError(ctl, _("No support for %s in command 'attach-disk'"),
++                     mode);
+             goto cleanup;
+         }
+     }
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index cf7585d..5ddb421 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -518,13 +518,17 @@ format of the device sections to get the most accurate set of accepted values.
+
+ Attach a device to the domain, using a device definition in an XML file.
+ See the documentation to learn about libvirt XML format for a device.
++For cdrom and floppy devices, this command only replaces the media within
++the single existing device; consider using B<update-device> for this usage.
+
+ =item B<attach-disk> I<domain-id> I<source> I<target> optional I<--driver driver> I<--subdriver subdriver> I<--type type> I<--mode mode>
+
+ Attach a new disk device to the domain.
+ I<source> and I<target> are paths for the files and devices.
+ I<driver> can be I<file>, I<tap> or I<phy> depending on the kind of access.
+-I<type> can indicate I<cdrom> or I<floppy> as alternative to the disk default.
++I<type> can indicate I<cdrom> or I<floppy> as alternative to the disk default,
++although this use only replaces the media within the existing virtual cdrom or
++floppy device; consider using B<update-device> for this usage instead.
+ I<mode> can specify the two specific mode I<readonly> or I<shareable>.
+
+ =item B<attach-interface> I<domain-id> I<type> I<source> optional I<--target target> I<--mac mac> I<--script script>
+@@ -554,6 +558,13 @@ I<type> can be either I<network> to indicate a physical network device or I<brid
+ It is recommended to use the I<mac> option to distinguish between the interfaces
+ if more than one are present on the domain.
+
++=item B<update-device> I<domain-id> I<file> optional I<--persistent>
++
++Update the characteristics of a device associated with I<domain-id>,
++based on the device definition in an XML I<file>.  If the I<--persistent>
++option is used, the changes will affect the next boot of the domain.
++See the documentation to learn about libvirt XML format for a device.
++
+ =back
+
+ =head1 VIRTUAL NETWORK COMMANDS
+-- 
+1.7.0.1
+

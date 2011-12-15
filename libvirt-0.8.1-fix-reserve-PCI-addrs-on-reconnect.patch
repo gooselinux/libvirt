@@ -1,0 +1,37 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=623877
+
+When reconnecting to existing VMs, we re-reserved only those PCI
+addresses which were explicitly mentioned in domain XML. Since some
+addresses are always reserved (e.g., 0:0:0 and 0:0:1), we need to handle
+those too.
+
+Also all this should only be done if device flag is supported by qemu.
+(cherry picked from commit 4f86613ba1848ccd457ce23dde746a1a448541ae)
+---
+ src/qemu/qemu_driver.c |    8 +++++---
+ 1 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index b7fc936..38864b9 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1662,11 +1662,13 @@ qemuReconnectDomain(void *payload, const char *name ATTRIBUTE_UNUSED, void *opaq
+     if (qemudExtractVersionInfo(obj->def->emulator,
+                                 NULL,
+                                 &qemuCmdFlags) >= 0 &&
+-        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE))
++        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+         priv->persistentAddrs = 1;
+ 
+-    if (!(priv->pciaddrs = qemuDomainPCIAddressSetCreate(obj->def)))
+-        goto error;
++        if (!(priv->pciaddrs = qemuDomainPCIAddressSetCreate(obj->def)) ||
++            qemuAssignDevicePCISlots(obj->def, priv->pciaddrs) < 0)
++            goto error;
++    }
+ 
+     if (driver->securityDriver &&
+         driver->securityDriver->domainReserveSecurityLabel &&
+-- 
+1.7.2
+

@@ -1,0 +1,286 @@
+From 1dcc692a10fd121fab5a5ae10fa4a818fb44b961 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 9 Apr 2010 17:56:00 +0100
+Subject: [PATCH 13/16] Support SPICE channel security options
+
+This extends the SPICE XML to allow channel security options
+
+    <graphics type='spice' port='5901' tlsPort='-1' autoport='yes'>
+      <channel name='main' mode='secure'/>
+      <channel name='record' mode='insecure'/>
+    </graphics>
+
+Any non-specified channel uses the default, which allows both
+secure & insecure usage
+
+* src/conf/domain_conf.c, src/conf/domain_conf.h,
+  src/libvirt_private.syms: Add XML syntax for specifying per
+  channel security options for spice;.
+* src/qemu/qemu_conf.c: Configure channel security with spice
+---
+ docs/schemas/domain.rng                            |   21 ++++++
+ src/conf/domain_conf.c                             |   75 +++++++++++++++++++-
+ src/conf/domain_conf.h                             |   21 ++++++
+ src/libvirt_private.syms                           |    4 +
+ src/qemu/qemu_conf.c                               |   13 ++++
+ .../qemuxml2argv-graphics-spice-rhel6.args         |    2 +-
+ .../qemuxml2argv-graphics-spice-rhel6.xml          |    5 +-
+ 7 files changed, 138 insertions(+), 3 deletions(-)
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 1f3f733..c210957 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1011,6 +1011,27 @@
+               <text/>
+             </attribute>
+           </optional>
++	  <zeroOrMore>
++	    <element name="channel">
++	      <attribute name="name">
++		<choice>
++		  <value>main</value>
++		  <value>display</value>
++		  <value>inputs</value>
++		  <value>cursor</value>
++		  <value>playback</value>
++		  <value>record</value>
++		</choice>
++	      </attribute>
++	      <attribute name="mode">
++		<choice>
++		  <value>any</value>
++		  <value>secure</value>
++		  <value>insecure</value>
++		</choice>
++	      </attribute>
++	    </element>
++	  </zeroOrMore>
+         </group>
+         <group>
+           <attribute name="type">
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 67e395b..973d879 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -217,6 +217,21 @@ VIR_ENUM_IMPL(virDomainGraphics, VIR_DOMAIN_GRAPHICS_TYPE_LAST,
+               "desktop",
+               "spice")
+ 
++VIR_ENUM_IMPL(virDomainGraphicsSpiceChannelName,
++              VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST,
++              "main",
++              "display",
++              "inputs",
++              "cursor",
++              "playback",
++              "record");
++
++VIR_ENUM_IMPL(virDomainGraphicsSpiceChannelMode,
++              VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_LAST,
++              "any",
++              "secure",
++              "insecure");
++
+ VIR_ENUM_IMPL(virDomainHostdevMode, VIR_DOMAIN_HOSTDEV_MODE_LAST,
+               "subsystem",
+               "capabilities")
+@@ -2919,6 +2934,7 @@ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+ 
+         def->data.desktop.display = virXMLPropString(node, "display");
+     } else if (def->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        xmlNodePtr cur;
+         char *port = virXMLPropString(node, "port");
+         char *tlsPort;
+         char *autoport;
+@@ -2963,6 +2979,40 @@ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+         def->data.spice.keymap = virXMLPropString(node, "keymap");
+         if (virDomainGraphicsAuthDefParseXML(node, &def->data.vnc.auth) < 0)
+             goto error;
++
++        cur = node->children;
++        while (cur != NULL) {
++            if (cur->type == XML_ELEMENT_NODE) {
++                if (xmlStrEqual(cur->name, BAD_CAST "channel")) {
++                    const char *name, *mode;
++                    int nameval, modeval;
++                    name = virXMLPropString(cur, "name");
++                    mode = virXMLPropString(cur, "mode");
++
++                    if (!name || !mode) {
++                        virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                             _("spice channel missing name/mode"));
++                        goto error;
++                    }
++
++                    if ((nameval = virDomainGraphicsSpiceChannelNameTypeFromString(name)) < 0) {
++                        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                             _("unknown spice channel name %s"),
++                                             name);
++                        goto error;
++                    }
++                    if ((modeval = virDomainGraphicsSpiceChannelModeTypeFromString(mode)) < 0) {
++                        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                             _("unknown spice channel mode %s"),
++                                             mode);
++                        goto error;
++                    }
++
++                    def->data.spice.channels[nameval] = modeval;
++                }
++            }
++            cur = cur->next;
++        }
+     }
+ 
+ cleanup:
+@@ -5705,6 +5755,8 @@ virDomainGraphicsDefFormat(virBufferPtr buf,
+                            int flags)
+ {
+     const char *type = virDomainGraphicsTypeToString(def->type);
++    int children = 0;
++    int i;
+ 
+     if (!type) {
+         virDomainReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -5810,7 +5862,28 @@ virDomainGraphicsDefFormat(virBufferPtr buf,
+ 
+     }
+ 
+-    virBufferAddLit(buf, "/>\n");
++    if (def->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        for (i = 0 ; i < VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST ; i++) {
++            int mode = def->data.spice.channels[i];
++            if (mode == VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_ANY)
++                continue;
++
++            if (!children) {
++                virBufferAddLit(buf, ">\n");
++                children = 1;
++            }
++
++            virBufferVSprintf(buf, "      <channel name='%s' mode='%s'/>\n",
++                              virDomainGraphicsSpiceChannelNameTypeToString(i),
++                              virDomainGraphicsSpiceChannelModeTypeToString(mode));
++        }
++    }
++
++    if (children) {
++        virBufferAddLit(buf, "    </graphics>\n");
++    } else {
++        virBufferAddLit(buf, "/>\n");
++    }
+ 
+     return 0;
+ }
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 600c799..a67fc96 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -484,6 +484,24 @@ struct _virDomainGraphicsAuthDef {
+     time_t validTo;  /* seconds since epoch */
+ };
+ 
++enum virDomainGraphicsSpiceChannelName {
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MAIN,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_DISPLAY,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_INPUT,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_CURSOR,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_PLAYBACK,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_RECORD,
++
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST
++};
++
++enum virDomainGraphicsSpiceChannelMode {
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_ANY,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_SECURE,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_INSECURE,
++
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_LAST
++};
+ 
+ typedef struct _virDomainGraphicsDef virDomainGraphicsDef;
+ typedef virDomainGraphicsDef *virDomainGraphicsDefPtr;
+@@ -520,6 +538,7 @@ struct _virDomainGraphicsDef {
+             char *keymap;
+             virDomainGraphicsAuthDef auth;
+             unsigned int autoport :1;
++            int channels[VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST];
+         } spice;
+     } data;
+ };
+@@ -1102,6 +1121,8 @@ VIR_ENUM_DECL(virDomainHostdevSubsys)
+ VIR_ENUM_DECL(virDomainInput)
+ VIR_ENUM_DECL(virDomainInputBus)
+ VIR_ENUM_DECL(virDomainGraphics)
++VIR_ENUM_DECL(virDomainGraphicsSpiceChannelName)
++VIR_ENUM_DECL(virDomainGraphicsSpiceChannelMode)
+ /* from libvirt.h */
+ VIR_ENUM_DECL(virDomainState)
+ VIR_ENUM_DECL(virDomainSeclabel)
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index b76f2da..d4bc8e8 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -146,6 +146,10 @@ virDomainGetRootFilesystem;
+ virDomainGraphicsTypeFromString;
+ virDomainGraphicsTypeToString;
+ virDomainGraphicsDefFree;
++virDomainGraphicsSpiceChannelNameTypeFromString;
++virDomainGraphicsSpiceChannelNameTypeToString;
++virDomainGraphicsSpiceChannelModeTypeFromString;
++virDomainGraphicsSpiceChannelModeTypeToString;
+ virDomainHostdevDefFree;
+ virDomainHostdevModeTypeToString;
+ virDomainHostdevSubsysTypeToString;
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 8ee7a8b..3f9ceca 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -4519,6 +4519,19 @@ int qemudBuildCommandLine(virConnectPtr conn,
+             virBufferVSprintf(&opt, ",x509-dir=%s",
+                               driver->spiceTLSx509certdir);
+ 
++        for (i = 0 ; i < VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST ; i++) {
++            int mode = def->graphics[0]->data.spice.channels[i];
++            switch (mode) {
++            case VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_SECURE:
++                virBufferVSprintf(&opt, ",tls-channel=%s",
++                                  virDomainGraphicsSpiceChannelNameTypeToString(i));
++                break;
++            case VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_INSECURE:
++                virBufferVSprintf(&opt, ",plaintext-channel=%s",
++                                  virDomainGraphicsSpiceChannelNameTypeToString(i));
++                break;
++            }
++        }
+ 
+         if (virBufferError(&opt))
+             goto no_memory;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+index 44809b0..87b8c06 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice /usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,x509-dir=/etc/pki/libvirt-spice -vga qxl -device qxl,id=video1,bus=pci.0,addr=0x4 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice /usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,x509-dir=/etc/pki/libvirt-spice,tls-channel=main,plaintext-channel=inputs -vga qxl -device qxl,id=video1,bus=pci.0,addr=0x4 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+index 6fe9a60..bdce04b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+@@ -21,7 +21,10 @@
+     </disk>
+     <controller type='ide' index='0'/>
+     <input type='mouse' bus='ps2'/>
+-    <graphics type='spice' port='5903' tlsPort='5904' autoport='no' listen='127.0.0.1'/>
++    <graphics type='spice' port='5903' tlsPort='5904' autoport='no' listen='127.0.0.1'>
++      <channel name='main' mode='secure'/>
++      <channel name='inputs' mode='insecure'/>
++    </graphics>
+     <video>
+       <model type='qxl' vram='65536' heads='1'/>
+     </video>
+-- 
+1.6.6.1
+

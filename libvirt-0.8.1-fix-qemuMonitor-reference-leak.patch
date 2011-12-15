@@ -1,0 +1,194 @@
+From f5b82e0a5de30b60e9d755bf28ff4d565fbfde38 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 10 Jun 2010 15:11:30 +0100
+Subject: [PATCH 4/5] Fix reference handling leak on qemuMonitor
+
+The current code pattern requires that callers of qemuMonitorClose
+check for the return value == 0, and if so, set priv->mon = NULL
+and release the reference held on the associated virDomainObjPtr
+
+The change d84bb6d6a3bd2fdd530184cc9743249ebddbee71 violated that
+requirement, meaning that priv->mon never gets set to NULL, and
+a reference count is leaked on virDomainObjPtr.
+
+This design was a bad one, so remove the need to check the return
+valueof qemuMonitorClose(). Instead allow registration of a
+callback that's invoked just when the last reference on qemuMonitorPtr
+is released.
+
+Finally there was a potential reference leak in qemuConnectMonitor
+in the failure path.
+
+* src/qemu/qemu_monitor.c, src/qemu/qemu_monitor.h: Add a destroy
+  callback invoked from qemuMonitorFree
+* src/qemu/qemu_driver.c: Use the destroy callback to release the
+  reference on virDomainObjPtr when the monitor is freed. Fix other
+  potential reference count leak in connecting to monitor
+---
+ src/qemu/qemu_driver.c  |   54 +++++++++++++++++++++++++++-------------------
+ src/qemu/qemu_monitor.c |    7 +++--
+ src/qemu/qemu_monitor.h |    5 +++-
+ 3 files changed, 40 insertions(+), 26 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index d8f881f..a8e6dd6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1550,7 +1550,17 @@ no_memory:
+ }
+ 
+ 
++static void qemuHandleMonitorDestroy(qemuMonitorPtr mon,
++                                     virDomainObjPtr vm)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    if (priv->mon == mon)
++        priv->mon = NULL;
++    virDomainObjUnref(vm);
++}
++
+ static qemuMonitorCallbacks monitorCallbacks = {
++    .destroy = qemuHandleMonitorDestroy,
+     .eofNotify = qemuHandleMonitorEOF,
+     .diskSecretLookup = findVolumeQcowPassphrase,
+     .domainStop = qemuHandleDomainStop,
+@@ -1567,24 +1577,24 @@ qemuConnectMonitor(struct qemud_driver *driver, virDomainObjPtr vm)
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     int ret = -1;
+ 
+-    /* Hold an extra reference because we can't allow 'vm' to be
+-     * deleted while the monitor is active */
+-    virDomainObjRef(vm);
+-
+     if ((driver->securityDriver &&
+          driver->securityDriver->domainSetSecuritySocketLabel &&
+          driver->securityDriver->domainSetSecuritySocketLabel(driver->securityDriver,vm)) < 0) {
+         VIR_ERROR(_("Failed to set security context for monitor for %s"), vm->def->name);
+         goto error;
+     }
+-    
+-    if ((priv->mon = qemuMonitorOpen(vm,
+-                                     priv->monConfig,
+-                                     priv->monJSON,
+-                                     &monitorCallbacks)) == NULL) {
+-        VIR_ERROR(_("Failed to connect monitor for %s"), vm->def->name);
+-        goto error;
+-    }
++
++    /* Hold an extra reference because we can't allow 'vm' to be
++     * deleted while the monitor is active */
++    virDomainObjRef(vm);
++
++    priv->mon = qemuMonitorOpen(vm,
++                                priv->monConfig,
++                                priv->monJSON,
++                                &monitorCallbacks);
++
++    if (priv->mon == NULL)
++        virDomainObjUnref(vm);
+ 
+     if ((driver->securityDriver &&
+          driver->securityDriver->domainClearSecuritySocketLabel &&
+@@ -1592,18 +1602,21 @@ qemuConnectMonitor(struct qemud_driver *driver, virDomainObjPtr vm)
+         VIR_ERROR(_("Failed to set security context for monitor for %s"), vm->def->name);
+         goto error;
+     }
+-    
++
++    if (priv->mon == NULL) {
++        VIR_INFO("Failed to connect monitor for %s", vm->def->name);
++        goto error;
++    }
++
++
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+     ret = qemuMonitorSetCapabilities(priv->mon);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+     ret = 0;
+ error:
+-    if (ret < 0) {
++    if (ret < 0)
+         qemuMonitorClose(priv->mon);
+-        priv->mon = NULL;
+-        virDomainObjUnref(vm);
+-    }
+ 
+     return ret;
+ }
+@@ -4157,11 +4170,8 @@ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+                              _("Failed to send SIGTERM to %s (%d)"),
+                              vm->def->name, vm->pid);
+ 
+-    if (priv->mon &&
+-        qemuMonitorClose(priv->mon) == 0) {
+-        virDomainObjUnref(vm);
+-        priv->mon = NULL;
+-    }
++    if (priv->mon)
++        qemuMonitorClose(priv->mon);
+ 
+     if (priv->monConfig) {
+         if (priv->monConfig->type == VIR_DOMAIN_CHR_TYPE_UNIX)
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index ec0c3fe..e19c2e6 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -198,6 +198,8 @@ void qemuMonitorUnlock(qemuMonitorPtr mon)
+ static void qemuMonitorFree(qemuMonitorPtr mon)
+ {
+     VIR_DEBUG("mon=%p", mon);
++    if (mon->cb->destroy)
++        (mon->cb->destroy)(mon, mon->vm);
+     if (virCondDestroy(&mon->notify) < 0)
+     {}
+     virMutexDestroy(&mon->lock);
+@@ -672,12 +674,12 @@ cleanup:
+ }
+ 
+ 
+-int qemuMonitorClose(qemuMonitorPtr mon)
++void qemuMonitorClose(qemuMonitorPtr mon)
+ {
+     int refs;
+ 
+     if (!mon)
+-        return 0;
++        return;
+ 
+     VIR_DEBUG("mon=%p", mon);
+ 
+@@ -697,7 +699,6 @@ int qemuMonitorClose(qemuMonitorPtr mon)
+ 
+     if ((refs = qemuMonitorUnref(mon)) > 0)
+         qemuMonitorUnlock(mon);
+-    return refs;
+ }
+ 
+ 
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index adfb3bc..b36f24c 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -63,6 +63,9 @@ struct _qemuMonitorMessage {
+ typedef struct _qemuMonitorCallbacks qemuMonitorCallbacks;
+ typedef qemuMonitorCallbacks *qemuMonitorCallbacksPtr;
+ struct _qemuMonitorCallbacks {
++    void (*destroy)(qemuMonitorPtr mon,
++                    virDomainObjPtr vm);
++
+     void (*eofNotify)(qemuMonitorPtr mon,
+                       virDomainObjPtr vm,
+                       int withError);
+@@ -120,7 +123,7 @@ qemuMonitorPtr qemuMonitorOpen(virDomainObjPtr vm,
+                                int json,
+                                qemuMonitorCallbacksPtr cb);
+ 
+-int qemuMonitorClose(qemuMonitorPtr mon);
++void qemuMonitorClose(qemuMonitorPtr mon);
+ 
+ int qemuMonitorSetCapabilities(qemuMonitorPtr mon);
+ 
+-- 
+1.6.6.1
+

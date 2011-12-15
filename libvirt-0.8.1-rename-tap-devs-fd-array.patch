@@ -1,0 +1,168 @@
+Bugzilla: 572867
+Upstream commit: 7e1249f259a6cbd83740e7fdfee0e8da80b6bdfd
+
+There doesn't seem to be anything specific to tap devices for this
+array of file descriptors which need to stay open of the guest to use.
+Rename then for others to make use of.
+
+Signed-off-by: Alex Williamson <alex.williamson@redhat.com>
+Signed-off-by: Chris Lalancette <clalance@redhat.com>
+---
+
+ src/qemu/qemu_conf.c   |   28 ++++++++++++++--------------
+ src/qemu/qemu_conf.h   |    4 ++--
+ src/qemu/qemu_driver.c |   18 +++++++++---------
+ 3 files changed, 25 insertions(+), 25 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 880b308..9516d4e 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -3516,8 +3516,8 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                           unsigned long long qemuCmdFlags,
+                           const char ***retargv,
+                           const char ***retenv,
+-                          int **tapfds,
+-                          int *ntapfds,
++                          int **vmfds,
++                          int *nvmfds,
+                           const char *migrateFrom,
+                           virDomainSnapshotObjPtr current_snapshot)
+ {
+@@ -4210,7 +4210,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                 if (tapfd < 0)
+                     goto error;
+ 
+-                if (VIR_REALLOC_N(*tapfds, (*ntapfds)+1) < 0) {
++                if (VIR_REALLOC_N(*vmfds, (*nvmfds)+1) < 0) {
+                     virNWFilterTearNWFilter(net);
+                     close(tapfd);
+                     goto no_memory;
+@@ -4218,7 +4218,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+ 
+                 last_good_net = i;
+ 
+-                (*tapfds)[(*ntapfds)++] = tapfd;
++                (*vmfds)[(*nvmfds)++] = tapfd;
+ 
+                 if (snprintf(tapfd_name, sizeof(tapfd_name), "%d", tapfd) >= sizeof(tapfd_name))
+                     goto no_memory;
+@@ -4230,7 +4230,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                 if (tapfd < 0)
+                     goto error;
+ 
+-                if (VIR_REALLOC_N(*tapfds, (*ntapfds)+1) < 0) {
++                if (VIR_REALLOC_N(*vmfds, (*nvmfds)+1) < 0) {
+                     virNWFilterTearNWFilter(net);
+                     close(tapfd);
+                     goto no_memory;
+@@ -4238,7 +4238,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+ 
+                 last_good_net = i;
+ 
+-                (*tapfds)[(*ntapfds)++] = tapfd;
++                (*vmfds)[(*nvmfds)++] = tapfd;
+ 
+                 if (snprintf(tapfd_name, sizeof(tapfd_name), "%d", tapfd) >= sizeof(tapfd_name))
+                     goto no_memory;
+@@ -4251,12 +4251,12 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                    network device */
+                 int vhostfd = qemudOpenVhostNet(net, qemuCmdFlags);
+                 if (vhostfd >= 0) {
+-                    if (VIR_REALLOC_N(*tapfds, (*ntapfds)+1) < 0) {
++                    if (VIR_REALLOC_N(*vmfds, (*nvmfds)+1) < 0) {
+                         close(vhostfd);
+                         goto no_memory;
+                     }
+ 
+-                    (*tapfds)[(*ntapfds)++] = vhostfd;
++                    (*vmfds)[(*nvmfds)++] = vhostfd;
+                     if (snprintf(vhostfd_name, sizeof(vhostfd_name), "%d", vhostfd)
+                         >= sizeof(vhostfd_name))
+                         goto no_memory;
+@@ -4844,12 +4844,12 @@ int qemudBuildCommandLine(virConnectPtr conn,
+  error:
+     for (i = 0; i <= last_good_net; i++)
+         virNWFilterTearNWFilter(def->nets[i]);
+-    if (tapfds &&
+-        *tapfds) {
+-        for (i = 0; i < *ntapfds; i++)
+-            close((*tapfds)[i]);
+-        VIR_FREE(*tapfds);
+-        *ntapfds = 0;
++    if (vmfds &&
++        *vmfds) {
++        for (i = 0; i < *nvmfds; i++)
++            close((*vmfds)[i]);
++        VIR_FREE(*vmfds);
++        *nvmfds = 0;
+     }
+     if (qargv) {
+         for (i = 0 ; i < qargc ; i++)
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index eabb9e2..54ee643 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -204,8 +204,8 @@ int         qemudBuildCommandLine       (virConnectPtr conn,
+                                          unsigned long long qemuCmdFlags,
+                                          const char ***retargv,
+                                          const char ***retenv,
+-                                         int **tapfds,
+-                                         int *ntapfds,
++                                         int **vmfds,
++                                         int *nvmfds,
+                                          const char *migrateFrom,
+                                          virDomainSnapshotObjPtr current_snapshot)
+     ATTRIBUTE_NONNULL(1);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 5db1527..74179c3 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3703,8 +3703,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     const char **progenv = NULL;
+     int i, ret;
+     struct stat sb;
+-    int *tapfds = NULL;
+-    int ntapfds = 0;
++    int *vmfds = NULL;
++    int nvmfds = 0;
+     unsigned long long qemuCmdFlags;
+     fd_set keepfd;
+     const char *emulator;
+@@ -3882,7 +3882,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     vm->def->id = driver->nextvmid++;
+     if (qemudBuildCommandLine(conn, driver, vm->def, priv->monConfig,
+                               priv->monJSON, qemuCmdFlags, &argv, &progenv,
+-                              &tapfds, &ntapfds, migrateFrom,
++                              &vmfds, &nvmfds, migrateFrom,
+                               vm->current_snapshot) < 0)
+         goto cleanup;
+ 
+@@ -3933,8 +3933,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+         VIR_WARN(_("Unable to seek to end of logfile: %s"),
+                  virStrerror(errno, ebuf, sizeof ebuf));
+ 
+-    for (i = 0 ; i < ntapfds ; i++)
+-        FD_SET(tapfds[i], &keepfd);
++    for (i = 0 ; i < nvmfds ; i++)
++        FD_SET(vmfds[i], &keepfd);
+ 
+     ret = virExecDaemonize(argv, progenv, &keepfd, &child,
+                            stdin_fd, &logfile, &logfile,
+@@ -3975,11 +3975,11 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     if (ret == -1) /* The VM failed to start; tear filters before taps */
+         virNWFilterTearVMNWFilters(vm);
+ 
+-    if (tapfds) {
+-        for (i = 0 ; i < ntapfds ; i++) {
+-            close(tapfds[i]);
++    if (vmfds) {
++        for (i = 0 ; i < nvmfds ; i++) {
++            close(vmfds[i]);
+         }
+-        VIR_FREE(tapfds);
++        VIR_FREE(vmfds);
+     }
+ 
+     if (ret == -1) /* The VM failed to start */
+

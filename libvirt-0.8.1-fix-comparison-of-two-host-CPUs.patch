@@ -1,0 +1,74 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=611401
+
+When a CPU to be compared with host CPU describes a host CPU instead of
+a guest CPU, the result is incorrect. This is because instead of
+treating additional features in host CPU description as required, they
+were treated as if they were mentioned with all possible policies at the
+same time.
+(cherry picked from commit ac3daf0899cced61faeeed3c6e14806d9e846174)
+---
+ src/cpu/cpu_x86.c |   13 +++++++------
+ 1 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/src/cpu/cpu_x86.c b/src/cpu/cpu_x86.c
+index fe35af4..8c0ee12 100644
+--- a/src/cpu/cpu_x86.c
++++ b/src/cpu/cpu_x86.c
+@@ -806,8 +806,7 @@ x86ModelFromCPU(const virCPUDefPtr cpu,
+     struct x86_model *model = NULL;
+     int i;
+ 
+-    if (cpu->type == VIR_CPU_TYPE_HOST
+-        || policy == VIR_CPU_FEATURE_REQUIRE) {
++    if (policy == VIR_CPU_FEATURE_REQUIRE) {
+         if ((model = x86ModelFind(map, cpu->model)) == NULL) {
+             virCPUReportError(VIR_ERR_INTERNAL_ERROR,
+                     _("Unknown CPU model %s"), cpu->model);
+@@ -819,6 +818,8 @@ x86ModelFromCPU(const virCPUDefPtr cpu,
+     }
+     else if (VIR_ALLOC(model) < 0)
+         goto no_memory;
++    else if (cpu->type == VIR_CPU_TYPE_HOST)
++        return model;
+ 
+     for (i = 0; i < cpu->nfeatures; i++) {
+         const struct x86_feature *feature;
+@@ -1161,7 +1162,7 @@ x86Compute(virCPUDefPtr host,
+     }
+ 
+     if (!(map = x86LoadMap()) ||
+-        !(host_model = x86ModelFromCPU(host, map, 0)) ||
++        !(host_model = x86ModelFromCPU(host, map, VIR_CPU_FEATURE_REQUIRE)) ||
+         !(cpu_force = x86ModelFromCPU(cpu, map, VIR_CPU_FEATURE_FORCE)) ||
+         !(cpu_require = x86ModelFromCPU(cpu, map, VIR_CPU_FEATURE_REQUIRE)) ||
+         !(cpu_optional = x86ModelFromCPU(cpu, map, VIR_CPU_FEATURE_OPTIONAL)) ||
+@@ -1591,7 +1592,7 @@ x86Baseline(virCPUDefPtr *cpus,
+     if (!(map = x86LoadMap()))
+         goto error;
+ 
+-    if (!(base_model = x86ModelFromCPU(cpus[0], map, 0)))
++    if (!(base_model = x86ModelFromCPU(cpus[0], map, VIR_CPU_FEATURE_REQUIRE)))
+         goto error;
+ 
+     if (VIR_ALLOC(cpu) < 0 ||
+@@ -1610,7 +1611,7 @@ x86Baseline(virCPUDefPtr *cpus,
+     for (i = 1; i < ncpus; i++) {
+         const char *vn = NULL;
+ 
+-        if (!(model = x86ModelFromCPU(cpus[i], map, 0)))
++        if (!(model = x86ModelFromCPU(cpus[i], map, VIR_CPU_FEATURE_REQUIRE)))
+             goto error;
+ 
+         if (cpus[i]->vendor && model->vendor &&
+@@ -1684,7 +1685,7 @@ x86Update(virCPUDefPtr guest,
+     union cpuData *data = NULL;
+ 
+     if (!(map = x86LoadMap()) ||
+-        !(host_model = x86ModelFromCPU(host, map, 0)))
++        !(host_model = x86ModelFromCPU(host, map, VIR_CPU_FEATURE_REQUIRE)))
+         goto cleanup;
+ 
+     for (i = 0; i < guest->nfeatures; i++) {
+-- 
+1.7.1.1
+

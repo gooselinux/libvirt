@@ -1,0 +1,28 @@
+From 74c7a3463d18a530d6d749d0199061b5d3f17faa Mon Sep 17 00:00:00 2001
+From: Cole Robinson <crobinso@redhat.com>
+Date: Tue, 11 May 2010 14:44:34 -0400
+Subject: [PATCH 1/1] node_device: udev: Fix PCI product/vendor swappage
+
+Product and vendor values were swapped in the XML, which made virt-manager
+PCI device listing kinda useless.
+---
+ src/node_device/node_device_udev.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/node_device/node_device_udev.c b/src/node_device/node_device_udev.c
+index bcfe991..4a9d65f 100644
+--- a/src/node_device/node_device_udev.c
++++ b/src/node_device/node_device_udev.c
+@@ -382,8 +382,8 @@ static int udevTranslatePCIIds(unsigned int vendor,
+
+     /* pci_get_strings returns void */
+     pci_get_strings(&m,
+-                    &vendor_name,
+                     &device_name,
++                    &vendor_name,
+                     NULL,
+                     NULL);
+
+-- 
+1.7.0.1
+

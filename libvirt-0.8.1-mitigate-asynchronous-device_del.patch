@@ -1,0 +1,75 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=609437
+
+device_del command is not synchronous for PCI devices, it merely asks
+the guest to release the device and returns. If the host wants to use
+that device before the guest actually releases it, we are in big
+trouble. To avoid this, we already added a loop which waits up to 10
+seconds until the device is actually released before we do anything else
+with that device. But we only added this loop for managed PCI devices
+before we try reattach them back to the host.
+
+However, we need to wait even for non-managed devices. We don't reattach
+them automatically, but we still want to prevent the host from using it.
+This was revealed thanks to sVirt: when we relabel sysfs files
+corresponding to the PCI device before the guest finished releasing the
+device, qemu is no longer allowed to access those files and if it wants
+(as a result of guest's request) to write anything to them, it just
+exits, which kills the guest.
+
+This is not a proper fix and needs some further work both on libvirt and
+qemu side in the future.
+
+Backported from upstream c/s d1e5676c0d9e4ab51dc37f4fc882f630ef2f15e0
+---
+ src/qemu/qemu_driver.c |   17 +++++++++--------
+ 1 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index be4beed..35d35f9 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3443,16 +3443,17 @@ qemuPrepareChardevDevice(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ 
+ 
+ static void
+-qemudReattachManagedDevice(pciDevice *dev)
++qemudReattachPciDevice(pciDevice *dev)
+ {
+     int retries = 100;
+ 
++    while (pciWaitForDeviceCleanup(dev, "kvm_assigned_device")
++           && retries) {
++        usleep(100*1000);
++        retries--;
++    }
++
+     if (pciDeviceGetManaged(dev)) {
+-        while (pciWaitForDeviceCleanup(dev, "kvm_assigned_device")
+-               && retries) {
+-            usleep(100*1000);
+-            retries--;
+-        }
+         if (pciReAttachDevice(dev) < 0) {
+             virErrorPtr err = virGetLastError();
+             VIR_ERROR(_("Failed to re-attach PCI device: %s"),
+@@ -3498,7 +3499,7 @@ qemuDomainReAttachHostdevDevices(struct qemud_driver *driver,
+ 
+     for (i = 0; i < pciDeviceListCount(pcidevs); i++) {
+         pciDevice *dev = pciDeviceListGet(pcidevs, i);
+-        qemudReattachManagedDevice(dev);
++        qemudReattachPciDevice(dev);
+     }
+ 
+     pciDeviceListFree(pcidevs);
+@@ -9205,7 +9206,7 @@ static int qemudDomainDetachHostPciDevice(struct qemud_driver *driver,
+         pciDeviceListDel(driver->activePciHostdevs, pci);
+         if (pciResetDevice(pci, driver->activePciHostdevs, NULL) < 0)
+             ret = -1;
+-        qemudReattachManagedDevice(pci);
++        qemudReattachPciDevice(pci);
+         pciFreeDevice(pci);
+     }
+ 
+-- 
+1.7.2
+

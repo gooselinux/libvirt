@@ -1,0 +1,155 @@
+A 3rd patch fixing a couple of bugs in the first two patches sent.
+    
+    The virtio serial changes broke the test suite because they forgot
+    to add the new address attribute to the domain XML schema. The
+    xml2xml test also broke because the XML no longer roundtrips. This
+    is due to testing of auto-addition of <controller> elements. Split
+    that test case off into a separate XML file to avoid breakage
+    
+    * docs/schemas/domain.rng: Allow port number for virtio serial addresses
+    * tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args,
+      tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml: Revert to
+      a simple config to avoid breaking xml2xml test
+    * tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml,
+      tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args: Add
+      complex test case for auto-controller addition for xml2argv test
+    * tests/qemuxml2argvtest.c: Add channel-virtio-auto test
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 7c3761a..f7bbb10 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1528,6 +1528,11 @@
+         <ref name="driveBus"/>
+       </attribute>
+     </optional>
++    <optional>
++      <attribute name="port">
++        <ref name="driveUnit"/>
++      </attribute>
++    </optional>
+   </define>
+   <!--
+       Devices attached to a domain.
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+new file mode 100644
+index 0000000..e59d944
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x5 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=0,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml
+new file mode 100644
+index 0000000..6e3458f
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml
+@@ -0,0 +1,51 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='0' ports='16' vectors='4'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo'/>
++      <address type='virtio-serial' controller='1' bus='0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.bar'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.wizz'/>
++      <address type='virtio-serial' controller='0' bus='0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.ooh'/>
++      <address type='virtio-serial' controller='1' bus='0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.lla'/>
++      <address type='virtio-serial' controller='2' bus='0'/>
++    </channel>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+index e59d944..203468e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x5 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=0,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel0,name=org.linux-kvm.port.foo -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+index 6e3458f..e597c40 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+@@ -20,32 +20,12 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
+-    <controller type='virtio-serial' index='0' ports='16' vectors='4'/>
+     <controller type='virtio-serial' index='1'>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
+     </controller>
+     <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.0'/>
+-    </channel>
+-    <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.foo'/>
+-      <address type='virtio-serial' controller='1' bus='0'/>
+-    </channel>
+-    <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.bar'/>
+       <address type='virtio-serial' controller='1' bus='0' port='3'/>
+     </channel>
+-    <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.wizz'/>
+-      <address type='virtio-serial' controller='0' bus='0'/>
+-    </channel>
+-    <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.ooh'/>
+-      <address type='virtio-serial' controller='1' bus='0'/>
+-    </channel>
+-    <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.lla'/>
+-      <address type='virtio-serial' controller='2' bus='0'/>
+-    </channel>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 10bf4b1..6c66519 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -345,6 +345,7 @@ mymain(int argc, char **argv)
+ 
+     DO_TEST("channel-guestfwd", QEMUD_CMD_FLAG_CHARDEV|QEMUD_CMD_FLAG_DEVICE);
+     DO_TEST("channel-virtio", QEMUD_CMD_FLAG_DEVICE);
++    DO_TEST("channel-virtio-auto", QEMUD_CMD_FLAG_DEVICE);
+ 
+     DO_TEST("watchdog", 0);
+     DO_TEST("watchdog-device", QEMUD_CMD_FLAG_DEVICE);
+
+-- 

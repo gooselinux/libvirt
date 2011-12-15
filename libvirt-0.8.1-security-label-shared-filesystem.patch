@@ -1,0 +1,483 @@
+When QEMU runs with its disk on NFS, and as a non-root user, the
+disk is chownd to that non-root user. When migration completes
+the last step is shutting down the QEMU on the source host. THis
+normally resets user/group/security label. This is bad when the
+VM was just migrated because the file is still in use on the dest
+host. It is thus neccessary to skip the reset step for any files
+found to be on a shared filesystem
+
+This is for
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=578889
+
+* src/libvirt_private.syms: Export virStorageFileIsSharedFS
+* src/util/storage_file.c, src/util/storage_file.h: Add a new
+  method virStorageFileIsSharedFS() to determine if a file is
+  on a shared filesystem (NFS, GFS, OCFS2, etc)
+* src/qemu/qemu_driver.c: Tell security driver not to reset
+  disk labels on migration completion
+* src/qemu/qemu_security_dac.c, src/qemu/qemu_security_stacked.c,
+  src/security/security_selinux.c, src/security/security_driver.h,
+  src/security/security_apparmor.c: Add ability to skip disk
+  restore step for files on shared filesystems.
+---
+ src/libvirt_private.syms         |    1 +
+ src/qemu/qemu_driver.c           |   34 ++++++++++++++-----------
+ src/qemu/qemu_security_dac.c     |   40 +++++++++++++++++++++++++----
+ src/qemu/qemu_security_stacked.c |    7 +++--
+ src/security/security_apparmor.c |    3 +-
+ src/security/security_driver.h   |    3 +-
+ src/security/security_selinux.c  |   38 +++++++++++++++++++++++++----
+ src/util/storage_file.c          |   50 ++++++++++++++++++++++++++++++++++++++
+ src/util/storage_file.h          |    2 +
+ 9 files changed, 147 insertions(+), 31 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 5713b2c..7d7ee14 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -617,6 +617,7 @@ virStorageFileFormatTypeToString;
+ virStorageFileFormatTypeFromString;
+ virStorageFileGetMetadata;
+ virStorageFileGetMetadataFromFD;
++virStorageFileIsSharedFS;
+ 
+ # threads.h
+ virMutexInit;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index b478464..702a652 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -174,7 +174,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+                               int stdin_fd);
+ 
+ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+-                                  virDomainObjPtr vm);
++                                  virDomainObjPtr vm,
++                                  int migrated);
+ 
+ static int qemudDomainGetMaxVcpus(virDomainPtr dom);
+ 
+@@ -1105,7 +1106,7 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                                      VIR_DOMAIN_EVENT_STOPPED_FAILED :
+                                      VIR_DOMAIN_EVENT_STOPPED_SHUTDOWN);
+ 
+-    qemudShutdownVMDaemon(driver, vm);
++    qemudShutdownVMDaemon(driver, vm, 0);
+     if (!vm->persistent)
+         virDomainRemoveInactive(&driver->domains, vm);
+     else
+@@ -1636,7 +1637,7 @@ error:
+     /* We can't get the monitor back, so must kill the VM
+      * to remove danger of it ending up running twice if
+      * user tries to start it again later */
+-    qemudShutdownVMDaemon(driver, obj);
++    qemudShutdownVMDaemon(driver, obj, 0);
+     if (!obj->persistent)
+         virDomainRemoveInactive(&driver->domains, obj);
+     else
+@@ -4009,7 +4010,7 @@ cleanup:
+ 
+     if (driver->securityDriver &&
+         driver->securityDriver->domainRestoreSecurityAllLabel)
+-        driver->securityDriver->domainRestoreSecurityAllLabel(vm);
++        driver->securityDriver->domainRestoreSecurityAllLabel(vm, 0);
+     if (driver->securityDriver &&
+         driver->securityDriver->domainReleaseSecurityLabel)
+         driver->securityDriver->domainReleaseSecurityLabel(vm);
+@@ -4032,7 +4033,7 @@ cleanup:
+ abort:
+     /* We jump here if we failed to initialize the now running VM
+      * killing it off and pretend we never started it */
+-    qemudShutdownVMDaemon(driver, vm);
++    qemudShutdownVMDaemon(driver, vm, 0);
+ 
+     if (logfile != -1)
+         close(logfile);
+@@ -4042,7 +4043,8 @@ abort:
+ 
+ 
+ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+-                                  virDomainObjPtr vm) {
++                                  virDomainObjPtr vm,
++                                  int migrated) {
+     int ret;
+     int retries = 0;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -4053,7 +4055,7 @@ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+     if (!virDomainObjIsActive(vm))
+         return;
+ 
+-    VIR_DEBUG("Shutting down VM '%s'", vm->def->name);
++    VIR_DEBUG("Shutting down VM '%s' migrated=%d", vm->def->name, migrated);
+ 
+     /* This method is routinely used in clean up paths. Disable error
+      * reporting so we don't squash a legit error. */
+@@ -4111,7 +4113,7 @@ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+     /* Reset Security Labels */
+     if (driver->securityDriver &&
+         driver->securityDriver->domainRestoreSecurityAllLabel)
+-        driver->securityDriver->domainRestoreSecurityAllLabel(vm);
++        driver->securityDriver->domainRestoreSecurityAllLabel(vm, migrated);
+     if (driver->securityDriver &&
+         driver->securityDriver->domainReleaseSecurityLabel)
+         driver->securityDriver->domainReleaseSecurityLabel(vm);
+@@ -4835,7 +4837,7 @@ static int qemudDomainDestroy(virDomainPtr dom) {
+         goto endjob;
+     }
+ 
+-    qemudShutdownVMDaemon(driver, vm);
++    qemudShutdownVMDaemon(driver, vm, 0);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+                                      VIR_DOMAIN_EVENT_STOPPED_DESTROYED);
+@@ -5546,7 +5548,7 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+     ret = 0;
+ 
+     /* Shut it down */
+-    qemudShutdownVMDaemon(driver, vm);
++    qemudShutdownVMDaemon(driver, vm, 0);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+                                      VIR_DOMAIN_EVENT_STOPPED_SAVED);
+@@ -5856,7 +5858,7 @@ static int qemudDomainCoreDump(virDomainPtr dom,
+ 
+ endjob:
+     if ((ret == 0) && (flags & VIR_DUMP_CRASH)) {
+-        qemudShutdownVMDaemon(driver, vm);
++        qemudShutdownVMDaemon(driver, vm, 0);
+         event = virDomainEventNewFromObj(vm,
+                                          VIR_DOMAIN_EVENT_STOPPED,
+                                          VIR_DOMAIN_EVENT_STOPPED_CRASHED);
+@@ -10365,7 +10367,7 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+ 
+     qemust = qemuStreamMigOpen(st, unixfile);
+     if (qemust == NULL) {
+-        qemudShutdownVMDaemon(driver, vm);
++        qemudShutdownVMDaemon(driver, vm, 0);
+         if (!vm->persistent) {
+             if (qemuDomainObjEndJob(vm) > 0)
+                 virDomainRemoveInactive(&driver->domains, vm);
+@@ -11093,7 +11095,9 @@ qemudDomainMigratePerform (virDomainPtr dom,
+     }
+ 
+     /* Clean up the source domain. */
+-    qemudShutdownVMDaemon(driver, vm);
++    fprintf(stderr, "******************* MIG \n");
++    qemudShutdownVMDaemon(driver, vm, 1);
++    fprintf(stderr, "******************* YEEHAAA\n");
+     resume = 0;
+ 
+     event = virDomainEventNewFromObj(vm,
+@@ -11235,7 +11239,7 @@ qemudDomainMigrateFinish2 (virConnectPtr dconn,
+         }
+         virDomainSaveStatus(driver->caps, driver->stateDir, vm);
+     } else {
+-        qemudShutdownVMDaemon(driver, vm);
++        qemudShutdownVMDaemon(driver, vm, 0);
+         event = virDomainEventNewFromObj(vm,
+                                          VIR_DOMAIN_EVENT_STOPPED,
+                                          VIR_DOMAIN_EVENT_STOPPED_FAILED);
+@@ -12081,7 +12085,7 @@ static int qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+          */
+ 
+         if (virDomainObjIsActive(vm)) {
+-            qemudShutdownVMDaemon(driver, vm);
++            qemudShutdownVMDaemon(driver, vm, 0);
+             event = virDomainEventNewFromObj(vm,
+                                              VIR_DOMAIN_EVENT_STOPPED,
+                                              VIR_DOMAIN_EVENT_STOPPED_FROM_SNAPSHOT);
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index e408dbf..2d42ce2 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -142,8 +142,9 @@ qemuSecurityDACSetSecurityImageLabel(virDomainObjPtr vm ATTRIBUTE_UNUSED,
+ 
+ 
+ static int
+-qemuSecurityDACRestoreSecurityImageLabel(virDomainObjPtr vm ATTRIBUTE_UNUSED,
+-                                         virDomainDiskDefPtr disk)
++qemuSecurityDACRestoreSecurityImageLabelInt(virDomainObjPtr vm ATTRIBUTE_UNUSED,
++                                            virDomainDiskDefPtr disk,
++                                            int migrated)
+ {
+     if (!driver->privileged || !driver->dynamicOwnership)
+         return 0;
+@@ -162,11 +163,35 @@ qemuSecurityDACRestoreSecurityImageLabel(virDomainObjPtr vm ATTRIBUTE_UNUSED,
+     if (!disk->src)
+         return 0;
+ 
++    /* If we have a shared FS & doing migrated, we must not
++     * change ownership, because that kills access on the
++     * destination host which is sub-optimal for the guest
++     * VM's I/O attempts :-)
++     */
++    if (migrated) {
++        int rc = virStorageFileIsSharedFS(disk->src);
++        if (rc < 0)
++            return -1;
++        if (rc == 1) {
++            VIR_DEBUG("Skipping image label restore on %s because FS is shared",
++                      disk->src);
++            return 0;
++        }
++    }
++
+     return qemuSecurityDACRestoreSecurityFileLabel(disk->src);
+ }
+ 
+ 
+ static int
++qemuSecurityDACRestoreSecurityImageLabel(virDomainObjPtr vm,
++                                         virDomainDiskDefPtr disk)
++{
++    return qemuSecurityDACRestoreSecurityImageLabelInt(vm, disk, 0);
++}
++
++
++static int
+ qemuSecurityDACSetSecurityPCILabel(pciDevice *dev ATTRIBUTE_UNUSED,
+                                    const char *file,
+                                    void *opaque ATTRIBUTE_UNUSED)
+@@ -306,7 +331,8 @@ done:
+ 
+ 
+ static int
+-qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm)
++qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm,
++                                       int migrated)
+ {
+     int i;
+     int rc = 0;
+@@ -314,7 +340,8 @@ qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm)
+     if (!driver->privileged || !driver->dynamicOwnership)
+         return 0;
+ 
+-    VIR_DEBUG("Restoring security label on %s", vm->def->name);
++    VIR_DEBUG("Restoring security label on %s migrated=%d",
++              vm->def->name, migrated);
+ 
+     for (i = 0 ; i < vm->def->nhostdevs ; i++) {
+         if (qemuSecurityDACRestoreSecurityHostdevLabel(vm,
+@@ -322,8 +349,9 @@ qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm)
+             rc = -1;
+     }
+     for (i = 0 ; i < vm->def->ndisks ; i++) {
+-        if (qemuSecurityDACRestoreSecurityImageLabel(vm,
+-                                                     vm->def->disks[i]) < 0)
++        if (qemuSecurityDACRestoreSecurityImageLabelInt(vm,
++                                                        vm->def->disks[i],
++                                                        migrated) < 0)
+             rc = -1;
+     }
+ 
+diff --git a/src/qemu/qemu_security_stacked.c b/src/qemu/qemu_security_stacked.c
+index c0258ce..04c1f10 100644
+--- a/src/qemu/qemu_security_stacked.c
++++ b/src/qemu/qemu_security_stacked.c
+@@ -215,18 +215,19 @@ qemuSecurityStackedSetSecurityAllLabel(virDomainObjPtr vm)
+ 
+ 
+ static int
+-qemuSecurityStackedRestoreSecurityAllLabel(virDomainObjPtr vm)
++qemuSecurityStackedRestoreSecurityAllLabel(virDomainObjPtr vm,
++                                           int migrated)
+ {
+     int rc = 0;
+ 
+     if (driver->securitySecondaryDriver &&
+         driver->securitySecondaryDriver->domainRestoreSecurityAllLabel &&
+-        driver->securitySecondaryDriver->domainRestoreSecurityAllLabel(vm) < 0)
++        driver->securitySecondaryDriver->domainRestoreSecurityAllLabel(vm, migrated) < 0)
+         rc = -1;
+ 
+     if (driver->securityPrimaryDriver &&
+         driver->securityPrimaryDriver->domainRestoreSecurityAllLabel &&
+-        driver->securityPrimaryDriver->domainRestoreSecurityAllLabel(vm) < 0)
++        driver->securityPrimaryDriver->domainRestoreSecurityAllLabel(vm, migrated) < 0)
+         rc = -1;
+ 
+     return rc;
+diff --git a/src/security/security_apparmor.c b/src/security/security_apparmor.c
+index c0c91cc..87f8a1b 100644
+--- a/src/security/security_apparmor.c
++++ b/src/security/security_apparmor.c
+@@ -444,7 +444,8 @@ AppArmorReleaseSecurityLabel(virDomainObjPtr vm)
+ 
+ 
+ static int
+-AppArmorRestoreSecurityAllLabel(virDomainObjPtr vm)
++AppArmorRestoreSecurityAllLabel(virDomainObjPtr vm,
++                                int migrated ATTRIBUTE_UNUSED)
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+     int rc = 0;
+diff --git a/src/security/security_driver.h b/src/security/security_driver.h
+index 3de234a..39edc6d 100644
+--- a/src/security/security_driver.h
++++ b/src/security/security_driver.h
+@@ -46,7 +46,8 @@ typedef int (*virSecurityDomainGenLabel) (virDomainObjPtr sec);
+ typedef int (*virSecurityDomainReserveLabel) (virDomainObjPtr sec);
+ typedef int (*virSecurityDomainReleaseLabel) (virDomainObjPtr sec);
+ typedef int (*virSecurityDomainSetAllLabel) (virDomainObjPtr sec);
+-typedef int (*virSecurityDomainRestoreAllLabel) (virDomainObjPtr vm);
++typedef int (*virSecurityDomainRestoreAllLabel) (virDomainObjPtr vm,
++                                                 int migrated);
+ typedef int (*virSecurityDomainGetProcessLabel) (virDomainObjPtr vm,
+                                                  virSecurityLabelPtr sec);
+ typedef int (*virSecurityDomainSetProcessLabel) (virSecurityDriverPtr drv,
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index 1aabb20..47534df 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -385,8 +385,9 @@ err:
+ }
+ 
+ static int
+-SELinuxRestoreSecurityImageLabel(virDomainObjPtr vm,
+-                                 virDomainDiskDefPtr disk)
++SELinuxRestoreSecurityImageLabelInt(virDomainObjPtr vm,
++                                    virDomainDiskDefPtr disk,
++                                    int migrated)
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+ 
+@@ -407,9 +408,34 @@ SELinuxRestoreSecurityImageLabel(virDomainObjPtr vm,
+     if (!disk->src)
+         return 0;
+ 
++    /* If we have a shared FS & doing migrated, we must not
++     * change ownership, because that kills access on the
++     * destination host which is sub-optimal for the guest
++     * VM's I/O attempts :-)
++     */
++    if (migrated) {
++        int rc = virStorageFileIsSharedFS(disk->src);
++        if (rc < 0)
++            return -1;
++        if (rc == 1) {
++            VIR_DEBUG("Skipping image label restore on %s because FS is shared",
++                      disk->src);
++            return 0;
++        }
++    }
++
+     return SELinuxRestoreSecurityFileLabel(disk->src);
+ }
+ 
++
++static int
++SELinuxRestoreSecurityImageLabel(virDomainObjPtr vm,
++                                 virDomainDiskDefPtr disk)
++{
++    return SELinuxRestoreSecurityImageLabelInt(vm, disk, 0);
++}
++
++
+ static int
+ SELinuxSetSecurityImageLabel(virDomainObjPtr vm,
+                              virDomainDiskDefPtr disk)
+@@ -603,7 +629,8 @@ done:
+ }
+ 
+ static int
+-SELinuxRestoreSecurityAllLabel(virDomainObjPtr vm)
++SELinuxRestoreSecurityAllLabel(virDomainObjPtr vm,
++                               int migrated ATTRIBUTE_UNUSED)
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+     int i;
+@@ -619,8 +646,9 @@ SELinuxRestoreSecurityAllLabel(virDomainObjPtr vm)
+             rc = -1;
+     }
+     for (i = 0 ; i < vm->def->ndisks ; i++) {
+-        if (SELinuxRestoreSecurityImageLabel(vm,
+-                                             vm->def->disks[i]) < 0)
++        if (SELinuxRestoreSecurityImageLabelInt(vm,
++                                                vm->def->disks[i],
++                                                migrated) < 0)
+             rc = -1;
+     }
+ 
+diff --git a/src/util/storage_file.c b/src/util/storage_file.c
+index 76ebb98..d4aad86 100644
+--- a/src/util/storage_file.c
++++ b/src/util/storage_file.c
+@@ -26,9 +26,14 @@
+ 
+ #include <unistd.h>
+ #include <fcntl.h>
++#ifdef __linux__
++#include <linux/magic.h>
++#include <sys/statfs.h>
++#endif
+ #include "dirname.h"
+ #include "memory.h"
+ #include "virterror_internal.h"
++#include "logging.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_STORAGE
+ 
+@@ -407,3 +412,48 @@ virStorageFileGetMetadata(const char *path,
+ 
+     return ret;
+ }
++
++
++#ifdef __linux__
++
++#ifndef OCFS2_SUPER_MAGIC
++#define OCFS2_SUPER_MAGIC 0x7461636f
++#endif
++#ifndef GFS2_MAGIC
++#define GFS2_MAGIC 0x01161970
++#endif
++#ifndef AFS_FS_MAGIC
++#define AFS_FS_MAGIC 0x6B414653
++#endif
++
++
++int virStorageFileIsSharedFS(const char *path)
++{
++    struct statfs sb;
++
++    if (statfs(path, &sb) < 0) {
++        virReportSystemError(errno,
++                             _("cannot determine filesystem for '%s'"),
++                             path);
++        return -1;
++    }
++
++    VIR_DEBUG("Check if path %s with FS magic %lld is shared",
++              path, (long long int)sb.f_type);
++
++    if (sb.f_type == NFS_SUPER_MAGIC ||
++        sb.f_type == GFS2_MAGIC ||
++        sb.f_type == OCFS2_SUPER_MAGIC ||
++        sb.f_type == AFS_FS_MAGIC) {
++        return 1;
++    }
++
++    return 0;
++}
++#else
++int virStorageFileIsSharedFS(const char *path ATTRIBUTE_UNUSED)
++{
++    /* XXX implement me :-) */
++    return 0;
++}
++#endif
+diff --git a/src/util/storage_file.h b/src/util/storage_file.h
+index c761dc6..58533ee 100644
+--- a/src/util/storage_file.h
++++ b/src/util/storage_file.h
+@@ -61,4 +61,6 @@ int virStorageFileGetMetadataFromFD(const char *path,
+                                     int fd,
+                                     virStorageFileMetadata *meta);
+ 
++int virStorageFileIsSharedFS(const char *path);
++
+ #endif /* __VIR_STORAGE_FILE_H__ */
+-- 
+1.6.6.1
+

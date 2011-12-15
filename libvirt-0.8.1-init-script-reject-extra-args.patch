@@ -1,0 +1,53 @@
+https://bugzilla.redhat.com/show_bug.cgi?id=617300
+
+Reject extra arguments.
+Return the correct status for unknown arguments, as mandated by
+https://fedoraproject.org/wiki/Packaging/SysVInitScript
+Add --help, as a permitted extension.
+
+* daemon/libvirt-guests.init.in (usage): New function.  Use it in
+more places, and return correct value.
+(cherry picked from commit d1434b7242abe08f6e29aff84e34042c93a9aab9)
+---
+ daemon/libvirt-guests.init.in |   16 ++++++++++++++--
+ 1 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/daemon/libvirt-guests.init.in b/daemon/libvirt-guests.init.in
+index f99c070..fdac31d 100644
+--- a/daemon/libvirt-guests.init.in
++++ b/daemon/libvirt-guests.init.in
+@@ -275,8 +275,21 @@ gueststatus() {
+     done
+ }
+
++# usage [val]
++# Display usage string, then exit with VAL (defaults to 2).
++usage() {
++    echo $"Usage: $0 {start|stop|restart|force-reload|gueststatus|shutdown}"
++    exit ${1-2}
++}
++
+ # See how we were called.
++if test $# != 1; then
++    usage
++fi
+ case "$1" in
++    --help)
++        usage 0
++        ;;
+     start|stop|gueststatus)
+         $1
+         ;;
+@@ -297,8 +310,7 @@ case "$1" in
+         stop
+         ;;
+     *)
+-        echo $"Usage: $0 {start|stop|restart|force-reload|gueststatus|shutdown}"
+-        exit 3
++        usage
+         ;;
+ esac
+ exit $RETVAL
+-- 
+1.7.2
+

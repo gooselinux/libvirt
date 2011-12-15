@@ -1,0 +1,304 @@
+* include/libvirt/libvirt.h.in (virDomainCreateFlags): Add
+VIR_DOMAIN_START_PAUSED.
+* src/libvirt.c (virDomainCreateXML): Update documentation.
+* src/lxc/lxc_driver.c (lxcDomainCreateAndStart): Reject new flag
+as unimplemented.
+* src/opennebula/one_driver.c (oneDomainCreateAndStart):
+Likewise.
+* src/openvz/openvz_driver.c (openvzDomainCreateXML): Likewise.
+* src/phyp/phyp_driver.c (phypDomainCreateAndStart): Likewise.
+* src/qemu/qemu_driver.c (qemudDomainCreate): Likewise.
+* src/test/test_driver.c (testDomainCreateXML): Likewise.
+* src/uml/uml_driver.c (umlDomainCreate): Likewise.
+* src/vbox/vbox_tmpl.c (vboxDomainCreateXML): Likewise.
+* src/xen/xend_internal.c (xenDaemonCreateXML): Likewise.
+* src/xenapi/xenapi_driver.c (xenapiDomainCreateXML): Likewise.
+(cherry picked from commit 2502ebb30a95cdf71d4421c510d06f01b4483da0)
+---
+ include/libvirt/libvirt.h.in |    3 ++-
+ src/libvirt.c                |    2 +-
+ src/lxc/lxc_driver.c         |    7 +++++--
+ src/opennebula/one_driver.c  |    8 ++++++--
+ src/openvz/openvz_driver.c   |    4 +++-
+ src/phyp/phyp_driver.c       |    4 +++-
+ src/qemu/qemu_driver.c       |    4 +++-
+ src/test/test_driver.c       |    4 +++-
+ src/uml/uml_driver.c         |    4 +++-
+ src/vbox/vbox_tmpl.c         |    8 ++++++--
+ src/xen/xend_internal.c      |    4 +++-
+ src/xenapi/xenapi_driver.c   |    4 +++-
+ 12 files changed, 41 insertions(+), 15 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index f296d16..861604c 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -121,7 +121,8 @@ typedef virDomainInfo *virDomainInfoPtr;
+  * Domain.
+  */
+ typedef enum {
+-     VIR_DOMAIN_NONE = 0
++    VIR_DOMAIN_NONE         = 0,      /* Default behavior */
++    VIR_DOMAIN_START_PAUSED = 1 << 0, /* Launch guest in paused state */
+ } virDomainCreateFlags;
+
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 028115c..c40f20f 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -1919,7 +1919,7 @@ virDomainGetConnect (virDomainPtr dom)
+  * virDomainCreateXML:
+  * @conn: pointer to the hypervisor connection
+  * @xmlDesc: string containing an XML description of the domain
+- * @flags: callers should always pass 0
++ * @flags: bitwise-or of supported virDomainCreateFlags
+  *
+  * Launch a new guest domain, based on an XML description similar
+  * to the one returned by virDomainGetXMLDesc()
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index 8fe4915..7866cb0 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -1,4 +1,5 @@
+ /*
++ * Copyright (C) 2010 Red Hat, Inc.
+  * Copyright IBM Corp. 2008
+  *
+  * lxc_driver.c: linux container driver functions
+@@ -1403,7 +1404,7 @@ cleanup:
+  * lxcDomainCreateAndStart:
+  * @conn: pointer to connection
+  * @xml: XML definition of domain
+- * @flags: Unused
++ * @flags: Must be 0 for now
+  *
+  * Creates a domain based on xml and starts it
+  *
+@@ -1412,13 +1413,15 @@ cleanup:
+ static virDomainPtr
+ lxcDomainCreateAndStart(virConnectPtr conn,
+                         const char *xml,
+-                        unsigned int flags ATTRIBUTE_UNUSED) {
++                        unsigned int flags) {
+     lxc_driver_t *driver = conn->privateData;
+     virDomainObjPtr vm = NULL;
+     virDomainDefPtr def;
+     virDomainPtr dom = NULL;
+     virDomainEventPtr event = NULL;
+
++    virCheckFlags(0, NULL);
++
+     lxcDriverLock(driver);
+     if (!(def = virDomainDefParseString(driver->caps, xml,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+diff --git a/src/opennebula/one_driver.c b/src/opennebula/one_driver.c
+index acd52c2..fd99f0b 100644
+--- a/src/opennebula/one_driver.c
++++ b/src/opennebula/one_driver.c
+@@ -1,5 +1,7 @@
+ /*---------------------------------------------------------------------------*/
+-/* Copyright 2002-2009, Distributed Systems Architecture Group, Universidad
++/*
++ * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright 2002-2009, Distributed Systems Architecture Group, Universidad
+  * Complutense de Madrid (dsa-research.org)
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -435,13 +437,15 @@ return_point:
+ static virDomainPtr
+ oneDomainCreateAndStart(virConnectPtr conn,
+                         const char *xml,
+-                        unsigned int flags ATTRIBUTE_UNUSED) {
++                        unsigned int flags) {
+     one_driver_t *driver = conn->privateData;
+     virDomainObjPtr vm = NULL;
+     virDomainDefPtr def;
+     virDomainPtr dom = NULL;
+     int oneid;
+
++    virCheckFlags(0, NULL);
++
+     oneDriverLock(driver);
+     if (!(def = virDomainDefParseString(driver->caps, xml,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+diff --git a/src/openvz/openvz_driver.c b/src/openvz/openvz_driver.c
+index 00b8a14..78ad9eb 100644
+--- a/src/openvz/openvz_driver.c
++++ b/src/openvz/openvz_driver.c
+@@ -873,7 +873,7 @@ cleanup:
+
+ static virDomainPtr
+ openvzDomainCreateXML(virConnectPtr conn, const char *xml,
+-                      unsigned int flags ATTRIBUTE_UNUSED)
++                      unsigned int flags)
+ {
+     struct openvz_driver *driver =  conn->privateData;
+     virDomainDefPtr vmdef = NULL;
+@@ -881,6 +881,8 @@ openvzDomainCreateXML(virConnectPtr conn, const char *xml,
+     virDomainPtr dom = NULL;
+     const char *progstart[] = {VZCTL, "--quiet", "start", PROGRAM_SENTINAL, NULL};
+
++    virCheckFlags(0, NULL);
++
+     openvzDriverLock(driver);
+     if ((vmdef = virDomainDefParseString(driver->caps, xml,
+                                          VIR_DOMAIN_XML_INACTIVE)) == NULL)
+diff --git a/src/phyp/phyp_driver.c b/src/phyp/phyp_driver.c
+index 467ea19..b71630b 100644
+--- a/src/phyp/phyp_driver.c
++++ b/src/phyp/phyp_driver.c
+@@ -1398,7 +1398,7 @@ phypDomainDestroy(virDomainPtr dom)
+ static virDomainPtr
+ phypDomainCreateAndStart(virConnectPtr conn,
+                          const char *xml,
+-                         unsigned int flags ATTRIBUTE_UNUSED)
++                         unsigned int flags)
+ {
+
+     ConnectionData *connection_data = conn->networkPrivateData;
+@@ -1411,6 +1411,8 @@ phypDomainCreateAndStart(virConnectPtr conn,
+     unsigned int i = 0;
+     char *managed_system = phyp_driver->managed_system;
+
++    virCheckFlags(0, NULL);
++
+     if (!(def = virDomainDefParseString(phyp_driver->caps, xml,
+                                         VIR_DOMAIN_XML_SECURE)))
+         goto err;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 06a4df0..8d07e69 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4613,13 +4613,15 @@ static int qemudNumDomains(virConnectPtr conn) {
+ }
+
+ static virDomainPtr qemudDomainCreate(virConnectPtr conn, const char *xml,
+-                                      unsigned int flags ATTRIBUTE_UNUSED) {
++                                      unsigned int flags) {
+     struct qemud_driver *driver = conn->privateData;
+     virDomainDefPtr def;
+     virDomainObjPtr vm = NULL;
+     virDomainPtr dom = NULL;
+     virDomainEventPtr event = NULL;
+
++    virCheckFlags(0, NULL);
++
+     qemuDriverLock(driver);
+     if (!(def = virDomainDefParseString(driver->caps, xml,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+diff --git a/src/test/test_driver.c b/src/test/test_driver.c
+index 6706cba..1ce8bb6 100644
+--- a/src/test/test_driver.c
++++ b/src/test/test_driver.c
+@@ -1287,7 +1287,7 @@ cleanup:
+
+ static virDomainPtr
+ testDomainCreateXML(virConnectPtr conn, const char *xml,
+-                      unsigned int flags ATTRIBUTE_UNUSED)
++                      unsigned int flags)
+ {
+     testConnPtr privconn = conn->privateData;
+     virDomainPtr ret = NULL;
+@@ -1295,6 +1295,8 @@ testDomainCreateXML(virConnectPtr conn, const char *xml,
+     virDomainObjPtr dom = NULL;
+     virDomainEventPtr event = NULL;
+
++    virCheckFlags(0, NULL);
++
+     testDriverLock(privconn);
+     if ((def = virDomainDefParseString(privconn->caps, xml,
+                                        VIR_DOMAIN_XML_INACTIVE)) == NULL)
+diff --git a/src/uml/uml_driver.c b/src/uml/uml_driver.c
+index 644ac8b..44b7f4e 100644
+--- a/src/uml/uml_driver.c
++++ b/src/uml/uml_driver.c
+@@ -1263,12 +1263,14 @@ static int umlNumDomains(virConnectPtr conn) {
+     return n;
+ }
+ static virDomainPtr umlDomainCreate(virConnectPtr conn, const char *xml,
+-                                      unsigned int flags ATTRIBUTE_UNUSED) {
++                                      unsigned int flags) {
+     struct uml_driver *driver = conn->privateData;
+     virDomainDefPtr def;
+     virDomainObjPtr vm = NULL;
+     virDomainPtr dom = NULL;
+
++    virCheckFlags(0, NULL);
++
+     umlDriverLock(driver);
+     if (!(def = virDomainDefParseString(driver->caps, xml,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+diff --git a/src/vbox/vbox_tmpl.c b/src/vbox/vbox_tmpl.c
+index 6a9a2bf..c16ea7e 100644
+--- a/src/vbox/vbox_tmpl.c
++++ b/src/vbox/vbox_tmpl.c
+@@ -989,7 +989,7 @@ cleanup:
+ }
+
+ static virDomainPtr vboxDomainCreateXML(virConnectPtr conn, const char *xml,
+-                                        unsigned int flags ATTRIBUTE_UNUSED) {
++                                        unsigned int flags) {
+     /* VirtualBox currently doesn't have support for running
+      * virtual machines without actually defining them and thus
+      * for time being just define new machine and start it.
+@@ -998,7 +998,11 @@ static virDomainPtr vboxDomainCreateXML(virConnectPtr conn, const char *xml,
+      * change this behaviour to the expected one.
+      */
+
+-    virDomainPtr dom = vboxDomainDefineXML(conn, xml);
++    virDomainPtr dom;
++
++    virCheckFlags(0, NULL);
++
++    dom = vboxDomainDefineXML(conn, xml);
+     if (dom == NULL)
+         return NULL;
+
+diff --git a/src/xen/xend_internal.c b/src/xen/xend_internal.c
+index b2f8915..81a608f 100644
+--- a/src/xen/xend_internal.c
++++ b/src/xen/xend_internal.c
+@@ -3997,7 +3997,7 @@ xenDaemonLookupByUUID(virConnectPtr conn, const unsigned char *uuid)
+  */
+ static virDomainPtr
+ xenDaemonCreateXML(virConnectPtr conn, const char *xmlDesc,
+-                     unsigned int flags ATTRIBUTE_UNUSED)
++                     unsigned int flags)
+ {
+     int ret;
+     char *sexpr;
+@@ -4005,6 +4005,8 @@ xenDaemonCreateXML(virConnectPtr conn, const char *xmlDesc,
+     xenUnifiedPrivatePtr priv;
+     virDomainDefPtr def;
+
++    virCheckFlags(0, NULL);
++
+     priv = (xenUnifiedPrivatePtr) conn->privateData;
+
+     if (!(def = virDomainDefParseString(priv->caps,
+diff --git a/src/xenapi/xenapi_driver.c b/src/xenapi/xenapi_driver.c
+index 7ef03cb..e3bcb63 100644
+--- a/src/xenapi/xenapi_driver.c
++++ b/src/xenapi/xenapi_driver.c
+@@ -479,7 +479,7 @@ xenapiNumOfDomains (virConnectPtr conn)
+ static virDomainPtr
+ xenapiDomainCreateXML (virConnectPtr conn,
+                        const char *xmlDesc,
+-                       unsigned int flags ATTRIBUTE_UNUSED)
++                       unsigned int flags)
+ {
+     xen_vm_record *record = NULL;
+     xen_vm vm = NULL;
+@@ -489,6 +489,8 @@ xenapiDomainCreateXML (virConnectPtr conn,
+     if (!caps)
+         return NULL;
+
++    virCheckFlags(0, NULL);
++
+     virDomainDefPtr defPtr = virDomainDefParseString(caps, xmlDesc, flags);
+     createVMRecordFromXml(conn, defPtr, &record, &vm);
+     virDomainDefFree(defPtr);
+-- 
+1.7.0.1
+

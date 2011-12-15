@@ -1,0 +1,25 @@
+Bugzilla: 572867
+Upstream status: submitted
+
+Signed-off-by: Alex Williamson <alex.williamson@redhat.com>
+---
+
+ src/qemu/qemu_driver.c |    4 ++++
+ 1 files changed, 4 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 87fa6d2..5db1527 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8932,6 +8932,10 @@ static int qemudDomainDetachHostPciDevice(struct qemud_driver *driver,
+         pciFreeDevice(pci);
+     }
+ 
++    if (qemuDomainPCIAddressReleaseAddr(priv->pciaddrs, &detach->info) < 0) {
++        VIR_WARN0("Unable to release PCI address on controller");
++    }
++
+     if (vm->def->nhostdevs > 1) {
+         memmove(vm->def->hostdevs + i,
+                 vm->def->hostdevs + i + 1,
+

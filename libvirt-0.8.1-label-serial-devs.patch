@@ -1,0 +1,445 @@
+When configuring serial, parallel, console or channel devices
+with a file, dev or pipe backend type, it is necessary to label
+the file path in the security drivers. For char devices of type
+file, it is neccessary to pre-create (touch) the file if it does
+not already exist since QEMU won't be allowed todo so itself.
+dev/pipe configs already require the admin to pre-create before
+starting the guest.
+
+* src/qemu/qemu_security_dac.c: set file ownership for character
+  devices
+* src/security/security_selinux.c: Set file labeling for character
+  devices
+* src/qemu/qemu_driver.c: Add character devices to cgroup ACL
+---
+ src/qemu/qemu_driver.c          |   63 ++++++++++++++++++++-
+ src/qemu/qemu_security_dac.c    |  117 ++++++++++++++++++++++++++++++++++++++
+ src/security/security_selinux.c |  119 +++++++++++++++++++++++++++++++++++++++
+ src/util/cgroup.c               |    2 +-
+ 4 files changed, 298 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 06b9ba4..8ab56f5 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3362,6 +3362,28 @@ qemuPrepareHostDevices(struct qemud_driver *driver,
+ }
+ 
+ 
++static int
++qemuPrepareChardevDevice(virDomainDefPtr def ATTRIBUTE_UNUSED,
++                         virDomainChrDefPtr dev,
++                         void *opaque ATTRIBUTE_UNUSED)
++{
++    int fd;
++    if (dev->type != VIR_DOMAIN_CHR_TYPE_FILE)
++        return 0;
++
++    if ((fd = open(dev->data.file.path, O_CREAT | O_APPEND, S_IRUSR|S_IWUSR)) < 0) {
++        virReportSystemError(errno,
++                             _("Unable to pre-create chardev file '%s'"),
++                             dev->data.file.path);
++        return -1;
++    }
++
++    close(fd);
++
++    return 0;
++}
++
++
+ static void
+ qemudReattachManagedDevice(pciDevice *dev)
+ {
+@@ -3447,7 +3469,7 @@ static int qemuSetupDiskCgroup(virCgroupPtr cgroup,
+         virStorageFileMetadata meta;
+         int rc;
+ 
+-        VIR_DEBUG("Process path %s for disk", path);
++        VIR_DEBUG("Process path '%s' for disk", path);
+         rc = virCgroupAllowDevicePath(cgroup, path);
+         if (rc != 0) {
+             /* Get this for non-block devices */
+@@ -3499,7 +3521,7 @@ static int qemuTeardownDiskCgroup(virCgroupPtr cgroup,
+         virStorageFileMetadata meta;
+         int rc;
+ 
+-        VIR_DEBUG("Process path %s for disk", path);
++        VIR_DEBUG("Process path '%s' for disk", path);
+         rc = virCgroupDenyDevicePath(cgroup, path);
+         if (rc != 0) {
+             /* Get this for non-block devices */
+@@ -3540,6 +3562,30 @@ cleanup:
+ }
+ 
+ 
++static int qemuSetupChardevCgroup(virDomainDefPtr def,
++                                  virDomainChrDefPtr dev,
++                                  void *opaque)
++{
++    virCgroupPtr cgroup = opaque;
++    int rc;
++
++    if (dev->type != VIR_DOMAIN_CHR_TYPE_DEV)
++        return 0;
++
++
++    VIR_DEBUG("Process path '%s' for disk", dev->data.file.path);
++    rc = virCgroupAllowDevicePath(cgroup, dev->data.file.path);
++    if (rc != 0) {
++        virReportSystemError(-rc,
++                             _("Unable to allow device %s for %s"),
++                             dev->data.file.path, def->name);
++        return -1;
++    }
++
++    return 0;
++}
++
++
+ static int qemuSetupCgroup(struct qemud_driver *driver,
+                            virDomainObjPtr vm)
+ {
+@@ -3607,6 +3653,12 @@ static int qemuSetupCgroup(struct qemud_driver *driver,
+                 goto cleanup;
+             }
+         }
++
++        if (virDomainChrDefForeach(vm->def,
++                                   true,
++                                   qemuSetupChardevCgroup,
++                                   cgroup) < 0)
++            goto cleanup;
+     }
+ 
+ done:
+@@ -3779,6 +3831,13 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     if (qemuPrepareHostDevices(driver, vm->def) < 0)
+         goto cleanup;
+ 
++    DEBUG0("Preparing chr devices");
++    if (virDomainChrDefForeach(vm->def,
++                               true,
++                               qemuPrepareChardevDevice,
++                               NULL) < 0)
++        goto cleanup;
++
+     /* If you are using a SecurityDriver with dynamic labelling,
+        then generate a security label for isolation */
+     DEBUG0("Generating domain security label (if required)");
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index a816441..3e4abe1 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -330,6 +330,100 @@ done:
+ 
+ 
+ static int
++qemuSecurityDACSetChardevLabel(virDomainObjPtr vm,
++                               virDomainChrDefPtr dev)
++
++{
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++    char *in = NULL, *out = NULL;
++    int ret = -1;
++
++    if (secdef->type == VIR_DOMAIN_SECLABEL_STATIC)
++        return 0;
++
++    switch (dev->type) {
++    case VIR_DOMAIN_CHR_TYPE_DEV:
++    case VIR_DOMAIN_CHR_TYPE_FILE:
++        ret = qemuSecurityDACSetOwnership(dev->data.file.path, driver->user, driver->group);
++        break;
++
++    case VIR_DOMAIN_CHR_TYPE_PIPE:
++        if ((virAsprintf(&in, "%s.in", dev->data.file.path) < 0) ||
++            (virAsprintf(&out, "%s.out", dev->data.file.path) < 0)) {
++            virReportOOMError();
++            goto done;
++        }
++        if ((qemuSecurityDACSetOwnership(in, driver->user, driver->group) < 0) ||
++            (qemuSecurityDACSetOwnership(out, driver->user, driver->group) < 0))
++            goto done;
++        ret = 0;
++        break;
++
++    default:
++        ret = 0;
++        break;
++    }
++
++done:
++    VIR_FREE(in);
++    VIR_FREE(out);
++    return ret;
++}
++
++static int
++qemuSecurityDACRestoreChardevLabel(virDomainObjPtr vm,
++                                   virDomainChrDefPtr dev)
++
++{
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++    char *in = NULL, *out = NULL;
++    int ret = -1;
++
++    if (secdef->type == VIR_DOMAIN_SECLABEL_STATIC)
++        return 0;
++
++    switch (dev->type) {
++    case VIR_DOMAIN_CHR_TYPE_DEV:
++    case VIR_DOMAIN_CHR_TYPE_FILE:
++        ret = qemuSecurityDACRestoreSecurityFileLabel(dev->data.file.path);
++        break;
++
++    case VIR_DOMAIN_CHR_TYPE_PIPE:
++        if ((virAsprintf(&out, "%s.out", dev->data.file.path) < 0) ||
++            (virAsprintf(&in, "%s.in", dev->data.file.path) < 0)) {
++            virReportOOMError();
++            goto done;
++        }
++        if ((qemuSecurityDACRestoreSecurityFileLabel(out) < 0) ||
++            (qemuSecurityDACRestoreSecurityFileLabel(in) < 0))
++            goto done;
++        ret = 0;
++        break;
++
++    default:
++        ret = 0;
++        break;
++    }
++
++done:
++    VIR_FREE(in);
++    VIR_FREE(out);
++    return ret;
++}
++
++
++static int
++qemuSecurityDACRestoreChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
++                                      virDomainChrDefPtr dev,
++                                      void *opaque)
++{
++    virDomainObjPtr vm = opaque;
++
++    return qemuSecurityDACRestoreChardevLabel(vm, dev);
++}
++
++
++static int
+ qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm,
+                                        int migrated)
+ {
+@@ -354,6 +448,12 @@ qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm,
+             rc = -1;
+     }
+ 
++    if (virDomainChrDefForeach(vm->def,
++                               false,
++                               qemuSecurityDACRestoreChardevCallback,
++                               vm) < 0)
++        rc = -1;
++
+     if (vm->def->os.kernel &&
+         qemuSecurityDACRestoreSecurityFileLabel(vm->def->os.kernel) < 0)
+         rc = -1;
+@@ -367,6 +467,17 @@ qemuSecurityDACRestoreSecurityAllLabel(virDomainObjPtr vm,
+ 
+ 
+ static int
++qemuSecurityDACSetChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
++                                      virDomainChrDefPtr dev,
++                                      void *opaque)
++{
++    virDomainObjPtr vm = opaque;
++
++    return qemuSecurityDACSetChardevLabel(vm, dev);
++}
++
++
++static int
+ qemuSecurityDACSetSecurityAllLabel(virDomainObjPtr vm)
+ {
+     int i;
+@@ -386,6 +497,12 @@ qemuSecurityDACSetSecurityAllLabel(virDomainObjPtr vm)
+             return -1;
+     }
+ 
++    if (virDomainChrDefForeach(vm->def,
++                               true,
++                               qemuSecurityDACSetChardevCallback,
++                               vm) < 0)
++        return -1;
++
+     if (vm->def->os.kernel &&
+         qemuSecurityDACSetOwnership(vm->def->os.kernel,
+                                     driver->user,
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index 348cc4b..7f044db 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -630,6 +630,101 @@ done:
+     return ret;
+ }
+ 
++
++static int
++SELinuxSetSecurityChardevLabel(virDomainObjPtr vm,
++                               virDomainChrDefPtr dev)
++
++{
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++    char *in = NULL, *out = NULL;
++    int ret = -1;
++
++    if (secdef->type == VIR_DOMAIN_SECLABEL_STATIC)
++        return 0;
++
++    switch (dev->type) {
++    case VIR_DOMAIN_CHR_TYPE_DEV:
++    case VIR_DOMAIN_CHR_TYPE_FILE:
++        ret = SELinuxSetFilecon(dev->data.file.path, secdef->imagelabel);
++        break;
++
++    case VIR_DOMAIN_CHR_TYPE_PIPE:
++        if ((virAsprintf(&in, "%s.in", dev->data.file.path) < 0) ||
++            (virAsprintf(&out, "%s.out", dev->data.file.path) < 0)) {
++            virReportOOMError();
++            goto done;
++        }
++        if ((SELinuxSetFilecon(in, secdef->imagelabel) < 0) ||
++            (SELinuxSetFilecon(out, secdef->imagelabel) < 0))
++            goto done;
++        ret = 0;
++        break;
++
++    default:
++        ret = 0;
++        break;
++    }
++
++done:
++    VIR_FREE(in);
++    VIR_FREE(out);
++    return ret;
++}
++
++static int
++SELinuxRestoreSecurityChardevLabel(virDomainObjPtr vm,
++                                   virDomainChrDefPtr dev)
++
++{
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++    char *in = NULL, *out = NULL;
++    int ret = -1;
++
++    if (secdef->type == VIR_DOMAIN_SECLABEL_STATIC)
++        return 0;
++
++    switch (dev->type) {
++    case VIR_DOMAIN_CHR_TYPE_DEV:
++    case VIR_DOMAIN_CHR_TYPE_FILE:
++        ret = SELinuxSetFilecon(dev->data.file.path, secdef->imagelabel);
++        break;
++
++    case VIR_DOMAIN_CHR_TYPE_PIPE:
++        if ((virAsprintf(&out, "%s.out", dev->data.file.path) < 0) ||
++            (virAsprintf(&in, "%s.in", dev->data.file.path) < 0)) {
++            virReportOOMError();
++            goto done;
++        }
++        if ((SELinuxRestoreSecurityFileLabel(out) < 0) ||
++            (SELinuxRestoreSecurityFileLabel(in) < 0))
++            goto done;
++        ret = 0;
++        break;
++
++    default:
++        ret = 0;
++        break;
++    }
++
++done:
++    VIR_FREE(in);
++    VIR_FREE(out);
++    return ret;
++}
++
++
++static int
++SELinuxRestoreSecurityChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
++                                      virDomainChrDefPtr dev,
++                                      void *opaque)
++{
++    virDomainObjPtr vm = opaque;
++
++    return SELinuxRestoreSecurityChardevLabel(vm, dev);
++}
++
++
+ static int
+ SELinuxRestoreSecurityAllLabel(virDomainObjPtr vm,
+                                int migrated ATTRIBUTE_UNUSED)
+@@ -654,6 +749,12 @@ SELinuxRestoreSecurityAllLabel(virDomainObjPtr vm,
+             rc = -1;
+     }
+ 
++    if (virDomainChrDefForeach(vm->def,
++                               false,
++                               SELinuxRestoreSecurityChardevCallback,
++                               vm) < 0)
++        rc = -1;
++
+     if (vm->def->os.kernel &&
+         SELinuxRestoreSecurityFileLabel(vm->def->os.kernel) < 0)
+         rc = -1;
+@@ -860,6 +961,18 @@ SELinuxClearSecuritySocketLabel(virSecurityDriverPtr drv,
+     return 0;
+ }
+ 
++
++static int
++SELinuxSetSecurityChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
++                                  virDomainChrDefPtr dev,
++                                  void *opaque)
++{
++    virDomainObjPtr vm = opaque;
++
++    return SELinuxSetSecurityChardevLabel(vm, dev);
++}
++
++
+ static int
+ SELinuxSetSecurityAllLabel(virDomainObjPtr vm)
+ {
+@@ -884,6 +997,12 @@ SELinuxSetSecurityAllLabel(virDomainObjPtr vm)
+             return -1;
+     }
+ 
++    if (virDomainChrDefForeach(vm->def,
++                               true,
++                               SELinuxSetSecurityChardevCallback,
++                               vm) < 0)
++        return -1;
++
+     if (vm->def->os.kernel &&
+         SELinuxSetFilecon(vm->def->os.kernel, default_content_context) < 0)
+         return -1;
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index b649c3c..d50787e 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -272,7 +272,7 @@ static int virCgroupSetValueStr(virCgroupPtr group,
+     if (rc != 0)
+         return rc;
+ 
+-    VIR_DEBUG("Set value %s", keypath);
++    VIR_DEBUG("Set value '%s' to '%s'", keypath, value);
+     rc = virFileWriteStr(keypath, value);
+     if (rc < 0) {
+         DEBUG("Failed to write value '%s': %m", value);
+-- 
+1.6.6.1
+

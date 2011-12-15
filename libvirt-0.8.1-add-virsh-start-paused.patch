@@ -1,0 +1,64 @@
+* tools/virsh.c (opts_create): Add --paused option.
+(cmdCreate): Pass appropriate flag.
+* tools/virsh.pod: Document it.
+(cherry picked from commit 734bbf0ea9a007016214c23867adecf4cd35e8e6)
+---
+ tools/virsh.c   |    7 ++++++-
+ tools/virsh.pod |    6 ++++--
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index e9d0519..cd13822 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -1143,6 +1143,7 @@ static const vshCmdOptDef opts_create[] = {
+ #ifndef WIN32
+     {"console", VSH_OT_BOOL, 0, N_("attach to console after creation")},
+ #endif
++    {"paused", VSH_OT_BOOL, 0, N_("leave the guest paused after creation")},
+     {NULL, 0, 0, NULL}
+ };
+
+@@ -1157,6 +1158,7 @@ cmdCreate(vshControl *ctl, const vshCmd *cmd)
+ #ifndef WIN32
+     int console = vshCommandOptBool(cmd, "console");
+ #endif
++    unsigned int flags = VIR_DOMAIN_NONE;
+
+     if (!vshConnectionUsability(ctl, ctl->conn, TRUE))
+         return FALSE;
+@@ -1168,7 +1170,10 @@ cmdCreate(vshControl *ctl, const vshCmd *cmd)
+     if (virFileReadAll(from, VIRSH_MAX_XML_FILE, &buffer) < 0)
+         return FALSE;
+
+-    dom = virDomainCreateXML(ctl->conn, buffer, 0);
++    if (vshCommandOptBool(cmd, "paused"))
++        flags |= VIR_DOMAIN_START_PAUSED;
++
++    dom = virDomainCreateXML(ctl->conn, buffer, flags);
+     VIR_FREE(buffer);
+
+     if (dom != NULL) {
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index cf7585d..2c4bae9 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -260,11 +260,13 @@ The option I<--disable> disables autostarting.
+
+ Connect the virtual serial console for the guest.
+
+-=item B<create> I<FILE>
++=item B<create> I<FILE> optional I<--console> I<--paused>
+
+ Create a domain from an XML <file>. An easy way to create the XML
+ <file> is to use the B<dumpxml> command to obtain the definition of a
+-pre-existing guest.
++pre-existing guest.  The domain will be paused if the I<--paused> option
++is used and supported by the driver; otherwise it will be running.
++If I<--console> is requested, attach to the console after creation.
+
+ B<Example>
+
+-- 
+1.7.0.1
+

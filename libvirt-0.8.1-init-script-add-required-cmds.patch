@@ -1,0 +1,41 @@
+https://bugzilla.redhat.com/show_bug.cgi?id=617300
+
+Optional per LSB, but required by Fedora:
+https://fedoraproject.org/wiki/Packaging/SysVInitScript
+
+* daemon/libvirt-guests.init.in (main): Add more required
+commands.
+(cherry picked from commit 6e3bb4880dd7e92fed695665e11b8e7ea0f2402d)
+---
+ daemon/libvirt-guests.init.in |    8 ++++++--
+ 1 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/daemon/libvirt-guests.init.in b/daemon/libvirt-guests.init.in
+index 9ebf184..a78b12c 100644
+--- a/daemon/libvirt-guests.init.in
++++ b/daemon/libvirt-guests.init.in
+@@ -296,7 +296,7 @@ rh_status() {
+ # usage [val]
+ # Display usage string, then exit with VAL (defaults to 2).
+ usage() {
+-    echo $"Usage: $0 {start|stop|status|restart|force-reload|gueststatus|shutdown}"
++    echo $"Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload|force-reload|gueststatus|shutdown}"
+     exit ${1-2}
+ }
+
+@@ -314,7 +314,11 @@ case "$1" in
+     restart)
+         stop && start
+         ;;
+-    force-reload)
++    condrestart|try-restart)
++        [ -f "$VAR_SUBSYS_LIBVIRT_GUESTS" ] && stop && start
++        ;;
++    reload|force-reload)
++        # Nothing to do; we reread configuration on each invocation
+         ;;
+     status)
+         rh_status
+-- 
+1.7.2
+

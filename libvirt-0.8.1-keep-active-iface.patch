@@ -1,0 +1,23 @@
+commit 362bc09a4d9441f9abd14956546777f86d8b9d79
+Author: Jiri Denemark <jdenemar@redhat.com>
+Date:   Tue May 4 15:16:29 2010 +0200
+
+    Don't wipe generated iface target in active domains
+    
+    Wipe generated interface target only when reading configuration of
+    inactive domains.
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 546ddf2..3e45f79 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1889,7 +1889,8 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                        xmlStrEqual(cur->name, BAD_CAST "target")) {
+                 ifname = virXMLPropString(cur, "dev");
+                 if ((ifname != NULL) &&
+-                    ((STRPREFIX((const char*)ifname, "vnet")) ||
++                    (((flags & VIR_DOMAIN_XML_INACTIVE) &&
++                      (STRPREFIX((const char*)ifname, "vnet"))) ||
+                      (!isValidIfname(ifname)))) {
+                     /* An auto-generated target name, blank it out */
+                     /* blank out invalid interface names */

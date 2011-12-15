@@ -1,0 +1,71 @@
+From dc151eabb17794326e8ed8e31836f2f8305d4a73 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 5 Mar 2010 20:22:45 +0000
+Subject: [PATCH 08/16] Support automatic port number allocation for SPICE
+
+* src/qemu/qemu_driver.c: Allocate the TCP ports for SPICE
+  before starting guest
+---
+ src/qemu/qemu_driver.c |   36 ++++++++++++++++++++++++------------
+ 1 files changed, 24 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index df1d435..2aa39c1 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -2594,10 +2594,10 @@ qemuInitPCIAddresses(struct qemud_driver *driver,
+     return ret;
+ }
+ 
+-static int qemudNextFreeVNCPort(struct qemud_driver *driver ATTRIBUTE_UNUSED) {
++static int qemudNextFreePort(int startPort) {
+     int i;
+ 
+-    for (i = 5900 ; i < 65535 ; i++) {
++    for (i = startPort ; i < 65535 ; i++) {
+         int fd;
+         int reuse = 1;
+         struct sockaddr_in addr;
+@@ -3200,17 +3200,29 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     DEBUG0("Ensuring no historical cgroup is lying around");
+     qemuRemoveCgroup(driver, vm, 1);
+ 
+-    if ((vm->def->ngraphics == 1) &&
+-        vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
+-        vm->def->graphics[0]->data.vnc.autoport) {
+-        DEBUG0("Determining VNC port");
+-        int port = qemudNextFreeVNCPort(driver);
+-        if (port < 0) {
+-            qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                            "%s", _("Unable to find an unused VNC port"));
+-            goto cleanup;
++    if (vm->def->ngraphics == 1) {
++        if (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
++            vm->def->graphics[0]->data.vnc.autoport) {
++            int port = qemudNextFreePort(5900);
++            if (port < 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                "%s", _("Unable to find an unused VNC port"));
++                goto cleanup;
++            }
++            vm->def->graphics[0]->data.vnc.port = port;
++        } else if (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE &&
++                   vm->def->graphics[0]->data.spice.autoport) {
++            int port = qemudNextFreePort(5900);
++            int tlsPort = port == -1 ? -1 : qemudNextFreePort(port + 1);
++            if (port < 0 || tlsPort < 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                "%s", _("Unable to find an unused SPICE ports"));
++                goto cleanup;
++            }
++
++            vm->def->graphics[0]->data.spice.port = port;
++            vm->def->graphics[0]->data.spice.tlsPort = tlsPort;
+         }
+-        vm->def->graphics[0]->data.vnc.port = port;
+     }
+ 
+     if (virFileMakePath(driver->logDir) != 0) {
+-- 
+1.6.6.1
+

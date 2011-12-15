@@ -1,0 +1,298 @@
+The virDomainGetBlockInfo API allows query physical block
+extent and allocated block extent. These are normally the
+same value unless storing a special format like qcow2
+inside a block device. In this scenario we can query QEMU
+to get the actual allocated extent.
+
+For
+
+     https://bugzilla.redhat.com/show_bug.cgi?id=526289
+
+* src/qemu/qemu_driver.c: Fill in block aloction extent when VM
+  is running
+* src/qemu/qemu_monitor.c, src/qemu/qemu_monitor.h,
+  src/qemu/qemu_monitor_json.c, src/qemu/qemu_monitor_json.h,
+  src/qemu/qemu_monitor_text.c, src/qemu/qemu_monitor_text.h: Add
+  API to query the highest block extent via info blockstats
+---
+ src/qemu/qemu_driver.c       |   32 +++++++++++---
+ src/qemu/qemu_monitor.c      |   16 +++++++
+ src/qemu/qemu_monitor.h      |    4 ++
+ src/qemu/qemu_monitor_json.c |   97 ++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor_json.h |    3 +
+ src/qemu/qemu_monitor_text.c |   12 +++++
+ src/qemu/qemu_monitor_text.h |    4 +-
+ 7 files changed, 160 insertions(+), 8 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 5089129..4251a66 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -9651,6 +9651,7 @@ static int qemuDomainGetBlockInfo(virDomainPtr dom,
+     int fd = -1;
+     off_t end;
+     virStorageFileMetadata meta;
++    virDomainDiskDefPtr disk = NULL;
+     struct stat sb;
+     int i;
+ 
+@@ -9677,19 +9678,17 @@ static int qemuDomainGetBlockInfo(virDomainPtr dom,
+     for (i = 0 ; i < vm->def->ndisks ; i++) {
+         if (vm->def->disks[i]->src != NULL &&
+             STREQ (vm->def->disks[i]->src, path)) {
+-            ret = 0;
++            disk = vm->def->disks[i];
+             break;
+         }
+     }
+ 
+-    if (ret != 0) {
++    if (!disk) {
+         qemuReportError(VIR_ERR_INVALID_ARG,
+                         _("invalid path %s not assigned to domain"), path);
+         goto cleanup;
+     }
+ 
+-    ret = -1;
+-
+     /* The path is correct, now try to open it and get its size. */
+     fd = open (path, O_RDONLY);
+     if (fd == -1) {
+@@ -9740,11 +9739,30 @@ static int qemuDomainGetBlockInfo(virDomainPtr dom,
+     if (meta.capacity)
+         info->capacity = meta.capacity;
+ 
+-    /* XXX allocation will need to be pulled from QEMU for
+-     * the qcow inside LVM case */
++    /* Set default value .. */
+     info->allocation = info->physical;
+ 
+-    ret = 0;
++    /* ..but if guest is running & not using raw
++       disk format and on a block device, then query
++       highest allocated extent from QEMU */
++    if (virDomainObjIsActive(vm) &&
++        meta.format != VIR_STORAGE_FILE_RAW &&
++        S_ISBLK(sb.st_mode)) {
++        qemuDomainObjPrivatePtr priv = vm->privateData;
++        if (qemuDomainObjBeginJob(vm) < 0)
++            goto cleanup;
++
++        qemuDomainObjEnterMonitor(vm);
++        ret = qemuMonitorGetBlockExtent(priv->mon,
++                                        disk->info.alias,
++                                        &info->allocation);
++        qemuDomainObjExitMonitor(vm);
++
++        if (qemuDomainObjEndJob(vm) == 0)
++            vm = NULL;
++    } else {
++        ret = 0;
++    }
+ 
+ cleanup:
+     if (fd != -1)
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index f77ec44..4a77f39 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1000,6 +1000,22 @@ int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++int qemuMonitorGetBlockExtent(qemuMonitorPtr mon,
++                              const char *devname,
++                              unsigned long long *extent)
++{
++    int ret;
++    DEBUG("mon=%p, fd=%d, devname=%p",
++          mon, mon->fd, devname);
++
++    if (mon->json)
++        ret = qemuMonitorJSONGetBlockExtent(mon, devname, extent);
++    else
++        ret = qemuMonitorTextGetBlockExtent(mon, devname, extent);
++
++    return ret;
++}
++
+ 
+ int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
+                               const char *password)
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 7b1589e..adfb3bc 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -185,6 +185,10 @@ int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
+                                  long long *wr_bytes,
+                                  long long *errs);
+ 
++int qemuMonitorGetBlockExtent(qemuMonitorPtr mon,
++                              const char *devname,
++                              unsigned long long *extent);
++
+ 
+ int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
+                               const char *password);
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 6d8f328..a15609c 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1186,6 +1186,103 @@ cleanup:
+ }
+ 
+ 
++int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
++                                  const char *devname,
++                                  unsigned long long *extent)
++{
++    int ret;
++    int i;
++    int found = 0;
++    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("query-blockstats",
++                                                     NULL);
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr devices;
++
++    *extent = 0;
++
++    if (!cmd)
++        return -1;
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0) {
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++        if (ret < 0)
++            goto cleanup;
++    }
++    ret = -1;
++
++    devices = virJSONValueObjectGet(reply, "return");
++    if (!devices || devices->type != VIR_JSON_TYPE_ARRAY) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("blockstats reply was missing device list"));
++        goto cleanup;
++    }
++
++    for (i = 0 ; i < virJSONValueArraySize(devices) ; i++) {
++        virJSONValuePtr dev = virJSONValueArrayGet(devices, i);
++        virJSONValuePtr stats;
++        virJSONValuePtr parent;
++        const char *thisdev;
++        if (!dev || dev->type != VIR_JSON_TYPE_OBJECT) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("blockstats device entry was not in expected format"));
++            goto cleanup;
++        }
++
++        if ((thisdev = virJSONValueObjectGetString(dev, "device")) == NULL) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("blockstats device entry was not in expected format"));
++            goto cleanup;
++        }
++
++        /* New QEMU has separate names for host & guest side of the disk
++         * and libvirt gives the host side a 'drive-' prefix. The passed
++         * in devname is the guest side though
++         */
++        if (STRPREFIX(thisdev, QEMU_DRIVE_HOST_PREFIX))
++            thisdev += strlen(QEMU_DRIVE_HOST_PREFIX);
++
++        if (STRNEQ(thisdev, devname))
++            continue;
++
++        found = 1;
++        if ((parent = virJSONValueObjectGet(dev, "parent")) == NULL ||
++            parent->type != VIR_JSON_TYPE_OBJECT) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("blockstats parent entry was not in expected format"));
++            goto cleanup;
++        }
++
++        if ((stats = virJSONValueObjectGet(parent, "stats")) == NULL ||
++            stats->type != VIR_JSON_TYPE_OBJECT) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("blockstats stats entry was not in expected format"));
++            goto cleanup;
++        }
++
++        if (virJSONValueObjectGetNumberUlong(stats, "wr_highest_offset", extent) < 0) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                            _("cannot read %s statistic"),
++                            "wr_highest_offset");
++            goto cleanup;
++        }
++    }
++
++    if (!found) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("cannot find statistics for device '%s'"), devname);
++        goto cleanup;
++    }
++    ret = 0;
++
++cleanup:
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
+ int qemuMonitorJSONSetVNCPassword(qemuMonitorPtr mon,
+                                   const char *password)
+ {
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 26fc865..14597f4 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -56,6 +56,9 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+                                      long long *wr_req,
+                                      long long *wr_bytes,
+                                      long long *errs);
++int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
++                                  const char *devname,
++                                  unsigned long long *extent);
+ 
+ 
+ int qemuMonitorJSONSetVNCPassword(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index d725d6d..19038d1 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -711,6 +711,18 @@ int qemuMonitorTextGetBlockStatsInfo(qemuMonitorPtr mon,
+ }
+ 
+ 
++int qemuMonitorTextGetBlockExtent(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
++                                  const char *devname ATTRIBUTE_UNUSED,
++                                  unsigned long long *extent)
++{
++    /* Not supported in text monitor, but we don't want to
++     * cause an error in callers in this scenario, just
++     * fallback to marking the data unavailable */
++    *extent = 0;
++    return 0;
++}
++
++
+ static int
+ qemuMonitorSendVNCPassphrase(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                              qemuMonitorMessagePtr msg,
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 2a62c7e..6fb7d7a 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -55,7 +55,9 @@ int qemuMonitorTextGetBlockStatsInfo(qemuMonitorPtr mon,
+                                      long long *wr_req,
+                                      long long *wr_bytes,
+                                      long long *errs);
+-
++int qemuMonitorTextGetBlockExtent(qemuMonitorPtr mon,
++                                  const char *devname,
++                                  unsigned long long *extent);
+ 
+ int qemuMonitorTextSetVNCPassword(qemuMonitorPtr mon,
+                                   const char *password);
+-- 
+1.6.6.1

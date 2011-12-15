@@ -1,0 +1,1681 @@
+From a5946e72e90cf206642c049480f9e028d7e075f9 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <dan@berrange.com>
+Date: Thu, 15 Jul 2010 14:02:42 +0100
+Subject: [PATCH 2/3] Explicitly represent balloon device in XML and handle PCI address
+
+To allow compatibility with older QEMU PCI device slot assignment
+it is necessary to explicitly track the balloon device in the
+XML. This introduces a new device
+
+   <memballoon model='virtio|xen'/>
+
+It can also have a PCI address, auto-assigned if necessary.
+
+The memballoon will be automatically added to all Xen and QEMU
+guests by default.
+
+* docs/schemas/domain.rng: Add <memballoon> element
+* src/conf/domain_conf.c, src/conf/domain_conf.h: parsing
+  and formatting for memballoon device. Always add a memory
+  balloon device to Xen/QEMU if none exists in XML
+* src/libvirt_private.syms: Export memballoon model APIs
+* src/qemu/qemu_conf.c, src/qemu/qemu_conf.h: Honour the
+  PCI device address in memory balloon device
+* tests/*: Update to test new functionality
+---
+ docs/schemas/domain.rng                            |   16 +++
+ src/conf/domain_conf.c                             |  118 ++++++++++++++++++++
+ src/conf/domain_conf.h                             |   19 +++
+ src/libvirt_private.syms                           |    2 +
+ src/qemu/qemu_conf.c                               |   74 +++++++++++--
+ src/qemu/qemu_conf.h                               |    2 +
+ src/qemu/qemu_driver.c                             |   37 ++++++-
+ tests/define-dev-segfault                          |    1 +
+ .../qemuxml2argv-balloon-device.args               |    1 +
+ .../qemuxml2argv-balloon-device.xml                |   25 ++++
+ tests/qemuxml2argvdata/qemuxml2argv-boot-cdrom.xml |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-boot-floppy.xml  |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-boot-network.xml |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-bootloader.xml |    1 +
+ .../qemuxml2argv-channel-guestfwd.xml              |    1 +
+ .../qemuxml2argv-channel-virtio-auto.xml           |    1 +
+ .../qemuxml2argv-channel-virtio.xml                |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-clock-france.xml |    1 +
+ .../qemuxml2argv-clock-localtime.xml               |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-clock-utc.xml  |    1 +
+ .../qemuxml2argv-clock-variable.xml                |    1 +
+ .../qemuxml2argv-console-compat-chardev.xml        |    1 +
+ .../qemuxml2argv-console-compat.xml                |    1 +
+ .../qemuxml2argv-disk-cdrom-empty.xml              |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom.xml |    1 +
+ .../qemuxml2argv-disk-drive-boot-cdrom.xml         |    1 +
+ .../qemuxml2argv-disk-drive-boot-disk.xml          |    1 +
+ .../qemuxml2argv-disk-drive-cache-v1-none.xml      |    1 +
+ .../qemuxml2argv-disk-drive-cache-v1-wb.xml        |    1 +
+ .../qemuxml2argv-disk-drive-cache-v1-wt.xml        |    1 +
+ .../qemuxml2argv-disk-drive-cache-v2-none.xml      |    1 +
+ .../qemuxml2argv-disk-drive-cache-v2-wb.xml        |    1 +
+ .../qemuxml2argv-disk-drive-cache-v2-wt.xml        |    1 +
+ ...muxml2argv-disk-drive-error-policy-enospace.xml |    1 +
+ .../qemuxml2argv-disk-drive-error-policy-stop.xml  |    1 +
+ .../qemuxml2argv-disk-drive-fat.xml                |    1 +
+ .../qemuxml2argv-disk-drive-fmt-qcow.xml           |    1 +
+ .../qemuxml2argv-disk-drive-readonly-disk.xml      |    1 +
+ .../qemuxml2argv-disk-drive-shared.xml             |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-disk-floppy.xml  |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-disk-many.xml  |    1 +
+ .../qemuxml2argv-disk-usb-device.xml               |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-disk-usb.xml   |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-disk-virtio.xml  |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-disk-xenvbd.xml  |    1 +
+ .../qemuxml2argv-encrypted-disk.xml                |    1 +
+ .../qemuxml2argv-floppy-drive-fat.xml              |    1 +
+ .../qemuxml2argv-graphics-sdl-fullscreen.xml       |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml |    1 +
+ .../qemuxml2argv-graphics-spice-rhel6.xml          |    1 +
+ .../qemuxml2argv-graphics-vnc-sasl.xml             |    1 +
+ .../qemuxml2argv-graphics-vnc-tls.xml              |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml |    1 +
+ .../qemuxml2argv-hostdev-pci-address-device.xml    |    1 +
+ .../qemuxml2argv-hostdev-pci-address.xml           |    1 +
+ .../qemuxml2argv-hostdev-usb-address-device.xml    |    1 +
+ .../qemuxml2argv-hostdev-usb-address.xml           |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-hugepages.xml  |    1 +
+ .../qemuxml2argv-input-usbmouse.xml                |    1 +
+ .../qemuxml2argv-input-usbtablet.xml               |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-input-xen.xml  |    1 +
+ .../qemuxml2argv-machine-aliases1.xml              |    1 +
+ .../qemuxml2argv-machine-aliases2.xml              |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-migrate.xml    |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-minimal.xml    |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-misc-acpi.xml  |    1 +
+ .../qemuxml2argv-misc-no-reboot.xml                |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-misc-uuid.xml  |    1 +
+ .../qemuxml2argv-net-eth-ifname.xml                |    1 +
+ .../qemuxml2argv-net-eth-names.xml                 |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-net-eth.xml    |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-net-user.xml   |    1 +
+ .../qemuxml2argv-net-virtio-device.xml             |    1 +
+ .../qemuxml2argv-net-virtio-netdev.xml             |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-net-virtio.xml |    1 +
+ .../qemuxml2argv-nographics-vga.xml                |    1 +
+ .../qemuxml2argv-parallel-tcp-chardev.xml          |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-parallel-tcp.xml |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-restore-v1.xml |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-restore-v2.xml |    1 +
+ .../qemuxml2argv-serial-dev-chardev.xml            |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-serial-dev.xml |    1 +
+ .../qemuxml2argv-serial-file-chardev.xml           |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-serial-file.xml  |    1 +
+ .../qemuxml2argv-serial-many-chardev.xml           |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-serial-many.xml  |    1 +
+ .../qemuxml2argv-serial-pty-chardev.xml            |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-serial-pty.xml |    1 +
+ .../qemuxml2argv-serial-tcp-chardev.xml            |    1 +
+ .../qemuxml2argv-serial-tcp-telnet-chardev.xml     |    1 +
+ .../qemuxml2argv-serial-tcp-telnet.xml             |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-serial-tcp.xml |    1 +
+ .../qemuxml2argv-serial-udp-chardev.xml            |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-serial-udp.xml |    1 +
+ .../qemuxml2argv-serial-unix-chardev.xml           |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-serial-unix.xml  |    1 +
+ .../qemuxml2argv-serial-vc-chardev.xml             |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-serial-vc.xml  |    1 +
+ .../qemuxml2argvdata/qemuxml2argv-sound-device.xml |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-sound.xml      |    1 +
+ .../qemuxml2argv-watchdog-device.xml               |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-watchdog.xml   |    1 +
+ tests/qemuxml2argvtest.c                           |    2 +
+ 103 files changed, 378 insertions(+), 11 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-balloon-device.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-balloon-device.xml
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 44f1669..21136a5 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1357,6 +1357,19 @@
+       </optional>
+     </element>
+   </define>
++  <define name="memballoon">
++    <element name="memballoon">
++      <attribute name="model">
++        <choice>
++          <value>virtio</value>
++          <value>xen</value>
++        </choice>
++      </attribute>
++      <optional>
++        <ref name="address"/>
++      </optional>
++    </element>
++  </define>
+   <define name="parallel">
+     <element name="parallel">
+       <ref name="qemucdev"/>
+@@ -1563,6 +1576,9 @@
+         <optional>
+           <ref name="watchdog"/>
+         </optional>
++        <optional>
++          <ref name="memballoon"/>
++        </optional>
+       </interleave>
+     </element>
+   </define>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 4523b38..fa2bae5 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -184,6 +184,10 @@ VIR_ENUM_IMPL(virDomainSoundModel, VIR_DOMAIN_SOUND_MODEL_LAST,
+               "pcspk",
+               "ac97")
+ 
++VIR_ENUM_IMPL(virDomainMemballoonModel, VIR_DOMAIN_MEMBALLOON_MODEL_LAST,
++              "virtio",
++              "xen");
++
+ VIR_ENUM_IMPL(virDomainWatchdogModel, VIR_DOMAIN_WATCHDOG_MODEL_LAST,
+               "i6300esb",
+               "ib700")
+@@ -596,6 +600,16 @@ void virDomainSoundDefFree(virDomainSoundDefPtr def)
+     VIR_FREE(def);
+ }
+ 
++void virDomainMemballoonDefFree(virDomainMemballoonDefPtr def)
++{
++    if (!def)
++        return;
++
++    virDomainDeviceInfoClear(&def->info);
++
++    VIR_FREE(def);
++}
++
+ void virDomainWatchdogDefFree(virDomainWatchdogDefPtr def)
+ {
+     if (!def)
+@@ -1030,6 +1044,9 @@ int virDomainDeviceInfoIterate(virDomainDefPtr def,
+     if (def->watchdog)
+         if (cb(def, &def->watchdog->info, opaque) < 0)
+             return -1;
++    if (def->memballoon)
++        if (cb(def, &def->memballoon->info, opaque) < 0)
++            return -1;
+     if (def->console)
+         if (cb(def, &def->console->info, opaque) < 0)
+             return -1;
+@@ -3343,6 +3360,40 @@ error:
+ }
+ 
+ 
++static virDomainMemballoonDefPtr
++virDomainMemballoonDefParseXML(const xmlNodePtr node,
++                               int flags)
++{
++    char *model;
++    virDomainMemballoonDefPtr def;
++
++    if (VIR_ALLOC(def) < 0) {
++        virReportOOMError();
++        return NULL;
++    }
++
++    model = virXMLPropString(node, "model");
++    if ((def->model = virDomainMemballoonModelTypeFromString(model)) < 0) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                             _("unknown memory balloon model '%s'"), model);
++        goto error;
++    }
++
++    if (virDomainDeviceInfoParseXML(node, &def->info, flags) < 0)
++        goto error;
++
++cleanup:
++    VIR_FREE(model);
++
++    return def;
++
++error:
++    virDomainMemballoonDefFree(def);
++    def = NULL;
++    goto cleanup;
++}
++
++
+ int
+ virDomainVideoDefaultRAM(virDomainDefPtr def,
+                          int type)
+@@ -4764,6 +4815,41 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+         VIR_FREE(nodes);
+     }
+ 
++    /* analysis of the memballoon devices */
++    def->memballoon = NULL;
++    if ((n = virXPathNodeSet("./devices/memballoon", ctxt, &nodes)) < 0) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                             "%s", _("cannot extract memory balloon devices"));
++        goto error;
++    }
++    if (n > 1) {
++        virDomainReportError (VIR_ERR_INTERNAL_ERROR,
++                              "%s", _("only a single memory balloon device is supported"));
++        goto error;
++    }
++    if (n > 0) {
++        virDomainMemballoonDefPtr memballoon =
++            virDomainMemballoonDefParseXML(nodes[0], flags);
++        if (!memballoon)
++            goto error;
++
++        def->memballoon = memballoon;
++        VIR_FREE(nodes);
++    } else {
++        if (def->virtType == VIR_DOMAIN_VIRT_XEN ||
++            def->virtType == VIR_DOMAIN_VIRT_QEMU ||
++            def->virtType == VIR_DOMAIN_VIRT_KQEMU ||
++            def->virtType == VIR_DOMAIN_VIRT_KVM) {
++            virDomainMemballoonDefPtr memballoon;
++            if (VIR_ALLOC(memballoon) < 0)
++                goto no_memory;
++            memballoon->model = def->virtType == VIR_DOMAIN_VIRT_XEN ?
++                VIR_DOMAIN_MEMBALLOON_MODEL_XEN :
++                VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO;
++            def->memballoon = memballoon;
++        }
++    }
++
+     /* analysis of security label */
+     if (virSecurityLabelDefParseXML(def, ctxt, flags) == -1)
+         goto error;
+@@ -5786,6 +5872,35 @@ virDomainSoundDefFormat(virBufferPtr buf,
+ 
+ 
+ static int
++virDomainMemballoonDefFormat(virBufferPtr buf,
++                             virDomainMemballoonDefPtr def,
++                             int flags)
++{
++    const char *model = virDomainMemballoonModelTypeToString(def->model);
++
++    if (!model) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                             _("unexpected memballoon model %d"), def->model);
++        return -1;
++    }
++
++    virBufferVSprintf(buf, "    <memballoon model='%s'",
++                      model);
++
++    if (virDomainDeviceInfoIsSet(&def->info)) {
++        virBufferAddLit(buf, ">\n");
++        if (virDomainDeviceInfoFormat(buf, &def->info, flags) < 0)
++            return -1;
++        virBufferAddLit(buf, "    </memballoon>\n");
++    } else {
++        virBufferAddLit(buf, "/>\n");
++    }
++
++    return 0;
++}
++
++
++static int
+ virDomainWatchdogDefFormat(virBufferPtr buf,
+                            virDomainWatchdogDefPtr def,
+                            int flags)
+@@ -6458,6 +6573,9 @@ char *virDomainDefFormat(virDomainDefPtr def,
+     if (def->watchdog)
+         virDomainWatchdogDefFormat (&buf, def->watchdog, flags);
+ 
++    if (def->memballoon)
++        virDomainMemballoonDefFormat (&buf, def->memballoon, flags);
++
+     virBufferAddLit(&buf, "  </devices>\n");
+ 
+     if (def->seclabel.model) {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index f269ff5..99ae533 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -588,6 +588,22 @@ struct _virDomainHostdevDef {
+     virDomainDeviceInfo info; /* Guest address */
+ };
+ 
++
++enum {
++    VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO,
++    VIR_DOMAIN_MEMBALLOON_MODEL_XEN,
++
++    VIR_DOMAIN_MEMBALLOON_MODEL_LAST
++};
++
++typedef struct _virDomainMemballoonDef virDomainMemballoonDef;
++typedef virDomainMemballoonDef *virDomainMemballoonDefPtr;
++struct _virDomainMemballoonDef {
++    int model;
++    virDomainDeviceInfo info;
++};
++
++
+ /* Flags for the 'type' field in next struct */
+ enum virDomainDeviceType {
+     VIR_DOMAIN_DEVICE_DISK,
+@@ -899,6 +915,7 @@ struct _virDomainDef {
+     virDomainChrDefPtr console;
+     virSecurityLabelDef seclabel;
+     virDomainWatchdogDefPtr watchdog;
++    virDomainMemballoonDefPtr memballoon;
+     virCPUDefPtr cpu;
+ };
+ 
+@@ -959,6 +976,7 @@ void virDomainFSDefFree(virDomainFSDefPtr def);
+ void virDomainNetDefFree(virDomainNetDefPtr def);
+ void virDomainChrDefFree(virDomainChrDefPtr def);
+ void virDomainSoundDefFree(virDomainSoundDefPtr def);
++void virDomainMemballoonDefFree(virDomainMemballoonDefPtr def);
+ void virDomainWatchdogDefFree(virDomainWatchdogDefPtr def);
+ void virDomainVideoDefFree(virDomainVideoDefPtr def);
+ void virDomainHostdevDefFree(virDomainHostdevDefPtr def);
+@@ -1136,6 +1154,7 @@ VIR_ENUM_DECL(virDomainNet)
+ VIR_ENUM_DECL(virDomainChrTarget)
+ VIR_ENUM_DECL(virDomainChr)
+ VIR_ENUM_DECL(virDomainSoundModel)
++VIR_ENUM_DECL(virDomainMemballoonModel)
+ VIR_ENUM_DECL(virDomainWatchdogModel)
+ VIR_ENUM_DECL(virDomainWatchdogAction)
+ VIR_ENUM_DECL(virDomainVideo)
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index a95edf4..0b5059e 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -166,6 +166,8 @@ virDomainSaveStatus;
+ virDomainSoundDefFree;
+ virDomainSoundModelTypeFromString;
+ virDomainSoundModelTypeToString;
++virDomainMemballoonModelTypeFromString;
++virDomainMemballoonModelTypeToString;
+ virDomainWatchdogModelTypeFromString;
+ virDomainWatchdogModelTypeToString;
+ virDomainWatchdogActionTypeFromString;
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 63208cd..30f4f31 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -2079,6 +2079,10 @@ qemuAssignDeviceAliases(virDomainDefPtr def, unsigned long long qemuCmdFlags)
+         if (virAsprintf(&def->watchdog->info.alias, "watchdog%d", 0) < 0)
+             goto no_memory;
+     }
++    if (def->memballoon) {
++        if (virAsprintf(&def->memballoon->info.alias, "balloon%d", 0) < 0)
++            goto no_memory;
++    }
+ 
+     return 0;
+ 
+@@ -2352,8 +2356,17 @@ qemuAssignDevicePCISlots(virDomainDefPtr def, qemuDomainPCIAddressSetPtr addrs)
+     }
+ 
+     /* VirtIO balloon always at slot 3 by default */
+-    if (qemuDomainPCIAddressReserveSlot(addrs, 3) < 0)
+-        goto error;
++    if (def->memballoon &&
++        def->memballoon->model == VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO &&
++        def->memballoon->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE) {
++        def->memballoon->info.type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_PCI;
++        def->memballoon->info.addr.pci.domain = 0;
++        def->memballoon->info.addr.pci.bus = 0;
++        def->memballoon->info.addr.pci.slot = 3;
++        def->memballoon->info.addr.pci.function = 0;
++        if (qemuDomainPCIAddressReserveSlot(addrs, 3) < 0)
++            goto error;
++    }
+ 
+     for (i = 0; i < def->ndisks ; i++) {
+         if (def->disks[i]->info.type != VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE)
+@@ -2969,6 +2982,29 @@ error:
+ 
+ 
+ char *
++qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++
++    virBufferAddLit(&buf, "virtio-balloon-pci");
++    virBufferVSprintf(&buf, ",id=%s", dev->info.alias);
++    if (qemuBuildDeviceAddressStr(&buf, &dev->info) < 0)
++        goto error;
++
++    if (virBufferError(&buf)) {
++        virReportOOMError();
++        goto error;
++    }
++
++    return virBufferContentAndReset(&buf);
++
++error:
++    virBufferFreeAndReset(&buf);
++    return NULL;
++}
++
++
++char *
+ qemuBuildUSBInputDevStr(virDomainInputDefPtr dev)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+@@ -4951,12 +4987,25 @@ int qemudBuildCommandLine(virConnectPtr conn,
+      * NB: Earlier we declared that VirtIO balloon will always be in
+      * slot 0x3 on bus 0x0
+      */
+-    if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+-        ADD_ARG_LIT("-device");
+-        ADD_ARG_LIT("virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3");
+-    } else if (qemuCmdFlags & QEMUD_CMD_FLAG_BALLOON) {
+-        ADD_ARG_LIT("-balloon");
+-        ADD_ARG_LIT("virtio");
++    if (def->memballoon) {
++        if (def->memballoon->model != VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            _("Memory balloon device type '%s' is not supported by this version of qemu"),
++                            virDomainMemballoonModelTypeToString(def->memballoon->model));
++            goto error;
++        }
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
++            char *optstr;
++            ADD_ARG_LIT("-device");
++
++            optstr = qemuBuildMemballoonDevStr(def->memballoon);
++            if (!optstr)
++                goto error;
++            ADD_ARG(optstr);
++        } else if (qemuCmdFlags & QEMUD_CMD_FLAG_BALLOON) {
++            ADD_ARG_LIT("-balloon");
++            ADD_ARG_LIT("virtio");
++        }
+     }
+ 
+     if (current_snapshot && current_snapshot->def->active) {
+@@ -6525,6 +6574,15 @@ virDomainDefPtr qemuParseCommandLine(virCapsPtr caps,
+         def->videos[def->nvideos++] = vid;
+     }
+ 
++    if (!def->memballoon) {
++        virDomainMemballoonDefPtr memballoon;
++        if (VIR_ALLOC(memballoon) < 0)
++            goto no_memory;
++        memballoon->model = VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO;
++
++        def->memballoon = memballoon;
++    }
++
+     VIR_FREE(nics);
+ 
+     if (!def->name) {
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index ea5137b..d5dd935 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -246,6 +246,8 @@ char * qemuBuildControllerDevStr(virDomainControllerDefPtr def);
+ 
+ char * qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev);
+ 
++char * qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev);
++
+ char * qemuBuildUSBInputDevStr(virDomainInputDefPtr dev);
+ 
+ char * qemuBuildSoundDevStr(virDomainSoundDefPtr sound);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 377db3e..fdda378 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -2768,6 +2768,8 @@ cleanup:
+ 
+ #define QEMU_PCI_PRODUCT_DISK_VIRTIO 0x1001
+ 
++#define QEMU_PCI_PRODUCT_BALLOON_VIRTIO 0x1002
++
+ #define QEMU_PCI_PRODUCT_NIC_NE2K     0x8029
+ #define QEMU_PCI_PRODUCT_NIC_PCNET    0x2000
+ #define QEMU_PCI_PRODUCT_NIC_RTL8139  0x8139
+@@ -2976,6 +2978,25 @@ qemuGetPCIWatchdogVendorProduct(virDomainWatchdogDefPtr def,
+ }
+ 
+ 
++static int
++qemuGetPCIMemballoonVendorProduct(virDomainMemballoonDefPtr def,
++                                  unsigned *vendor,
++                                  unsigned *product)
++{
++    switch (def->model) {
++    case VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO:
++        *vendor = QEMU_PCI_VENDOR_REDHAT;
++        *product = QEMU_PCI_PRODUCT_BALLOON_VIRTIO;
++        break;
++
++    default:
++        return -1;
++    }
++
++    return 0;
++}
++
++
+ /*
+  * This entire method assumes that PCI devices in 'info pci'
+  * match ordering of devices specified on the command line
+@@ -3057,7 +3078,7 @@ qemuDetectPCIAddresses(virDomainObjPtr vm,
+             continue;
+ 
+         if (qemuAssignNextPCIAddress(&(vm->def->sounds[i]->info),
+-                                     vendor, product,
++                                    vendor, product,
+                                      addrs,  naddrs) < 0) {
+             qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                             _("cannot find PCI address for sound adapter %s"),
+@@ -3079,6 +3100,18 @@ qemuDetectPCIAddresses(virDomainObjPtr vm,
+         }
+     }
+ 
++    if (vm->def->memballoon &&
++        qemuGetPCIMemballoonVendorProduct(vm->def->memballoon, &vendor, &product) == 0) {
++        if (qemuAssignNextPCIAddress(&(vm->def->memballoon->info),
++                                     vendor, product,
++                                     addrs, naddrs) < 0) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                            _("cannot find PCI address for balloon %s"),
++                            virDomainMemballoonModelTypeToString(vm->def->memballoon->model));
++            return -1;
++        }
++    }
++
+     /* XXX console (virtio) */
+ 
+ 
+@@ -3086,8 +3119,6 @@ qemuDetectPCIAddresses(virDomainObjPtr vm,
+ 
+     /* XXX USB controller ? */
+ 
+-    /* XXXX virtio balloon ? */
+-
+     /* XXX what about other PCI devices (ie bridges) */
+ 
+     return 0;
+diff --git a/tests/define-dev-segfault b/tests/define-dev-segfault
+index e0b953a..7a9a7b6 100755
+--- a/tests/define-dev-segfault
++++ b/tests/define-dev-segfault
+@@ -59,6 +59,7 @@ cat <<\EOF > D.xml || fail=1
+     </console>
+     <sound model='pcspk'/>
+     <sound model='es1370'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+ EOF
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.args b/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.args
+new file mode 100644
+index 0000000..0a481d6
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x12
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.xml
+new file mode 100644
+index 0000000..274eb8b
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-balloon-device.xml
+@@ -0,0 +1,25 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++    </disk>
++    <memballoon model='virtio'>
++      <address type='pci' domain='0' bus='0' slot='18' function='0'/>
++    </memballoon>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-boot-cdrom.xml b/tests/qemuxml2argvdata/qemuxml2argv-boot-cdrom.xml
+index cf0d3df..410e6f9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-boot-cdrom.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-boot-cdrom.xml
+@@ -21,5 +21,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-boot-floppy.xml b/tests/qemuxml2argvdata/qemuxml2argv-boot-floppy.xml
+index cf3c5a8..ad8bae2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-boot-floppy.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-boot-floppy.xml
+@@ -26,5 +26,6 @@
+     </disk>
+     <controller type='fdc' index='0'/>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-boot-network.xml b/tests/qemuxml2argvdata/qemuxml2argv-boot-network.xml
+index a28372d..b1b7721 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-boot-network.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-boot-network.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-bootloader.xml b/tests/qemuxml2argvdata/qemuxml2argv-bootloader.xml
+index 4af280c..af19b3b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-bootloader.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-bootloader.xml
+@@ -21,5 +21,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.xml
+index 8963350..b3c56b1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.xml
+@@ -24,5 +24,6 @@
+       <source path='/tmp/guestfwd'/>
+       <target type='guestfwd' address='10.0.2.1' port='4600'/>
+     </channel>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml
+index 6e3458f..afd73f4 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.xml
+@@ -47,5 +47,6 @@
+       <target type='virtio' name='org.linux-kvm.port.lla'/>
+       <address type='virtio-serial' controller='2' bus='0'/>
+     </channel>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+index e597c40..2dbb596 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+@@ -27,5 +27,6 @@
+       <target type='virtio' name='org.linux-kvm.port.foo'/>
+       <address type='virtio-serial' controller='1' bus='0' port='3'/>
+     </channel>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-clock-france.xml b/tests/qemuxml2argvdata/qemuxml2argv-clock-france.xml
+index 157fdfb..8794492 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-clock-france.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-clock-france.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-clock-localtime.xml b/tests/qemuxml2argvdata/qemuxml2argv-clock-localtime.xml
+index 345ae22..786d0c7 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-clock-localtime.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-clock-localtime.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-clock-utc.xml b/tests/qemuxml2argvdata/qemuxml2argv-clock-utc.xml
+index 533ea59..ed91e37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-clock-utc.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-clock-utc.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-clock-variable.xml b/tests/qemuxml2argvdata/qemuxml2argv-clock-variable.xml
+index fa20b27..41818d2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-clock-variable.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-clock-variable.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.xml
+index df694c7..611ddb8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.xml
+@@ -26,5 +26,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-console-compat.xml b/tests/qemuxml2argvdata/qemuxml2argv-console-compat.xml
+index df694c7..611ddb8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-console-compat.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-console-compat.xml
+@@ -26,5 +26,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom-empty.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom-empty.xml
+index addbbf1..1b18d61 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom-empty.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom-empty.xml
+@@ -25,5 +25,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom.xml
+index 9c10551..061b196 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-cdrom.xml
+@@ -26,5 +26,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-cdrom.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-cdrom.xml
+index 736e189..0994a49 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-cdrom.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-cdrom.xml
+@@ -25,5 +25,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-disk.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-disk.xml
+index c379f31..9762f5a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-disk.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-boot-disk.xml
+@@ -25,5 +25,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-none.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-none.xml
+index e689d9c..0b2f512 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-none.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-none.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wb.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wb.xml
+index be00c4c..a438086 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wb.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wb.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wt.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wt.xml
+index edf776a..29012a8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wt.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v1-wt.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-none.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-none.xml
+index e689d9c..0b2f512 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-none.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-none.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wb.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wb.xml
+index be00c4c..a438086 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wb.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wb.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wt.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wt.xml
+index edf776a..29012a8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wt.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-cache-v2-wt.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-enospace.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-enospace.xml
+index 8fe64d4..b3e6de9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-enospace.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-enospace.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-stop.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-stop.xml
+index 67e23cc..a486502 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-stop.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-error-policy-stop.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fat.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fat.xml
+index b2b1b4e..a3491e7 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fat.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fat.xml
+@@ -22,5 +22,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fmt-qcow.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fmt-qcow.xml
+index 0b04e69..f2643bb 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fmt-qcow.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-fmt-qcow.xml
+@@ -28,5 +28,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-readonly-disk.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-readonly-disk.xml
+index 39c3a1c..1f193c9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-readonly-disk.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-readonly-disk.xml
+@@ -26,5 +26,6 @@
+        <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-shared.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-shared.xml
+index 47afcd7..27e741a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-shared.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-shared.xml
+@@ -30,5 +30,6 @@
+       <address type='drive' controller='0' bus='1' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-floppy.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-floppy.xml
+index 35474be..c0a4a08 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-floppy.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-floppy.xml
+@@ -31,5 +31,6 @@
+     </disk>
+     <controller type='fdc' index='0'/>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-many.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-many.xml
+index 467fa5d..14f85cc 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-many.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-many.xml
+@@ -35,5 +35,6 @@
+       <address type='drive' controller='0' bus='1' unit='1'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-usb-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-usb-device.xml
+index d59e1c0..6d35eea 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-usb-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-usb-device.xml
+@@ -22,5 +22,6 @@
+       <source file='/tmp/usbdisk.img'/>
+       <target dev='sda' bus='usb'/>
+     </disk>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-usb.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-usb.xml
+index 8148626..79ab654 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-usb.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-usb.xml
+@@ -24,5 +24,6 @@
+       <target dev='sda' bus='usb'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-virtio.xml
+index 2393073..a8aae71 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-virtio.xml
+@@ -34,5 +34,6 @@
+       <target dev='vdb' bus='virtio'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-xenvbd.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-xenvbd.xml
+index 0c36457..a3dd4c6 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-xenvbd.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-xenvbd.xml
+@@ -34,5 +34,6 @@
+       <target dev='xvdg' bus='xen'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-encrypted-disk.xml b/tests/qemuxml2argvdata/qemuxml2argv-encrypted-disk.xml
+index cb7b06d..f5e5d74 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-encrypted-disk.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-encrypted-disk.xml
+@@ -23,5 +23,6 @@
+       </encryption>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+     </disk>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-floppy-drive-fat.xml b/tests/qemuxml2argvdata/qemuxml2argv-floppy-drive-fat.xml
+index 6da210d..ec74bdd 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-floppy-drive-fat.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-floppy-drive-fat.xml
+@@ -23,5 +23,6 @@
+     </disk>
+     <controller type='ide' index='0'/>
+     <controller type='fdc' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
+index dcecd47..06b0539 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='cirrus' vram='9216' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
+index f691bfe..16fd3ba 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='vga' vram='9216' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+index bdce04b..15a22f3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+@@ -31,5 +31,6 @@
+     <video>
+       <model type='qxl' vram='65536' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
+index da0f3c6..a07f87b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='cirrus' vram='9216' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
+index da0f3c6..a07f87b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='cirrus' vram='9216' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
+index da0f3c6..a07f87b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='cirrus' vram='9216' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address-device.xml
+index ac5ad47..711e3f8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address-device.xml
+@@ -23,5 +23,6 @@
+         <address domain='0x0000' bus='0x06' slot='0x12' function='0x5'/>
+       </source>
+     </hostdev>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address.xml b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address.xml
+index cb039af..0347eee 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-pci-address.xml
+@@ -25,5 +25,6 @@
+         <address domain='0x0000' bus='0x06' slot='0x12' function='0x5'/>
+       </source>
+     </hostdev>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address-device.xml
+index 61bb2a2..da2562e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address-device.xml
+@@ -23,5 +23,6 @@
+         <address bus='14' device='6'/>
+       </source>
+     </hostdev>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address.xml b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address.xml
+index c7d0d91..4391bf1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-usb-address.xml
+@@ -25,5 +25,6 @@
+         <address bus='14' device='6'/>
+       </source>
+     </hostdev>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages.xml b/tests/qemuxml2argvdata/qemuxml2argv-hugepages.xml
+index 2e4b75f..8ed7490 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hugepages.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages.xml
+@@ -23,5 +23,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-input-usbmouse.xml b/tests/qemuxml2argvdata/qemuxml2argv-input-usbmouse.xml
+index 8603d1b..b76a895 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-input-usbmouse.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-input-usbmouse.xml
+@@ -21,5 +21,6 @@
+     </disk>
+     <controller type='ide' index='0'/>
+     <input type='mouse' bus='usb'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-input-usbtablet.xml b/tests/qemuxml2argvdata/qemuxml2argv-input-usbtablet.xml
+index 6c2a41b..a878f8c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-input-usbtablet.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-input-usbtablet.xml
+@@ -21,5 +21,6 @@
+     </disk>
+     <controller type='ide' index='0'/>
+     <input type='tablet' bus='usb'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-input-xen.xml b/tests/qemuxml2argvdata/qemuxml2argv-input-xen.xml
+index 91dd795..0ea00c1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-input-xen.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-input-xen.xml
+@@ -25,5 +25,6 @@
+     <video>
+       <model type='xen' vram='4096' heads='1'/>
+     </video>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases1.xml b/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases1.xml
+index 268954d..9f3fc85 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases1.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases1.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases2.xml b/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases2.xml
+index 354b1d5..c57e64c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases2.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-machine-aliases2.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-migrate.xml b/tests/qemuxml2argvdata/qemuxml2argv-migrate.xml
+index 533ea59..ed91e37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-migrate.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-migrate.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-minimal.xml b/tests/qemuxml2argvdata/qemuxml2argv-minimal.xml
+index 334a9f9..8a13e47 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-minimal.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-minimal.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-misc-acpi.xml b/tests/qemuxml2argvdata/qemuxml2argv-misc-acpi.xml
+index 474832d..c8e87b0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-misc-acpi.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-misc-acpi.xml
+@@ -23,5 +23,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-misc-no-reboot.xml b/tests/qemuxml2argvdata/qemuxml2argv-misc-no-reboot.xml
+index f75722f..bb4f5f0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-misc-no-reboot.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-misc-no-reboot.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-misc-uuid.xml b/tests/qemuxml2argvdata/qemuxml2argv-misc-uuid.xml
+index 474832d..c8e87b0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-misc-uuid.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-misc-uuid.xml
+@@ -23,5 +23,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-eth-ifname.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-eth-ifname.xml
+index e24cd99..516957f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-eth-ifname.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-eth-ifname.xml
+@@ -25,5 +25,6 @@
+       <script path='/etc/qemu-ifup'/>
+       <target dev='nic02'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-eth-names.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-eth-names.xml
+index 105d3f6..7875d0c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-eth-names.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-eth-names.xml
+@@ -29,5 +29,6 @@
+       <script path='/etc/qemu-ifup'/>
+       <model type='e1000'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-eth.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-eth.xml
+index 27238fc..5d410b3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-eth.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-eth.xml
+@@ -24,5 +24,6 @@
+       <mac address='00:11:22:33:44:55'/>
+       <script path='/etc/qemu-ifup'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-user.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-user.xml
+index 525593d..ffc4a2c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-user.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-user.xml
+@@ -23,5 +23,6 @@
+     <interface type='user'>
+       <mac address='00:11:22:33:44:55'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
+index 5d34bd4..e521796 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
+@@ -22,5 +22,6 @@
+       <mac address='00:11:22:33:44:55'/>
+       <model type='virtio'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-netdev.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-netdev.xml
+index 5d34bd4..e521796 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-netdev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-netdev.xml
+@@ -22,5 +22,6 @@
+       <mac address='00:11:22:33:44:55'/>
+       <model type='virtio'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio.xml
+index f8d9acf..9b9c059 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio.xml
+@@ -24,5 +24,6 @@
+       <mac address='00:11:22:33:44:55'/>
+       <model type='virtio'/>
+     </interface>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-nographics-vga.xml b/tests/qemuxml2argvdata/qemuxml2argv-nographics-vga.xml
+index 533ea59..ed91e37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-nographics-vga.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-nographics-vga.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.xml
+index 96a1ca5..1093901 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.xml
+@@ -25,5 +25,6 @@
+       <protocol type='raw'/>
+       <target port='0'/>
+     </parallel>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp.xml b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp.xml
+index 96a1ca5..1093901 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp.xml
+@@ -25,5 +25,6 @@
+       <protocol type='raw'/>
+       <target port='0'/>
+     </parallel>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-restore-v1.xml b/tests/qemuxml2argvdata/qemuxml2argv-restore-v1.xml
+index 533ea59..ed91e37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-restore-v1.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-restore-v1.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-restore-v2.xml b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2.xml
+index 533ea59..ed91e37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-restore-v2.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2.xml
+@@ -20,5 +20,6 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.xml
+index ae906c2..5d24986 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.xml
+@@ -28,5 +28,6 @@
+       <source path='/dev/ttyS2'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev.xml
+index ae906c2..5d24986 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev.xml
+@@ -28,5 +28,6 @@
+       <source path='/dev/ttyS2'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.xml
+index bdc483f..98bc4ef 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.xml
+@@ -28,5 +28,6 @@
+       <source path='/tmp/serial.log'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-file.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-file.xml
+index bdc483f..98bc4ef 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-file.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-file.xml
+@@ -28,5 +28,6 @@
+       <source path='/tmp/serial.log'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.xml
+index 38a9498..b121c5c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.xml
+@@ -30,5 +30,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-many.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-many.xml
+index 38a9498..b121c5c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-many.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-many.xml
+@@ -30,5 +30,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.xml
+index df694c7..611ddb8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.xml
+@@ -26,5 +26,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty.xml
+index df694c7..611ddb8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty.xml
+@@ -26,5 +26,6 @@
+     <console type='pty'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.xml
+index a8a3526..286417e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.xml
+@@ -30,5 +30,6 @@
+       <protocol type='raw'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.xml
+index fb80042..5aeceb0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.xml
+@@ -30,5 +30,6 @@
+       <protocol type='telnet'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet.xml
+index fb80042..5aeceb0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet.xml
+@@ -30,5 +30,6 @@
+       <protocol type='telnet'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp.xml
+index a8a3526..286417e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp.xml
+@@ -30,5 +30,6 @@
+       <protocol type='raw'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.xml
+index 01dba47..2c44738 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.xml
+@@ -30,5 +30,6 @@
+       <source mode='connect' host='127.0.0.1' service='9998'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp.xml
+index 01dba47..2c44738 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp.xml
+@@ -30,5 +30,6 @@
+       <source mode='connect' host='127.0.0.1' service='9998'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.xml
+index 7b90d7b..2c07e94 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.xml
+@@ -28,5 +28,6 @@
+       <source mode='connect' path='/tmp/serial.sock'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix.xml
+index 7b90d7b..2c07e94 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix.xml
+@@ -28,5 +28,6 @@
+       <source mode='connect' path='/tmp/serial.sock'/>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.xml
+index 76b3e2a..5b39736 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.xml
+@@ -26,5 +26,6 @@
+     <console type='vc'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc.xml
+index 76b3e2a..5b39736 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc.xml
+@@ -26,5 +26,6 @@
+     <console type='vc'>
+       <target port='0'/>
+     </console>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
+index 8c33e6c..c725346 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
+@@ -22,5 +22,6 @@
+     <sound model='es1370'/>
+     <sound model='sb16'/>
+     <sound model='ac97'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-sound.xml b/tests/qemuxml2argvdata/qemuxml2argv-sound.xml
+index 85f81ce..d34e0b3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-sound.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-sound.xml
+@@ -24,5 +24,6 @@
+     <sound model='es1370'/>
+     <sound model='sb16'/>
+     <sound model='ac97'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.xml
+index 9b2ffdf..2dfc37e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.xml
+@@ -19,5 +19,6 @@
+       <target dev='hda' bus='ide'/>
+     </disk>
+     <watchdog model='ib700' action='poweroff'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-watchdog.xml b/tests/qemuxml2argvdata/qemuxml2argv-watchdog.xml
+index 07d2c14..804dfd8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-watchdog.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-watchdog.xml
+@@ -21,5 +21,6 @@
+     </disk>
+     <controller type='ide' index='0'/>
+     <watchdog model='ib700' action='poweroff'/>
++    <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 4831fff..eaa6749 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -368,6 +368,8 @@ mymain(int argc, char **argv)
+     DO_TEST("watchdog", 0);
+     DO_TEST("watchdog-device", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG);
++    DO_TEST("balloon-device", QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG);
+     DO_TEST("sound", 0);
+     DO_TEST("sound-device", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG);
+-- 
+1.7.1.1
+

@@ -1,0 +1,253 @@
+(re-rebased to eliminate a new merge conflict, but otherwise unchanged from v1)
+
+The following patch fixes:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=612588
+
+which is a subtask of
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=605555
+
+This has been submitted upstream, but not yet ACKed:
+
+  https://www.redhat.com/archives/libvir-list/2010-July/msg00256.html
+
+I have verified proper operation of RHEL5, RHEL6 and F13 guests with
+this patch (and the corresponding iptables and kernel patches) in
+place (and failure of RHEL5 without).
+
+This should get into SNAP 8 if at all possible, since RHEL5 guests
+using DHCP on the default NAT network will otherwise fail to get an IP
+address.
+
+===
+This patch attempts to take advantage of a newly added netfilter
+module to correct for a problem with some guest DHCP client
+implementations when used in conjunction with a DHCP server run on the
+host systems with packet checksum offloading enabled.
+
+The problem is that, when the guest uses a RAW socket to read the DHCP
+response packets, the checksum hasn't yet been fixed by the IP stack,
+so it is incorrect.
+
+The fix implemented here is to add a rule to the POSTROUTING chain of
+the mangle table in iptables that fixes up the checksum for packets on
+the virtual network's bridge that are destined for the bootpc port (ie
+"dhcpc", ie port 68) port on the guest.
+
+Only very new versions of iptables will have this support (it has been
+submitted upstream, but not yet committed), so a failure to add this
+rule only results in a warning message. The iptables patch is here:
+
+  http://patchwork.ozlabs.org/patch/58525/
+
+A corresponding kernel module patch is also required (the backend of
+the iptables patch) and has been submitted, but I don't have the
+details for that (I tested using a pre-built image I received from the
+developer, Michael Tsirkin).
+---
+This patch attempts to take advantage of a newly added netfilter
+module to correct for a problem with some guest DHCP client
+implementations when used in conjunction with a DHCP server run on the
+host systems with packet checksum offloading enabled.
+
+The problem is that, when the guest uses a RAW socket to read the DHCP
+response packets, the checksum hasn't yet been fixed by the IP stack,
+so it is incorrect.
+
+The fix implemented here is to add a rule to the POSTROUTING chain of
+the mangle table in iptables that fixes up the checksum for packets on
+the virtual network's bridge that are destined for the bootpc port (ie
+"dhcpc", ie port 68) port on the guest.
+
+Only very new versions of iptables will have this support (it has been
+submitted upstream, but not yet committed), so a failure to add this
+rule only results in a warning message. The iptables patch is here:
+
+  http://patchwork.ozlabs.org/patch/58525/
+
+A corresponding kernel module patch is also required (the backend of
+the iptables patch) and has been submitted, but I don't have the
+details for that (I tested using a pre-built image I received from the
+developer, Michael Tsirkin).
+---
+ src/libvirt_private.syms    |    2 +
+ src/network/bridge_driver.c |   17 ++++++++++
+ src/util/iptables.c         |   71 +++++++++++++++++++++++++++++++++++++++++++
+ src/util/iptables.h         |    7 ++++
+ 4 files changed, 97 insertions(+), 0 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index f8722f4..a95edf4 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -320,6 +320,7 @@ iptablesAddForwardAllowRelatedIn;
+ iptablesAddForwardMasquerade;
+ iptablesAddForwardRejectIn;
+ iptablesAddForwardRejectOut;
++iptablesAddOutputFixUdpChecksum;
+ iptablesAddTcpInput;
+ iptablesAddUdpInput;
+ iptablesContextFree;
+@@ -331,6 +332,7 @@ iptablesRemoveForwardAllowRelatedIn;
+ iptablesRemoveForwardMasquerade;
+ iptablesRemoveForwardRejectIn;
+ iptablesRemoveForwardRejectOut;
++iptablesRemoveOutputFixUdpChecksum;
+ iptablesRemoveTcpInput;
+ iptablesRemoveUdpInput;
+ 
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index a81c3e4..dd53517 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -838,6 +838,19 @@ networkAddIptablesRules(struct network_driver *driver,
+              !networkAddRoutingIptablesRules(driver, network))
+         goto err8;
+ 
++    /* If we are doing local DHCP service on this network, attempt to
++     * add a rule that will fixup the checksum of DHCP response
++     * packets back to the guests (but report failure without
++     * aborting, since not all iptables implementations support it).
++     */
++
++    if ((network->def->ipAddress || network->def->nranges) &&
++        (iptablesAddOutputFixUdpChecksum(driver->iptables,
++                                         network->def->bridge, 68) != 0)) {
++        VIR_WARN("Could not add rule to fixup DHCP response checksums "
++                 "on network '%s'", network->def->name);
++    }
++
+     return 1;
+ 
+  err8:
+@@ -868,6 +881,10 @@ networkAddIptablesRules(struct network_driver *driver,
+ static void
+ networkRemoveIptablesRules(struct network_driver *driver,
+                          virNetworkObjPtr network) {
++    if (network->def->ipAddress || network->def->nranges) {
++        iptablesRemoveOutputFixUdpChecksum(driver->iptables,
++                                           network->def->bridge, 68);
++    }
+     if (network->def->forwardType != VIR_NETWORK_FORWARD_NONE) {
+         if (network->def->forwardType == VIR_NETWORK_FORWARD_NAT) {
+             iptablesRemoveForwardMasquerade(driver->iptables,
+diff --git a/src/util/iptables.c b/src/util/iptables.c
+index 2cd9bdb..04b9651 100644
+--- a/src/util/iptables.c
++++ b/src/util/iptables.c
+@@ -63,6 +63,7 @@ struct _iptablesContext
+     iptRules *input_filter;
+     iptRules *forward_filter;
+     iptRules *nat_postrouting;
++    iptRules *mangle_postrouting;
+ };
+ 
+ static void
+@@ -188,6 +189,9 @@ iptablesContextNew(void)
+     if (!(ctx->nat_postrouting = iptRulesNew("nat", "POSTROUTING")))
+         goto error;
+ 
++    if (!(ctx->mangle_postrouting = iptRulesNew("mangle", "POSTROUTING")))
++        goto error;
++
+     return ctx;
+ 
+  error:
+@@ -210,6 +214,8 @@ iptablesContextFree(iptablesContext *ctx)
+         iptRulesFree(ctx->forward_filter);
+     if (ctx->nat_postrouting)
+         iptRulesFree(ctx->nat_postrouting);
++    if (ctx->mangle_postrouting)
++        iptRulesFree(ctx->mangle_postrouting);
+     VIR_FREE(ctx);
+ }
+ 
+@@ -781,3 +787,68 @@ iptablesRemoveForwardMasquerade(iptablesContext *ctx,
+ {
+     return iptablesForwardMasquerade(ctx, network, physdev, protocol, REMOVE);
+ }
++
++
++static int
++iptablesOutputFixUdpChecksum(iptablesContext *ctx,
++                             const char *iface,
++                             int port,
++                             int action)
++{
++    char portstr[32];
++
++    snprintf(portstr, sizeof(portstr), "%d", port);
++    portstr[sizeof(portstr) - 1] = '\0';
++
++    return iptablesAddRemoveRule(ctx->mangle_postrouting,
++                                 action,
++                                 "--out-interface", iface,
++                                 "--protocol", "udp",
++                                 "--destination-port", portstr,
++                                 "--jump", "CHECKSUM", "--checksum-fill",
++                                 NULL);
++}
++
++/**
++ * iptablesAddOutputFixUdpChecksum:
++ * @ctx: pointer to the IP table context
++ * @iface: the interface name
++ * @port: the UDP port to match
++ *
++ * Add an rule to the mangle table's POSTROUTING chain that fixes up the
++ * checksum of packets with the given destination @port.
++ * the given @iface interface for TCP packets.
++ *
++ * Returns 0 in case of success or an error code in case of error.
++ * (NB: if the system's iptables does not support checksum mangling,
++ * this will return an error, which should be ignored.)
++ */
++
++int
++iptablesAddOutputFixUdpChecksum(iptablesContext *ctx,
++                                const char *iface,
++                                int port)
++{
++    return iptablesOutputFixUdpChecksum(ctx, iface, port, ADD);
++}
++
++/**
++ * iptablesRemoveOutputFixUdpChecksum:
++ * @ctx: pointer to the IP table context
++ * @iface: the interface name
++ * @port: the UDP port of the rule to remove
++ *
++ * Removes the checksum fixup rule that was previous added with
++ * iptablesAddOutputFixUdpChecksum.
++ *
++ * Returns 0 in case of success or an error code in case of error
++ * (again, if iptables doesn't support checksum fixup, this will
++ * return an error, which should be ignored)
++ */
++int
++iptablesRemoveOutputFixUdpChecksum(iptablesContext *ctx,
++                                   const char *iface,
++                                   int port)
++{
++    return iptablesOutputFixUdpChecksum(ctx, iface, port, REMOVE);
++}
+diff --git a/src/util/iptables.h b/src/util/iptables.h
+index b47d854..b87a82e 100644
+--- a/src/util/iptables.h
++++ b/src/util/iptables.h
+@@ -92,4 +92,11 @@ int              iptablesRemoveForwardMasquerade (iptablesContext *ctx,
+                                                   const char *physdev,
+                                                   const char *protocol);
+ 
++int              iptablesAddOutputFixUdpChecksum (iptablesContext *ctx,
++                                                  const char *iface,
++                                                  int port);
++int              iptablesRemoveOutputFixUdpChecksum (iptablesContext *ctx,
++                                                     const char *iface,
++                                                     int port);
++
+ #endif /* __QEMUD_IPTABLES_H__ */
+-- 
+1.7.1.1
+

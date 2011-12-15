@@ -1,0 +1,283 @@
+When SELinux is running in MLS mode, libvirtd will have a
+different security level to the VMs. For libvirtd to be
+able to connect to the monitor console, the client end of
+the UNIX domain socket needs a different label. This adds
+infrastructure to set the socket label via the security
+driver framework
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=593739
+
+* src/qemu/qemu_driver.c: Call out to socket label APIs in
+  security driver
+* src/qemu/qemu_security_stacked.c: Wire up socket label
+  drivers
+* src/security/security_driver.h: Define security driver
+  entry points for socket labelling
+* src/security/security_selinux.c: Set socket label based on
+  VM label
+---
+ src/qemu/qemu_driver.c           |   21 +++++++-
+ src/qemu/qemu_security_stacked.c |   48 ++++++++++++++++++
+ src/security/security_driver.h   |    6 ++
+ src/security/security_selinux.c  |  103 ++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 176 insertions(+), 2 deletions(-)
+
+diff -rup libvirt-0.8.1/src/qemu/qemu_driver.c libvirt-0.8.1.new/src/qemu/qemu_driver.c
+--- libvirt-0.8.1/src/qemu/qemu_driver.c	2010-05-27 16:52:26.115252409 +0100
++++ libvirt-0.8.1.new/src/qemu/qemu_driver.c	2010-05-27 16:51:27.367254530 +0100
+@@ -1564,27 +1564,44 @@ static int
+ qemuConnectMonitor(struct qemud_driver *driver, virDomainObjPtr vm)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    int ret;
++    int ret = -1;
+ 
+     /* Hold an extra reference because we can't allow 'vm' to be
+      * deleted while the monitor is active */
+     virDomainObjRef(vm);
+ 
++    if ((driver->securityDriver &&
++         driver->securityDriver->domainSetSecuritySocketLabel &&
++         driver->securityDriver->domainSetSecuritySocketLabel(driver->securityDriver,vm)) < 0) {
++        VIR_ERROR(_("Failed to set security context for monitor for %s"), vm->def->name);
++        goto error;
++    }
++    
+     if ((priv->mon = qemuMonitorOpen(vm,
+                                      priv->monConfig,
+                                      priv->monJSON,
+                                      &monitorCallbacks)) == NULL) {
+         VIR_ERROR(_("Failed to connect monitor for %s"), vm->def->name);
+-        return -1;
++        goto error;
+     }
+ 
++    if ((driver->securityDriver &&
++         driver->securityDriver->domainClearSecuritySocketLabel &&
++         driver->securityDriver->domainClearSecuritySocketLabel(driver->securityDriver,vm)) < 0) {
++        VIR_ERROR(_("Failed to set security context for monitor for %s"), vm->def->name);
++        goto error;
++    }
++    
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+     ret = qemuMonitorSetCapabilities(priv->mon);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
++    ret = 0;
++error:
+     if (ret < 0) {
+         qemuMonitorClose(priv->mon);
+         priv->mon = NULL;
++        virDomainObjUnref(vm);
+     }
+ 
+     return ret;
+diff -rup libvirt-0.8.1/src/qemu/qemu_security_stacked.c libvirt-0.8.1.new/src/qemu/qemu_security_stacked.c
+--- libvirt-0.8.1/src/qemu/qemu_security_stacked.c	2010-05-27 16:52:25.846346669 +0100
++++ libvirt-0.8.1.new/src/qemu/qemu_security_stacked.c	2010-05-27 16:51:27.368261578 +0100
+@@ -310,6 +310,51 @@ qemuSecurityStackedGetProcessLabel(virDo
+     return rc;
+ }
+ 
++
++static int
++qemuSecurityStackedSetSocketLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
++                                  virDomainObjPtr vm)
++{
++    int rc = 0;
++
++    if (driver->securityPrimaryDriver &&
++        driver->securityPrimaryDriver->domainSetSecuritySocketLabel &&
++        driver->securityPrimaryDriver->domainSetSecuritySocketLabel(driver->securityPrimaryDriver,
++                                                                    vm) < 0)
++        rc = -1;
++
++    if (driver->securitySecondaryDriver &&
++        driver->securitySecondaryDriver->domainSetSecuritySocketLabel &&
++        driver->securitySecondaryDriver->domainSetSecuritySocketLabel(driver->securitySecondaryDriver,
++                                                                      vm) < 0)
++        rc = -1;
++
++    return rc;
++}
++
++
++static int
++qemuSecurityStackedClearSocketLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
++                                    virDomainObjPtr vm)
++{
++    int rc = 0;
++
++    if (driver->securitySecondaryDriver &&
++        driver->securitySecondaryDriver->domainClearSecuritySocketLabel &&
++        driver->securitySecondaryDriver->domainClearSecuritySocketLabel(driver->securitySecondaryDriver,
++                                                                        vm) < 0)
++        rc = -1;
++
++    if (driver->securityPrimaryDriver &&
++        driver->securityPrimaryDriver->domainClearSecuritySocketLabel &&
++        driver->securityPrimaryDriver->domainClearSecuritySocketLabel(driver->securityPrimaryDriver,
++                                                                      vm) < 0)
++        rc = -1;
++
++    return rc;
++}
++
++
+ virSecurityDriver qemuStackedSecurityDriver = {
+     .name                       = "qemuStacked",
+     .domainSecurityVerify = qemuSecurityStackedVerify,
+@@ -332,4 +377,7 @@ virSecurityDriver qemuStackedSecurityDri
+ 
+     .domainSetSavedStateLabel = qemuSecurityStackedSetSavedStateLabel,
+     .domainRestoreSavedStateLabel = qemuSecurityStackedRestoreSavedStateLabel,
++
++    .domainClearSecuritySocketLabel = qemuSecurityStackedClearSocketLabel,
++    .domainSetSecuritySocketLabel = qemuSecurityStackedSetSocketLabel,
+ };
+diff -rup libvirt-0.8.1/src/security/security_driver.h libvirt-0.8.1.new/src/security/security_driver.h
+--- libvirt-0.8.1/src/security/security_driver.h	2010-05-27 16:52:25.847379977 +0100
++++ libvirt-0.8.1.new/src/security/security_driver.h	2010-05-27 16:51:27.370255278 +0100
+@@ -32,6 +32,10 @@ typedef virSecurityDriverStatus (*virSec
+ typedef int (*virSecurityDriverOpen) (virSecurityDriverPtr drv);
+ typedef int (*virSecurityDomainRestoreImageLabel) (virDomainObjPtr vm,
+                                                    virDomainDiskDefPtr disk);
++typedef int (*virSecurityDomainSetSocketLabel) (virSecurityDriverPtr drv,
++                                                virDomainObjPtr vm);
++typedef int (*virSecurityDomainClearSocketLabel)(virSecurityDriverPtr drv,
++                                                virDomainObjPtr vm);
+ typedef int (*virSecurityDomainSetImageLabel) (virDomainObjPtr vm,
+                                                virDomainDiskDefPtr disk);
+ typedef int (*virSecurityDomainRestoreHostdevLabel) (virDomainObjPtr vm,
+@@ -60,6 +64,8 @@ struct _virSecurityDriver {
+     virSecurityDriverOpen open;
+     virSecurityDomainSecurityVerify domainSecurityVerify;
+     virSecurityDomainRestoreImageLabel domainRestoreSecurityImageLabel;
++    virSecurityDomainSetSocketLabel domainSetSecuritySocketLabel;
++    virSecurityDomainClearSocketLabel domainClearSecuritySocketLabel;
+     virSecurityDomainSetImageLabel domainSetSecurityImageLabel;
+     virSecurityDomainGenLabel domainGenSecurityLabel;
+     virSecurityDomainReserveLabel domainReserveSecurityLabel;
+diff -rup libvirt-0.8.1/src/security/security_selinux.c libvirt-0.8.1.new/src/security/security_selinux.c
+--- libvirt-0.8.1/src/security/security_selinux.c	2010-05-27 16:52:25.933277540 +0100
++++ libvirt-0.8.1.new/src/security/security_selinux.c	2010-05-27 16:51:27.372255334 +0100
+@@ -757,6 +757,107 @@ SELinuxSetSecurityProcessLabel(virSecuri
+ }
+ 
+ static int
++SELinuxSetSecuritySocketLabel(virSecurityDriverPtr drv,
++                               virDomainObjPtr vm)
++{
++    /* TODO: verify DOI */
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++    context_t execcon = NULL;
++    context_t proccon = NULL;
++    security_context_t scon = NULL;
++    int rc = -1;
++
++    if (vm->def->seclabel.label == NULL)
++        return 0;
++
++    if (!STREQ(drv->name, secdef->model)) {
++        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
++                               _("security label driver mismatch: "
++                                 "'%s' model configured for domain, but "
++                                 "hypervisor driver is '%s'."),
++                               secdef->model, drv->name);
++        goto done;
++    }
++
++    if ( !(execcon = context_new(secdef->label)) ) {
++        virReportSystemError(errno,
++                             _("unable to allocate socket security context '%s'"),
++                             secdef->label);
++        goto done;
++    }
++
++    if (getcon(&scon) == -1) {
++        virReportSystemError(errno,
++                             _("unable to get current process context '%s'"),
++                             secdef->label);
++        goto done;
++    }
++
++    if ( !(proccon = context_new(scon)) ) {
++        virReportSystemError(errno,
++                             _("unable to set socket security context '%s'"),
++                             secdef->label);
++        goto done;
++    }
++
++    if (context_range_set(proccon, context_range_get(execcon)) == -1) {
++        virReportSystemError(errno,
++                             _("unable to set socket security context range '%s'"),
++                             secdef->label);
++        goto done;
++    }
++
++    VIR_DEBUG("Setting VM %s socket context %s",
++              vm->def->name, context_str(proccon));
++    if (setsockcreatecon(context_str(proccon)) == -1) {
++        virReportSystemError(errno,
++                             _("unable to set socket security context '%s'"),
++                             context_str(proccon));
++        goto done;
++    }
++
++    rc = 0;
++done:
++
++    if (security_getenforce() != 1)
++        rc = 0;
++    if (execcon) context_free(execcon);
++    if (proccon) context_free(proccon);
++    freecon(scon);
++    return rc;
++}
++
++static int
++SELinuxClearSecuritySocketLabel(virSecurityDriverPtr drv,
++                                virDomainObjPtr vm)
++{
++    /* TODO: verify DOI */
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++
++    if (vm->def->seclabel.label == NULL)
++        return 0;
++
++    if (!STREQ(drv->name, secdef->model)) {
++        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
++                               _("security label driver mismatch: "
++                                 "'%s' model configured for domain, but "
++                                 "hypervisor driver is '%s'."),
++                               secdef->model, drv->name);
++        if (security_getenforce() == 1)
++            return -1;
++    }
++
++    if (setsockcreatecon(NULL) == -1) {
++        virReportSystemError(errno,
++                             _("unable to clear socket security context '%s'"),
++                             secdef->label);
++        if (security_getenforce() == 1)
++            return -1;
++    }
++    return 0;
++}
++
++static int
+ SELinuxSetSecurityAllLabel(virDomainObjPtr vm)
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+@@ -797,6 +898,8 @@ virSecurityDriver virSELinuxSecurityDriv
+     .open                       = SELinuxSecurityDriverOpen,
+     .domainSecurityVerify       = SELinuxSecurityVerify,
+     .domainSetSecurityImageLabel = SELinuxSetSecurityImageLabel,
++    .domainSetSecuritySocketLabel     = SELinuxSetSecuritySocketLabel,
++    .domainClearSecuritySocketLabel     = SELinuxClearSecuritySocketLabel,
+     .domainRestoreSecurityImageLabel = SELinuxRestoreSecurityImageLabel,
+     .domainGenSecurityLabel     = SELinuxGenSecurityLabel,
+     .domainReserveSecurityLabel     = SELinuxReserveSecurityLabel,
+
+
+-- 

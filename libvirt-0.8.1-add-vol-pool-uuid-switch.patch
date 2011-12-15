@@ -1,0 +1,71 @@
+From: Justin Clift <justin@salasaga.org>
+
+Adds an optional switch, --uuid, for telling the virsh vol-pool command
+to return the pool UUID rather than pool name.
+(cherry picked from commit 2b39cd355ae95f288c941bc4b00d598ff12dfa30)
+---
+ tools/virsh.c   |   13 +++++++++++--
+ tools/virsh.pod |    8 +++++---
+ 2 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index d8a4f28..c450420 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -6010,6 +6010,7 @@ static const vshCmdInfo info_vol_pool[] = {
+ };
+
+ static const vshCmdOptDef opts_vol_pool[] = {
++    {"uuid", VSH_OT_BOOL, 0, N_("return the pool uuid rather than pool name")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume key or path")},
+     {NULL, 0, 0, NULL}
+ };
+@@ -6019,6 +6020,7 @@ cmdVolPool(vshControl *ctl, const vshCmd *cmd)
+ {
+     virStoragePoolPtr pool;
+     virStorageVolPtr vol;
++    char uuid[VIR_UUID_STRING_BUFLEN];
+
+     /* Check the connection to libvirtd daemon is still working */
+     if (!vshConnectionUsability(ctl, ctl->conn, TRUE))
+@@ -6038,8 +6040,15 @@ cmdVolPool(vshControl *ctl, const vshCmd *cmd)
+         return FALSE;
+     }
+
+-    /* Return the name of the parent storage pool */
+-    vshPrint(ctl, "%s\n", virStoragePoolGetName(pool));
++    /* Return the requested details of the parent storage pool */
++    if (vshCommandOptBool(cmd, "uuid")) {
++        /* Retrieve and return pool UUID string */
++        if (virStoragePoolGetUUIDString(pool, &uuid[0]) == 0)
++            vshPrint(ctl, "%s\n", uuid);
++    } else {
++        /* Return the storage pool name */
++        vshPrint(ctl, "%s\n", virStoragePoolGetName(pool));
++    }
+
+     /* Cleanup */
+     virStorageVolFree(vol);
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 3513d9f..2ed0f45 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -834,10 +834,12 @@ I<vol-name-or-key-or-path> is the name or key or path of the volume to return in
+ Return the list of volumes in the given storage pool.
+ I<--pool> I<pool-or-uuid> is the name or UUID of the storage pool.
+
+-=item B<vol-pool> I<vol-key-or-path>
++=item B<vol-pool> [optional I<--uuid>] I<vol-key-or-path>
+
+-Return the pool for a given volume.
+-I<vol-key-or-path> is the key or path of the volume to return the pool name for.
++Return the pool name or UUID for a given volume. By default, the pool name is
++returned. If the I<--uuid> option is given, the pool UUID is returned instead.
++I<vol-key-or-path> is the key or path of the volume to return the pool
++information for.
+
+ =item B<vol-path> [optional I<--pool> I<pool-or-uuid>] I<vol-name-or-key>
+
+-- 
+1.7.0.1
+

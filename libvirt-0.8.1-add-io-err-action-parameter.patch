@@ -1,0 +1,29 @@
+For bug
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=607157
+
+The IO error callback was forgetting to pass the action
+parameter, causing a stack trace when IO errors arrive
+
+* python/libvirt-override-virConnect.py: Add missing action
+  parameter in IO error callback
+---
+ python/libvirt-override-virConnect.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/python/libvirt-override-virConnect.py b/python/libvirt-override-virConnect.py
+index df39b79..1a1cdd0 100644
+--- a/python/libvirt-override-virConnect.py
++++ b/python/libvirt-override-virConnect.py
+@@ -94,7 +94,7 @@
+             cb = cbData["cb"]
+             opaque = cbData["opaque"]
+ 
+-            cb(self, virDomain(self, _obj=dom), srcPath, devAlias, opaque)
++            cb(self, virDomain(self, _obj=dom), srcPath, devAlias, action, opaque)
+             return 0
+         except AttributeError:
+             pass
+-- 
+1.6.6.1
+

@@ -1,0 +1,23 @@
+Enabling debug doesn't show the capabilities XML for a connection.
+Add an extra debug statement for the return value
+
+* src/libvirt.c: Enable debug logging of capabilities XML
+---
+ src/libvirt.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index c40f20f..e124bcc 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -4047,6 +4047,7 @@ virConnectGetCapabilities (virConnectPtr conn)
+         ret = conn->driver->getCapabilities (conn);
+         if (!ret)
+             goto error;
++        DEBUG("conn=%p ret=%s", conn, ret);
+         return ret;
+     }
+ 
+-- 
+1.7.2.1
+

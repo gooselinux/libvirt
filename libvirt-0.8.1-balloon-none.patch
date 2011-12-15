@@ -1,0 +1,131 @@
+commit 79c27a620a129dc77bb91a61c208d0a325fd7c3f
+Author: Daniel Veillard <veillard@redhat.com>
+Date:   Wed Aug 11 11:28:17 2010 +0200
+
+    allow memballoon type of none to desactivate it
+
+      The balloon device is automatically added to qemu guests if supported,
+    but it may be useful to desactivate it. The simplest to not change the
+    existing behaviour is to allow
+      <memballoon type="none"/>
+    as an extra option to desactivate it (it is automatically added if the
+    memballoon construct is missing for the domain).
+    The following simple patch just adds the extra option and does not
+    change the default behaviour but avoid creating a balloon device if
+    type="none" is used.
+
+    * docs/schemas/domain.rng: add the extra type attribute value
+    * src/conf/domain_conf.c src/conf/domain_conf.h: add the extra enum
+      value
+    * src/qemu/qemu_conf.c: if enum is NONE, don't activate the device,
+      i.e. don't pass the args to qemu/kvm
+
+
+commit 986c2086958e351da35079501fb51e40af2d5b48
+Author: Daniel Veillard <veillard@redhat.com>
+Date:   Thu Aug 12 18:32:16 2010 +0200
+
+    qemu: avoid calling the balloon info command if disabled
+
+     Basically a followup of the previous patch about balloon desactivation
+    if desactivated, to not ask for balloon information to qemu as we will
+    just get an error back.
+     This can make a huge difference in the time needed for domain
+    information or list when a machine is loaded, and balloon has been
+    desactivated in the guests.
+
+    * src/qemu/qemu_driver.c: do not get the balloon info if the balloon
+      suppor is disabled
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index b2783b0..1e42827 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1354,6 +1354,7 @@
+         <choice>
+           <value>virtio</value>
+           <value>xen</value>
++          <value>none</value>
+         </choice>
+       </attribute>
+       <optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index bfe01f0..c6534b8 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -203,7 +203,8 @@ VIR_ENUM_IMPL(virDomainSoundModel, VIR_DOMAIN_SOUND_MODEL_LAST,
+ 
+ VIR_ENUM_IMPL(virDomainMemballoonModel, VIR_DOMAIN_MEMBALLOON_MODEL_LAST,
+               "virtio",
+-              "xen");
++              "xen",
++              "none");
+ 
+ VIR_ENUM_IMPL(virDomainWatchdogModel, VIR_DOMAIN_WATCHDOG_MODEL_LAST,
+               "i6300esb",
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index e32188f..4361d5b 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -581,6 +581,7 @@ struct _virDomainHostdevDef {
+ enum {
+     VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO,
+     VIR_DOMAIN_MEMBALLOON_MODEL_XEN,
++    VIR_DOMAIN_MEMBALLOON_MODEL_NONE,
+ 
+     VIR_DOMAIN_MEMBALLOON_MODEL_LAST
+ };
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 376cd10..fb85220 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -4958,7 +4958,8 @@ int qemudBuildCommandLine(virConnectPtr conn,
+      * NB: Earlier we declared that VirtIO balloon will always be in
+      * slot 0x3 on bus 0x0
+      */
+-    if (def->memballoon) {
++    if ((def->memballoon) &&
++        (def->memballoon->model != VIR_DOMAIN_MEMBALLOON_MODEL_NONE)) {
+         if (def->memballoon->model != VIR_DOMAIN_MEMBALLOON_MODEL_VIRTIO) {
+             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             _("Memory balloon device type '%s' is not supported by this version of qemu"),
+@@ -6575,6 +6576,9 @@ virDomainDefPtr qemuParseCommandLine(virCapsPtr caps,
+         def->videos[def->nvideos++] = vid;
+     }
+ 
++    /*
++     * having a balloon is the default, define one with type="none" to avoid it
++     */
+     if (!def->memballoon) {
+         virDomainMemballoonDefPtr memballoon;
+         if (VIR_ALLOC(memballoon) < 0)
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e4f47d4..2dbb624 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4938,7 +4938,11 @@ static int qemudDomainGetInfo(virDomainPtr dom,
+ 
+     if (virDomainObjIsActive(vm)) {
+         qemuDomainObjPrivatePtr priv = vm->privateData;
+-        if (!priv->jobActive) {
++
++        if ((vm->def->memballoon != NULL) &&
++            (vm->def->memballoon->model == VIR_DOMAIN_MEMBALLOON_MODEL_NONE)) {
++            info->memory = vm->def->maxmem;
++        } else if (!priv->jobActive) {
+             if (qemuDomainObjBeginJob(vm) < 0)
+                 goto cleanup;
+ 
+@@ -6745,8 +6749,10 @@ static char *qemudDomainDumpXML(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    /* Refresh current memory based on balloon info */
+-    if (virDomainObjIsActive(vm)) {
++    /* Refresh current memory based on balloon info if supported */
++    if ((vm->def->memballoon != NULL) &&
++        (vm->def->memballoon->model != VIR_DOMAIN_MEMBALLOON_MODEL_NONE) &&
++        (virDomainObjIsActive(vm))) {
+         qemuDomainObjPrivatePtr priv = vm->privateData;
+         /* Don't delay if someone's using the monitor, just use
+          * existing most recent data instead */

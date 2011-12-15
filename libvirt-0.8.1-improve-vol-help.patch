@@ -1,0 +1,60 @@
+From: Justin Clift <justin@salasaga.org>
+
+Improves the help text for vol-path, vol-name, and vol-key, which
+previously referred to volume UUIDs.
+
+Addresses BZ # 598365.
+(cherry picked from commit 7d38d7b49bb15e6cdd92ce07c676329d2ee9eb57)
+---
+ tools/virsh.c |   10 +++++-----
+ 1 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index e26b0f3..190edde 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -5944,13 +5944,13 @@ cmdVolList(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
+  * "vol-name" command
+  */
+ static const vshCmdInfo info_vol_name[] = {
+-    {"help", N_("convert a vol UUID to vol name")},
++    {"help", N_("returns the volume name for a given volume key or path")},
+     {"desc", ""},
+     {NULL, NULL}
+ };
+
+ static const vshCmdOptDef opts_vol_name[] = {
+-    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol key or path")},
++    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume key or path")},
+     {NULL, 0, 0, NULL}
+ };
+
+@@ -6031,7 +6031,7 @@ static const vshCmdInfo info_vol_key[] = {
+
+ static const vshCmdOptDef opts_vol_key[] = {
+     {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+-    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol uuid")},
++    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume name or path")},
+     {NULL, 0, 0, NULL}
+ };
+
+@@ -6057,14 +6057,14 @@ cmdVolKey(vshControl *ctl, const vshCmd *cmd)
+  * "vol-path" command
+  */
+ static const vshCmdInfo info_vol_path[] = {
+-    {"help", N_("convert a vol UUID to vol path")},
++    {"help", N_("returns the volume path for a given volume name or key")},
+     {"desc", ""},
+     {NULL, NULL}
+ };
+
+ static const vshCmdOptDef opts_vol_path[] = {
+     {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+-    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol name or key")},
++    {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume name or key")},
+     {NULL, 0, 0, NULL}
+ };
+
+-- 
+1.7.0.1
+

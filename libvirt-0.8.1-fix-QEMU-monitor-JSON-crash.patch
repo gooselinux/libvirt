@@ -1,0 +1,51 @@
+For
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=604585
+
+An indentation mistake meant that a check for return status
+was not properly performed in all cases. This could result
+in a crash on NULL pointer in a following line.
+
+* src/qemu/qemu_monitor_json.c: Fix check for return status
+  when processing JSON for blockstats
+---
+ src/qemu/qemu_monitor_json.c |   14 ++++++--------
+ 1 files changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 53120c4..7961db5 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1098,11 +1098,10 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+ 
+     ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+-    if (ret == 0) {
++    if (ret == 0)
+         ret = qemuMonitorJSONCheckError(cmd, reply);
+-        if (ret < 0)
+-            goto cleanup;
+-    }
++    if (ret < 0)
++        goto cleanup;
+     ret = -1;
+ 
+     devices = virJSONValueObjectGet(reply, "return");
+@@ -1205,11 +1204,10 @@ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+ 
+     ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+-    if (ret == 0) {
++    if (ret == 0)
+         ret = qemuMonitorJSONCheckError(cmd, reply);
+-        if (ret < 0)
+-            goto cleanup;
+-    }
++    if (ret < 0)
++        goto cleanup;
+     ret = -1;
+ 
+     devices = virJSONValueObjectGet(reply, "return");
+-- 
+1.7.1.1
+

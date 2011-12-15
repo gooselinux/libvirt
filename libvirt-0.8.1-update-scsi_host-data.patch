@@ -1,0 +1,58 @@
+Fixes:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=600048
+
+Update nodedev scsi_host data before use
+
+* It appears that the udev event for HBA creation arrives before the
+  associated sysfs data is fully populated, resulting in bogus data
+  for the nodedev entry until the entry is refreshed.  This problem is
+  particularly troublesome when creating NPIV vHBAs because it results
+  in libvirt failing to find the newly created adapter and waiting for
+  the full timeout period before erroneously failing the create
+  operation.  This patch forces an update before any attempt to use
+  any scsi_host nodedev entry.
+---
+ src/node_device/node_device_driver.c |   19 +++----------------
+ 1 files changed, 3 insertions(+), 16 deletions(-)
+
+diff --git a/src/node_device/node_device_driver.c b/src/node_device/node_device_driver.c
+index 1b6d7aa..b069cd6 100644
+--- a/src/node_device/node_device_driver.c
++++ b/src/node_device/node_device_driver.c
+@@ -45,23 +45,9 @@ static int update_caps(virNodeDeviceObjPtr dev)
+     virNodeDevCapsDefPtr cap = dev->def->caps;
+
+     while (cap) {
+-        /* The only cap that currently needs updating is the WWN of FC HBAs. */
++        /* The only caps that currently need updating are FC related. */
+         if (cap->type == VIR_NODE_DEV_CAP_SCSI_HOST) {
+-            if (cap->data.scsi_host.flags & VIR_NODE_DEV_CAP_FLAG_HBA_FC_HOST) {
+-                if (read_wwn(cap->data.scsi_host.host,
+-                            "port_name",
+-                            &cap->data.scsi_host.wwpn) == -1) {
+-                    VIR_ERROR(_("Failed to refresh WWPN for host%d"),
+-                              cap->data.scsi_host.host);
+-                }
+-
+-                if (read_wwn(cap->data.scsi_host.host,
+-                            "node_name",
+-                            &cap->data.scsi_host.wwnn) == -1) {
+-                    VIR_ERROR(_("Failed to refresh WWNN for host%d"),
+-                              cap->data.scsi_host.host);
+-                }
+-            }
++            check_fc_host(&dev->def->caps->data);
+         }
+         cap = cap->next;
+     }
+@@ -239,6 +225,7 @@ nodeDeviceLookupByWWN(virConnectPtr conn,
+         while (cap) {
+
+             if (cap->type == VIR_NODE_DEV_CAP_SCSI_HOST) {
++                check_fc_host(&cap->data);
+                 if (cap->data.scsi_host.flags &
+                     VIR_NODE_DEV_CAP_FLAG_HBA_FC_HOST) {
+
+-- 
+1.6.6.1

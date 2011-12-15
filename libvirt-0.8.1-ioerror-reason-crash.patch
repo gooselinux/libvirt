@@ -1,0 +1,26 @@
+From: "Daniel P. Berrange" <berrange@redhat.com>
+Subject: [PATCH 2/2 RHEL-6] libvirt: Fix possible crash in handling IO Error
+	event
+
+If the IO error event does not include a reason, then there
+is a possible crash dispatching the event
+
+* src/conf/domain_event.c: Missing check for a NULL reason before
+  strduping allows for a crash
+---
+ src/conf/domain_event.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/conf/domain_event.c b/src/conf/domain_event.c
+index e5bd458..e88aafe 100644
+--- a/src/conf/domain_event.c
++++ b/src/conf/domain_event.c
+@@ -671,7 +671,7 @@ static virDomainEventPtr virDomainEventIOErrorNewFromObjImpl(int event,
+         ev->data.ioError.action = action;
+         if (!(ev->data.ioError.srcPath = strdup(srcPath)) ||
+             !(ev->data.ioError.devAlias = strdup(devAlias)) ||
+-            !(ev->data.ioError.reason = strdup(reason))) {
++            (reason && !(ev->data.ioError.reason = strdup(reason)))) {
+             virDomainEventFree(ev);
+             ev = NULL;
+         }

@@ -1,0 +1,57 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=613014
+
+All features in the baseline CPU definition were always created with
+policy='require' even though an arch driver returned them with different
+policy settings.
+(cherry picked from commit 4e0f648fbb8fd8b88880f60bef51cf718f2de7c1)
+---
+ src/cpu/cpu.c     |   12 +-----------
+ src/cpu/cpu_x86.c |    2 ++
+ 2 files changed, 3 insertions(+), 11 deletions(-)
+
+diff --git a/src/cpu/cpu.c b/src/cpu/cpu.c
+index 580b767..8d6c22b 100644
+--- a/src/cpu/cpu.c
++++ b/src/cpu/cpu.c
+@@ -354,7 +354,6 @@ cpuBaseline(virCPUDefPtr *cpus,
+             unsigned int nmodels)
+ {
+     struct cpuArchDriver *driver;
+-    virCPUDefPtr cpu;
+     unsigned int i;
+ 
+     VIR_DEBUG("ncpus=%u, nmodels=%u", ncpus, nmodels);
+@@ -394,16 +393,7 @@ cpuBaseline(virCPUDefPtr *cpus,
+         return NULL;
+     }
+ 
+-    if ((cpu = driver->baseline(cpus, ncpus, models, nmodels))) {
+-        cpu->type = VIR_CPU_TYPE_GUEST;
+-        cpu->match = VIR_CPU_MATCH_EXACT;
+-        VIR_FREE(cpu->arch);
+-
+-        for (i = 0; i < cpu->nfeatures; i++)
+-            cpu->features[i].policy = VIR_CPU_FEATURE_REQUIRE;
+-    }
+-
+-    return cpu;
++    return driver->baseline(cpus, ncpus, models, nmodels);
+ }
+ 
+ 
+diff --git a/src/cpu/cpu_x86.c b/src/cpu/cpu_x86.c
+index 633eb69..51dbc21 100644
+--- a/src/cpu/cpu_x86.c
++++ b/src/cpu/cpu_x86.c
+@@ -1366,6 +1366,8 @@ x86Baseline(virCPUDefPtr *cpus,
+     if (x86Decode(cpu, data, models, nmodels, NULL) < 0)
+         goto error;
+ 
++    VIR_FREE(cpu->arch);
++
+ cleanup:
+     x86DataFree(data);
+     x86ModelFree(base_model);
+-- 
+1.7.1.1
+

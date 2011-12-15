@@ -1,0 +1,131 @@
+Bug https://bugzilla.redhat.com/591363
+
+Upstream patch d533a98ed applies without conflicts.
+
+virFileResolveLink was returning a positive value on error,
+thus confusing callers that assumed failure was < 0.  The
+confusion is further evidenced by callers that would have
+ended up calling virReportSystemError with a negative value
+instead of a valid errno.
+
+Signed-off-by: Eric Blake <eblake redhat com>
+
+* src/util/util.c (virFileResolveLink): Live up to documentation.
+* src/qemu/qemu_security_dac.c
+(qemuSecurityDACRestoreSecurityFileLabel): Adjust callers.
+* src/security/security_selinux.c
+(SELinuxRestoreSecurityFileLabel): Likewise.
+* src/storage/storage_backend_disk.c
+(virStorageBackendDiskDeleteVol): Likewise.
+---
+ src/qemu/qemu_security_dac.c       |    5 ++---
+ src/security/security_selinux.c    |    7 +++----
+ src/storage/storage_backend_disk.c |    7 +++----
+ src/util/util.c                    |    6 +++---
+ 4 files changed, 11 insertions(+), 14 deletions(-)
+
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index 364227d..a816441 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -75,13 +75,12 @@ qemuSecurityDACRestoreSecurityFileLabel(const char *path)
+ {
+     struct stat buf;
+     int rc = -1;
+-    int err;
+     char *newpath = NULL;
+
+     VIR_INFO("Restoring DAC user and group on '%s'", path);
+
+-    if ((err = virFileResolveLink(path, &newpath)) < 0) {
+-        virReportSystemError(err,
++    if (virFileResolveLink(path, &newpath) < 0) {
++        virReportSystemError(errno,
+                              _("cannot resolve symlink %s"), path);
+         goto err;
+     }
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index 47534df..669ef42 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2008,2009 Red Hat, Inc.
++ * Copyright (C) 2008-2010 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -353,13 +353,12 @@ SELinuxRestoreSecurityFileLabel(const char *path)
+     struct stat buf;
+     security_context_t fcon = NULL;
+     int rc = -1;
+-    int err;
+     char *newpath = NULL;
+
+     VIR_INFO("Restoring SELinux context on '%s'", path);
+
+-    if ((err = virFileResolveLink(path, &newpath)) < 0) {
+-        virReportSystemError(err,
++    if (virFileResolveLink(path, &newpath) < 0) {
++        virReportSystemError(errno,
+                              _("cannot resolve symlink %s"), path);
+         goto err;
+     }
+diff --git a/src/storage/storage_backend_disk.c b/src/storage/storage_backend_disk.c
+index 836d1ca..7188386 100644
+--- a/src/storage/storage_backend_disk.c
++++ b/src/storage/storage_backend_disk.c
+@@ -1,7 +1,7 @@
+ /*
+  * storage_backend_disk.c: storage backend for disk handling
+  *
+- * Copyright (C) 2007-2008 Red Hat, Inc.
++ * Copyright (C) 2007-2008, 2010 Red Hat, Inc.
+  * Copyright (C) 2007-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -612,13 +612,12 @@ virStorageBackendDiskDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
+                                unsigned int flags ATTRIBUTE_UNUSED)
+ {
+     char *part_num = NULL;
+-    int err;
+     char *devpath = NULL;
+     char *devname, *srcname;
+     int rc = -1;
+
+-    if ((err = virFileResolveLink(vol->target.path, &devpath)) < 0) {
+-        virReportSystemError(err,
++    if (virFileResolveLink(vol->target.path, &devpath) < 0) {
++        virReportSystemError(errno,
+                              _("Couldn't read volume target path '%s'"),
+                              vol->target.path);
+         goto cleanup;
+diff --git a/src/util/util.c b/src/util/util.c
+index 26ac6ba..e937d39 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -1182,7 +1182,7 @@ int virFileLinkPointsTo(const char *checkLink,
+  * real path
+  *
+  * Return 0 if path was not a symbolic, or the link was
+- * resolved. Return -1 upon error
++ * resolved. Return -1 with errno set upon error
+  */
+ int virFileResolveLink(const char *linkpath,
+                        char **resultpath)
+@@ -1192,11 +1192,11 @@ int virFileResolveLink(const char *linkpath,
+     *resultpath = NULL;
+
+     if (lstat(linkpath, &st) < 0)
+-        return errno;
++        return -1;
+
+     if (!S_ISLNK(st.st_mode)) {
+         if (!(*resultpath = strdup(linkpath)))
+-            return -ENOMEM;
++            return -1;
+         return 0;
+     }
+
+-- 
+1.7.0.1

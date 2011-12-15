@@ -1,0 +1,108 @@
+Binary files libvirt-0.8.1/daemon/libvirtd-remote.o and libvirt-0.8.1.new/daemon/libvirtd-remote.o differ
+diff -urp libvirt-0.8.1/daemon/remote.c libvirt-0.8.1.new/daemon/remote.c
+--- libvirt-0.8.1/daemon/remote.c	2010-06-28 12:25:45.819856481 -0400
++++ libvirt-0.8.1.new/daemon/remote.c	2010-06-28 12:24:01.693735854 -0400
+@@ -4984,11 +4984,13 @@ remoteDispatchNodeDeviceGetParent (struc
+         /* remoteDispatchClientRequest will free this. */
+         char **parent_p;
+         if (VIR_ALLOC(parent_p) < 0) {
++            virNodeDeviceFree(dev);
+             remoteDispatchOOMError(rerr);
+             return -1;
+         }
+         *parent_p = strdup(parent);
+         if (*parent_p == NULL) {
++            virNodeDeviceFree(dev);
+             remoteDispatchOOMError(rerr);
+             return -1;
+         }
+@@ -5020,6 +5022,7 @@ remoteDispatchNodeDeviceNumOfCaps (struc
+ 
+     ret->num = virNodeDeviceNumOfCaps(dev);
+     if (ret->num < 0) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         return -1;
+     }
+@@ -5048,6 +5051,7 @@ remoteDispatchNodeDeviceListCaps (struct
+     }
+ 
+     if (args->maxnames > REMOTE_NODE_DEVICE_NAME_LIST_MAX) {
++        virNodeDeviceFree(dev);
+         remoteDispatchFormatError(rerr,
+                                   "%s", _("maxnames > REMOTE_NODE_DEVICE_NAME_LIST_MAX"));
+         return -1;
+@@ -5055,6 +5059,7 @@ remoteDispatchNodeDeviceListCaps (struct
+ 
+     /* Allocate return buffer. */
+     if (VIR_ALLOC_N(ret->names.names_val, args->maxnames) < 0) {
++        virNodeDeviceFree(dev);
+         remoteDispatchOOMError(rerr);
+         return -1;
+     }
+@@ -5063,11 +5068,13 @@ remoteDispatchNodeDeviceListCaps (struct
+         virNodeDeviceListCaps (dev, ret->names.names_val,
+                                args->maxnames);
+     if (ret->names.names_len == -1) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         VIR_FREE(ret->names.names_val);
+         return -1;
+     }
+ 
++    virNodeDeviceFree(dev);
+     return 0;
+ }
+ 
+@@ -5091,10 +5098,12 @@ remoteDispatchNodeDeviceDettach (struct 
+     }
+ 
+     if (virNodeDeviceDettach(dev) == -1) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         return -1;
+     }
+ 
++    virNodeDeviceFree(dev);
+     return 0;
+ }
+ 
+@@ -5118,10 +5127,12 @@ remoteDispatchNodeDeviceReAttach (struct
+     }
+ 
+     if (virNodeDeviceReAttach(dev) == -1) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         return -1;
+     }
+ 
++    virNodeDeviceFree(dev);
+     return 0;
+ }
+ 
+@@ -5145,10 +5156,12 @@ remoteDispatchNodeDeviceReset (struct qe
+     }
+ 
+     if (virNodeDeviceReset(dev) == -1) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         return -1;
+     }
+ 
++    virNodeDeviceFree(dev);
+     return 0;
+ }
+ 
+@@ -5195,10 +5208,12 @@ remoteDispatchNodeDeviceDestroy(struct q
+     }
+ 
+     if (virNodeDeviceDestroy(dev) == -1) {
++        virNodeDeviceFree(dev);
+         remoteDispatchConnError(rerr, conn);
+         return -1;
+     }
+ 
++    virNodeDeviceFree(dev);
+     return 0;
+ }
+ 

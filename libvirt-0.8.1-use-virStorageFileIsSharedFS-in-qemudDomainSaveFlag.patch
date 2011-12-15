@@ -1,0 +1,116 @@
+From: Laine Stump <laine@laine.org>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=590975
+
+Previously, this function had it's own bit of code performing the same
+function. Since there's now an equivalent utility function, let's use it.
+---
+ src/qemu/qemu_driver.c |   82 +++++++++++++----------------------------------
+ 1 files changed, 23 insertions(+), 59 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e0f6cb0..22f182e 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -49,13 +49,6 @@
+ #include <gnutls/gnutls.h>
+ #include <gnutls/x509.h>
+ 
+-#ifdef __linux__
+-# include <sys/vfs.h>
+-# ifndef NFS_SUPER_MAGIC
+-#  define NFS_SUPER_MAGIC 0x6969
+-# endif /* NFS_SUPER_MAGIC */
+-#endif /* __linux__ */
+-
+ #include "virterror_internal.h"
+ #include "logging.h"
+ #include "datatypes.h"
+@@ -5578,61 +5571,32 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+                 goto endjob;
+             }
+ 
+-#ifdef __linux__
+             /* On Linux we can also verify the FS-type of the directory. */
+-            char *dirpath, *p;
+-            struct statfs st;
+-            int statfs_ret;
+-
+-            if ((dirpath = strdup(path)) == NULL) {
+-                virReportOOMError();
+-                goto endjob;
+-            }
+-
+-            do {
+-                // Try less and less of the path until we get to a
+-                // directory we can stat. Even if we don't have 'x'
+-                // permission on any directory in the path on the NFS
+-                // server (assuming it's NFS), we will be able to stat the
+-                // mount point, and that will properly tell us if the
+-                // fstype is NFS.
+-
+-                if ((p = strrchr(dirpath, '/')) == NULL) {
+-                    qemuReportError(VIR_ERR_INVALID_ARG,
+-                                    _("Invalid relative path '%s' for domain save file"),
+-                                    path);
+-                    VIR_FREE(dirpath);
+-                    goto endjob;
+-                }
+-
+-                if (p == dirpath)
+-                    *(p+1) = '\0';
+-                else
+-                    *p = '\0';
+-
+-                statfs_ret = statfs(dirpath, &st);
+-
+-            } while ((statfs_ret == -1) && (p != dirpath));
+-
+-            if (statfs_ret == -1) {
+-                virReportSystemError(errno,
+-                                     _("Failed to create domain save file '%s'"
+-                                       " statfs of all elements of path failed."),
+-                                     path);
+-                VIR_FREE(dirpath);
+-                goto endjob;
+-            }
++            switch (virStorageFileIsSharedFS(path)) {
++                case 1:
++                   /* it was on a network share, so we'll continue
++                    * as outlined above
++                    */
++                   break;
++
++                case -1:
++                   virReportSystemError(errno,
++                                        _("Failed to create domain save file "
++                                          "'%s': couldn't determine fs type"),
++                                        path);
++                   goto endjob;
++                   break;
++
++                case 0:
++                default:
++                   /* local file - log the error returned by virFileOperation */
++                   virReportSystemError(rc,
++                                        _("Failed to create domain save file '%s'"),
++                                        path);
++                   goto endjob;
++                   break;
+ 
+-            if (st.f_type != NFS_SUPER_MAGIC) {
+-                virReportSystemError(rc,
+-                                     _("Failed to create domain save file '%s'"
+-                                       " (fstype of '%s' is 0x%X"),
+-                                     path, dirpath, (unsigned int) st.f_type);
+-                VIR_FREE(dirpath);
+-                goto endjob;
+             }
+-            VIR_FREE(dirpath);
+-#endif
+ 
+             /* Retry creating the file as driver->user */
+ 
+-- 
+1.7.1
+

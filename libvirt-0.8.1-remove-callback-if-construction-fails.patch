@@ -1,0 +1,50 @@
+For 
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=609060
+
+Replaces the patch from
+
+  http://post-office.corp.redhat.com/archives/rhvirt-patches/2010-June/msg01162.html
+
+Some, but not all, codepaths in the qemuMonitorOpen() method
+would trigger the destroy callback. The caller does not expect
+this to be invoked if construction fails, only during normal
+release of the monitor. This resulted in a possible double-unref
+of the virDomainObjPtr, because the caller explicitly unrefs
+the virDomainObjPtr  if qemuMonitorOpen() fails
+
+* src/qemu/qemu_monitor.c: Don't invoke destroy callback from
+  qemuMonitorOpen() failure paths
+---
+ src/qemu/qemu_monitor.c |    8 +++++++-
+ 1 files changed, 7 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index e19c2e6..6c0e8f6 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -198,7 +198,7 @@ void qemuMonitorUnlock(qemuMonitorPtr mon)
+ static void qemuMonitorFree(qemuMonitorPtr mon)
+ {
+     VIR_DEBUG("mon=%p", mon);
+-    if (mon->cb->destroy)
++    if (mon->cb && mon->cb->destroy)
+         (mon->cb->destroy)(mon, mon->vm);
+     if (virCondDestroy(&mon->notify) < 0)
+     {}
+@@ -668,6 +668,12 @@ qemuMonitorOpen(virDomainObjPtr vm,
+     return mon;
+ 
+ cleanup:
++    /* We don't want the 'destroy' callback invoked during
++     * cleanup from construction failure, because that can
++     * give a double-unref on virDomainObjPtr in the caller,
++     * so kill the callbacks now.
++     */
++    mon->cb = NULL;
+     qemuMonitorUnlock(mon);
+     qemuMonitorClose(mon);
+     return NULL;
+-- 
+1.6.6.1
+

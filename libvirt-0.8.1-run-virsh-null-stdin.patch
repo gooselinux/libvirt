@@ -1,0 +1,28 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=606314
+
+Running virsh while having /var/lib/libvirt/libvirt-guests file open
+makes SELinux emit messages about preventing virsh from reading that
+file. Since virsh doesn't really want to read anything, it's better to
+run it with /dev/null on stdin to prevent those messages.
+
+Cherry-picked from upstream 6c267f01b1db9756779ad897588dbcf2ea95fcc4
+---
+ daemon/libvirt-guests.init.in |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/daemon/libvirt-guests.init.in b/daemon/libvirt-guests.init.in
+index 17e6824..f99c070 100644
+--- a/daemon/libvirt-guests.init.in
++++ b/daemon/libvirt-guests.init.in
+@@ -61,7 +61,7 @@ run_virsh() {
+         conn="-c $uri"
+     fi
+ 
+-    virsh $conn "$@"
++    virsh $conn "$@" </dev/null
+ }
+ 
+ run_virsh_c() {
+-- 
+1.7.1
+

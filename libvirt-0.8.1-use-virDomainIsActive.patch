@@ -1,0 +1,77 @@
+From 553ea3914bacb16df04e0320254fa009a0c226a3 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 10 Jun 2010 15:07:21 +0100
+Subject: [PATCH 3/5] Make checks for inactive QEMU guest more robust
+
+Before issuing monitor commands it is neccessary to check whether
+the guest is still running. Most places use virDomainIsActive()
+correctly, but a few relied on 'priv->mon != NULL'. In theory
+these should be equivalent, but the release of the last reference
+count on priv->mon can be delayed a small amount of time until
+the event handler is finally deregistered. A further ref counting
+bug also means that priv->mon might be never released. In such a
+case, code could mistakenly issue a monitor command and wait for
+a response that will never arrive, effectively leaving the QEMU
+driver waiting on virCondWait() forever..
+
+To protect against these possibilities, make sure all code uses
+virDomainIsActive(), not 'priv->mon != NULL'
+
+* src/qemu/qemu_driver.c: Replace 'priv->mon != NULL' with
+  calls to 'priv->mon != NULL'()
+---
+ src/qemu/qemu_driver.c |   10 +++++-----
+ 1 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 9978efd..d8f881f 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5661,7 +5661,7 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+ endjob:
+     if (vm) {
+         if (ret != 0) {
+-            if (header.was_running && priv->mon) {
++            if (header.was_running && virDomainObjIsActive(vm)) {
+                 qemuDomainObjEnterMonitorWithDriver(driver, vm);
+                 rc = qemuMonitorStartCPUs(priv->mon, dom->conn);
+                 qemuDomainObjExitMonitorWithDriver(driver, vm);
+@@ -5972,7 +5972,7 @@ endjob:
+     /* Since the monitor is always attached to a pty for libvirt, it
+        will support synchronous operations so we always get here after
+        the migration is complete.  */
+-    else if (resume && paused && priv->mon) {
++    else if (resume && paused && virDomainObjIsActive(vm)) {
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         if (qemuMonitorStartCPUs(priv->mon, dom->conn) < 0) {
+             if (virGetLastError() == NULL)
+@@ -8083,7 +8083,7 @@ cleanup:
+     return ret;
+ 
+ try_remove:
+-    if (!priv->mon)
++    if (!virDomainObjIsActive(vm))
+         goto cleanup;
+ 
+     if (vlan < 0) {
+@@ -8115,7 +8115,7 @@ try_remove:
+     goto cleanup;
+ 
+ try_tapfd_close:
+-    if (!priv->mon)
++    if (!virDomainObjIsActive(vm))
+         goto cleanup;
+ 
+     if (tapfd_name) {
+@@ -11197,7 +11197,7 @@ static int doTunnelMigrate(virDomainPtr dom,
+     retval = doTunnelSendAll(st, client_sock);
+ 
+ cancel:
+-    if (retval != 0 && priv->mon) {
++    if (retval != 0 && virDomainObjIsActive(vm)) {
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         qemuMonitorMigrateCancel(priv->mon);
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
+-- 
+1.6.6.1
+

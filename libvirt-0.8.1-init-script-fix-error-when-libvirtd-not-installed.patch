@@ -1,0 +1,47 @@
+When only client parts of libvirt are installed (i.e., no libvirtd
+daemon), libvirt-guests init script in its default configuration would
+throw seriously looking errors during host shutdown:
+
+Running guests on default URI: error: unable to connect to
+'/var/run/libvirt/libvirt-sock', libvirtd may need to be started: No
+such file or directory
+error: failed to connect to the hypervisor
+
+This patch changes the script to print rather harmless message in that
+situation:
+
+Running guests on default URI: libvirtd not installed; skipping this
+URI.
+(cherry picked from commit d1018b1bdea5048ee7ae6f66bea89853b02e4702)
+---
+ daemon/libvirt-guests.init.in |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/daemon/libvirt-guests.init.in b/daemon/libvirt-guests.init.in
+index f99c070..d2ec96a 100644
+--- a/daemon/libvirt-guests.init.in
++++ b/daemon/libvirt-guests.init.in
+@@ -25,6 +25,7 @@
+ 
+ sysconfdir=@sysconfdir@
+ localstatedir=@localstatedir@
++libvirtd=@sbindir@/libvirtd
+ 
+ # Source function library.
+ . "$sysconfdir"/rc.d/init.d/functions
+@@ -232,6 +233,12 @@ stop() {
+     : >"$LISTFILE"
+     for uri in $URIS; do
+         echo -n $"Running guests on $uri URI: "
++
++        if [ "x$uri" = xdefault ] && [ ! -x "$libvirtd" ]; then
++            echo $"libvirtd not installed; skipping this URI."
++            continue
++        fi
++
+         list=$(list_guests $uri)
+         if [ $? -eq 0 ]; then
+             empty=true
+-- 
+1.7.2
+

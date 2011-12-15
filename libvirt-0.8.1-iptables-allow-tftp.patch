@@ -1,0 +1,57 @@
+From: Alan Pevec <apevec@redhat.com>
+
+add iptables rules to allow TFTP from the virtual network if <tftp>
+element is defined in the network definition.
+
+Fedora bz#580215
+RHEL6 https://bugzilla.redhat.com/show_bug.cgi?id=607294
+
+* src/network/bridge_driver.c: open UDP port 69 for TFTP traffic if
+  tftproot is defined
+(cherry picked from commit 4efaf77b19d63c0dea888846b3390f5a396ac547)
+---
+ src/network/bridge_driver.c |   14 ++++++++++++++
+ 1 files changed, 14 insertions(+), 0 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 7d30544..c5419cd 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -738,6 +738,15 @@ networkAddIptablesRules(struct network_driver *driver,
+         goto err4;
+     }
+
++    /* allow TFTP requests through to dnsmasq */
++    if (network->def->tftproot &&
++        (err = iptablesAddUdpInput(driver->iptables, network->def->bridge, 69))) {
++        virReportSystemError(err,
++                             _("failed to add iptables rule to allow TFTP requests from '%s'"),
++                             network->def->bridge);
++        goto err4tftp;
++    }
++
+
+     /* Catch all rules to block forwarding to/from bridges */
+
+@@ -785,6 +794,10 @@ networkAddIptablesRules(struct network_driver *driver,
+     iptablesRemoveForwardRejectOut(driver->iptables,
+                                    network->def->bridge);
+  err5:
++    if (network->def->tftproot) {
++        iptablesRemoveUdpInput(driver->iptables, network->def->bridge, 69);
++    }
++ err4tftp:
+     iptablesRemoveUdpInput(driver->iptables, network->def->bridge, 53);
+  err4:
+     iptablesRemoveTcpInput(driver->iptables, network->def->bridge, 53);
+@@ -822,6 +835,7 @@ networkRemoveIptablesRules(struct network_driver *driver,
+     iptablesRemoveForwardAllowCross(driver->iptables, network->def->bridge);
+     iptablesRemoveForwardRejectIn(driver->iptables, network->def->bridge);
+     iptablesRemoveForwardRejectOut(driver->iptables, network->def->bridge);
++    iptablesRemoveUdpInput(driver->iptables, network->def->bridge, 69);
+     iptablesRemoveUdpInput(driver->iptables, network->def->bridge, 53);
+     iptablesRemoveTcpInput(driver->iptables, network->def->bridge, 53);
+     iptablesRemoveUdpInput(driver->iptables, network->def->bridge, 67);
+-- 
+1.7.0.1
+

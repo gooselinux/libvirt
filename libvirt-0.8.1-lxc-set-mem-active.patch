@@ -1,0 +1,59 @@
+commit b94b72b45798f11ca860bab2954edcdaf3bdc22d
+Author: Jiri Denemark <jdenemar@redhat.com>
+Date:   Mon May 3 14:02:56 2010 +0200
+
+    lxc: Make SetMemory work for active domains only
+
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index f118b7d..6884fea 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -642,27 +642,30 @@ static int lxcDomainSetMemory(virDomainPtr dom, unsigned long newmem) {
+         goto cleanup;
+     }
+ 
+-    if (virDomainObjIsActive(vm)) {
+-        if (driver->cgroup == NULL) {
+-            lxcError(VIR_ERR_NO_SUPPORT,
+-                     "%s", _("cgroups must be configured on the host"));
+-            goto cleanup;
+-        }
++    if (!virDomainObjIsActive(vm)) {
++        lxcError(VIR_ERR_OPERATION_INVALID,
++                 "%s", _("Domain is not running"));
++        goto cleanup;
++    }
+ 
+-        if (virCgroupForDomain(driver->cgroup, vm->def->name, &cgroup, 0) != 0) {
+-            lxcError(VIR_ERR_INTERNAL_ERROR,
+-                     _("Unable to get cgroup for %s"), vm->def->name);
+-            goto cleanup;
+-        }
++    if (driver->cgroup == NULL) {
++        lxcError(VIR_ERR_NO_SUPPORT,
++                 "%s", _("cgroups must be configured on the host"));
++        goto cleanup;
++    }
+ 
+-        if (virCgroupSetMemory(cgroup, newmem) < 0) {
+-            lxcError(VIR_ERR_OPERATION_FAILED,
+-                     "%s", _("Failed to set memory for domain"));
+-            goto cleanup;
+-        }
+-    } else {
+-        vm->def->memory = newmem;
++    if (virCgroupForDomain(driver->cgroup, vm->def->name, &cgroup, 0) != 0) {
++        lxcError(VIR_ERR_INTERNAL_ERROR,
++                 _("Unable to get cgroup for %s"), vm->def->name);
++        goto cleanup;
++    }
++
++    if (virCgroupSetMemory(cgroup, newmem) < 0) {
++        lxcError(VIR_ERR_OPERATION_FAILED,
++                 "%s", _("Failed to set memory for domain"));
++        goto cleanup;
+     }
++
+     ret = 0;
+ 
+ cleanup:

@@ -1,0 +1,53 @@
+commit d84bb6d6a3bd2fdd530184cc9743249ebddbee71
+Author: Jiri Denemark <jdenemar@redhat.com>
+Date:   Wed May 12 11:50:52 2010 +0200
+
+    Fix monitor ref counting when adding event handle
+    
+    When closing a monitor using qemuMonitorClose(), we are aware of
+    the possibility the monitor is still being used somewhere:
+    
+        /* NB: ordinarily one might immediately set mon->watch to -1
+         * and mon->fd to -1, but there may be a callback active
+         * that is still relying on these fields being valid. So
+         * we merely close them, but not clear their values and
+         * use this explicit 'closed' flag to track this state */
+    
+    but since we call virEventAddHandle() on that monitor without increasing
+    its ref counter, the monitor is still freed which makes possible users
+    of it quite unhappy. The unhappiness can lead to a hang if qemuMonitorIO
+    tries to lock mutex which no longer exists.
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index abf1338..7517e39 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -223,6 +223,14 @@ int qemuMonitorUnref(qemuMonitorPtr mon)
+     return mon->refs;
+ }
+ 
++static void
++qemuMonitorUnwatch(void *monitor)
++{
++    qemuMonitorPtr mon = monitor;
++
++    qemuMonitorLock(mon);
++    qemuMonitorUnref(mon);
++}
+ 
+ static int
+ qemuMonitorOpenUnix(const char *monitor)
+@@ -648,11 +656,12 @@ qemuMonitorOpen(virDomainObjPtr vm,
+                                         VIR_EVENT_HANDLE_ERROR |
+                                         VIR_EVENT_HANDLE_READABLE,
+                                         qemuMonitorIO,
+-                                        mon, NULL)) < 0) {
++                                        mon, qemuMonitorUnwatch)) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                         _("unable to register monitor events"));
+         goto cleanup;
+     }
++    qemuMonitorRef(mon);
+ 
+     VIR_DEBUG("New mon %p fd =%d watch=%d", mon, mon->fd, mon->watch);
+     qemuMonitorUnlock(mon);

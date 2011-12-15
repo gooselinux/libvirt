@@ -1,0 +1,201 @@
+https://bugzilla.redhat.com/622515 - When hot-unplugging CPUs,
+libvirt failed to start a guest that had been pinned to CPUs that
+were still online.
+
+Tested on a dual-core laptop, where I also discovered that, per
+http://www.cyberciti.biz/files/linux-kernel/Documentation/cpu-hotplug.txt,
+/sys/devices/system/cpu/cpu0/online does not exist on systems where it
+cannot be hot-unplugged.
+
+* src/nodeinfo.c (linuxNodeInfoCPUPopulate): Ignore CPUs that are
+currently offline.  Detect readdir failure.
+(parse_socket): Move guts...
+(get_cpu_value): ...to new function, shared with...
+(cpu_online): New function.
+(cherry picked from commit d413e5d7659f07994a79290a56c904a9b136ee2d)
+---
+
+Upstream patch now committed.
+
+Diff from v1 to v2:
+change get_cpu_value to use less stack space when parsing an int
+
+ src/nodeinfo.c |  112 ++++++++++++++++++++++++++++++++++++++------------------
+ 1 files changed, 76 insertions(+), 36 deletions(-)
+
+diff --git a/src/nodeinfo.c b/src/nodeinfo.c
+index 4d7fac1..982240a 100644
+--- a/src/nodeinfo.c
++++ b/src/nodeinfo.c
+@@ -23,6 +23,7 @@
+
+ #include <config.h>
+
++#include <stdbool.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -47,6 +48,7 @@
+ #include "logging.h"
+ #include "virterror_internal.h"
+ #include "count-one-bits.h"
++#include "intprops.h"
+
+
+ #define VIR_FROM_THIS VIR_FROM_NONE
+@@ -63,6 +65,60 @@
+ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
+                              virNodeInfoPtr nodeinfo);
+
++/* Return the positive decimal contents of the given
++ * CPU_SYS_PATH/cpu%u/FILE, or -1 on error.  If MISSING_OK and the
++ * file could not be found, return 1 instead of an error; this is
++ * because some machines cannot hot-unplug cpu0.  */
++static int
++get_cpu_value(unsigned int cpu, const char *file, bool missing_ok)
++{
++    char *path;
++    FILE *pathfp;
++    int value = -1;
++    char value_str[INT_BUFSIZE_BOUND(value)];
++    char *tmp;
++
++    if (virAsprintf(&path, CPU_SYS_PATH "/cpu%u/%s", cpu, file) < 0) {
++        virReportOOMError();
++        return -1;
++    }
++
++    pathfp = fopen(path, "r");
++    if (pathfp == NULL) {
++        if (missing_ok && errno == ENOENT)
++            value = 1;
++        else
++            virReportSystemError(errno, _("cannot open %s"), path);
++        goto cleanup;
++    }
++
++    if (fgets(value_str, sizeof(value_str), pathfp) == NULL) {
++        virReportSystemError(errno, _("cannot read from %s"), path);
++        goto cleanup;
++    }
++    if (virStrToLong_i(value_str, &tmp, 10, &value) < 0) {
++        nodeReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("could not convert '%s' to an integer"),
++                        value_str);
++        goto cleanup;
++    }
++
++cleanup:
++    if (pathfp)
++        fclose(pathfp);
++    VIR_FREE(path);
++
++    return value;
++}
++
++/* Check if CPU is online via CPU_SYS_PATH/cpu%u/online.  Return 1 if online,
++   0 if offline, and -1 on error.  */
++static int
++cpu_online(unsigned int cpu)
++{
++    return get_cpu_value(cpu, "online", cpu == 0);
++}
++
+ static unsigned long count_thread_siblings(unsigned int cpu)
+ {
+     unsigned long ret = 0;
+@@ -109,41 +165,7 @@ cleanup:
+
+ static int parse_socket(unsigned int cpu)
+ {
+-    char *path;
+-    FILE *pathfp;
+-    char socket_str[1024];
+-    char *tmp;
+-    int socket = -1;
+-
+-    if (virAsprintf(&path, CPU_SYS_PATH "/cpu%u/topology/physical_package_id",
+-                    cpu) < 0) {
+-        virReportOOMError();
+-        return -1;
+-    }
+-
+-    pathfp = fopen(path, "r");
+-    if (pathfp == NULL) {
+-        virReportSystemError(errno, _("cannot open %s"), path);
+-        VIR_FREE(path);
+-        return -1;
+-    }
+-
+-    if (fgets(socket_str, sizeof(socket_str), pathfp) == NULL) {
+-        virReportSystemError(errno, _("cannot read from %s"), path);
+-        goto cleanup;
+-    }
+-    if (virStrToLong_i(socket_str, &tmp, 10, &socket) < 0) {
+-        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("could not convert '%s' to an integer"),
+-                        socket_str);
+-        goto cleanup;
+-    }
+-
+-cleanup:
+-    fclose(pathfp);
+-    VIR_FREE(path);
+-
+-    return socket;
++    return get_cpu_value(cpu, "topology/physical_package_id", false);
+ }
+
+ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
+@@ -156,6 +178,8 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
+     unsigned long cur_threads;
+     int socket;
+     unsigned long long socket_mask = 0;
++    unsigned int remaining;
++    int online;
+
+     nodeinfo->cpus = 0;
+     nodeinfo->mhz = 0;
+@@ -225,15 +249,25 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
+     /* OK, we've parsed what we can out of /proc/cpuinfo.  Get the socket
+      * and thread information from /sys
+      */
++    remaining = nodeinfo->cpus;
+     cpudir = opendir(CPU_SYS_PATH);
+     if (cpudir == NULL) {
+         virReportSystemError(errno, _("cannot opendir %s"), CPU_SYS_PATH);
+         return -1;
+     }
+-    while ((cpudirent = readdir(cpudir))) {
++    while ((errno = 0), remaining && (cpudirent = readdir(cpudir))) {
+         if (sscanf(cpudirent->d_name, "cpu%u", &cpu) != 1)
+             continue;
+
++        online = cpu_online(cpu);
++        if (online < 0) {
++            closedir(cpudir);
++            return -1;
++        }
++        if (!online)
++            continue;
++        remaining--;
++
+         socket = parse_socket(cpu);
+         if (socket < 0) {
+             closedir(cpudir);
+@@ -252,6 +286,12 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
+         if (cur_threads > nodeinfo->threads)
+             nodeinfo->threads = cur_threads;
+     }
++    if (errno) {
++        virReportSystemError(errno,
++                             _("problem reading %s"), CPU_SYS_PATH);
++        closedir(cpudir);
++        return -1;
++    }
+
+     closedir(cpudir);
+
+-- 
+1.7.1
+

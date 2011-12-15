@@ -1,0 +1,40 @@
+From: Chris Wright <chrisw@redhat.com>
+
+    The first conditional is always true which means the iterator will
+    never find another device on the same bus.
+    
+        if (dev->domain != check->domain ||
+            dev->bus != check->bus ||
+      ----> (check->slot == check->slot &&
+             check->function == check->function)) <-----
+    
+    The goal of that check is to verify that the device is either:
+    
+      in a different pci domain
+      on a different bus
+      is the same identical device
+    
+    This means libvirt may issue a secondary bus reset when there are
+    devices
+    on that bus that actively in use by the host or another guest.
+    
+    * src/util/pci.c: fix a bogus test in pciSharesBusWithActive()
+
+diff -urp libvirt-0.8.1.orig/src/util/pci.c libvirt-0.8.1-p1/src/util/pci.c
+--- libvirt-0.8.1.orig/src/util/pci.c	2010-04-06 09:27:40.000000000 -0400
++++ libvirt-0.8.1-p1/src/util/pci.c	2010-07-27 11:59:55.993011181 -0400
+@@ -446,10 +446,11 @@ pciSharesBusWithActive(pciDevice *dev, p
+ {
+     pciDeviceList *activeDevs = data;
+ 
++    /* Different domain, different bus, or simply identical device */
+     if (dev->domain != check->domain ||
+         dev->bus != check->bus ||
+-        (check->slot == check->slot &&
+-         check->function == check->function))
++        (dev->slot == check->slot &&
++         dev->function == check->function))
+         return 0;
+ 
+     if (activeDevs && !pciDeviceListFind(activeDevs, check))
+

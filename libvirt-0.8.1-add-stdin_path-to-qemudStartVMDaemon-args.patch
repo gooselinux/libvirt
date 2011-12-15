@@ -1,0 +1,177 @@
+From: Jamie Strandboge <jamie@ubuntu.com>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=590975
+
+Adjust args to qemudStartVMDaemon() to also specify path to stdin_fd,
+so this can be passed to the AppArmor driver via SetSecurityAllLabel().
+
+This updates all calls to qemudStartVMDaemon() as well as setting up
+the security driver *SetSecurityAllLabel() declarations. This is a
+prerequisite to fixing the selinux labelling, since it is the file
+speficied in stdin_path that is having its labels changed.
+---
+ src/qemu/qemu_driver.c           |   22 +++++++++++++---------
+ src/qemu/qemu_security_dac.c     |    2 +-
+ src/qemu/qemu_security_stacked.c |    6 +++---
+ src/security/security_driver.h   |    3 ++-
+ src/security/security_selinux.c  |    2 +-
+ 5 files changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 8ab56f5..17d57f3 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -176,7 +176,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+                               virDomainObjPtr vm,
+                               const char *migrateFrom,
+                               bool start_paused,
+-                              int stdin_fd);
++                              int stdin_fd,
++                              const char *stdin_path);
+ 
+ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+                                   virDomainObjPtr vm,
+@@ -3794,7 +3795,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+                               virDomainObjPtr vm,
+                               const char *migrateFrom,
+                               bool start_paused,
+-                              int stdin_fd) {
++                              int stdin_fd,
++                              const char *stdin_path) {
+     const char **argv = NULL, **tmp;
+     const char **progenv = NULL;
+     int i, ret, runflags;
+@@ -3849,7 +3851,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     DEBUG0("Generating setting domain security labels (if required)");
+     if (driver->securityDriver &&
+         driver->securityDriver->domainSetSecurityAllLabel &&
+-        driver->securityDriver->domainSetSecurityAllLabel(vm) < 0)
++        driver->securityDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0)
+         goto cleanup;
+ 
+     /* Ensure no historical cgroup for this VM is lying around bogus
+@@ -4750,7 +4752,7 @@ static virDomainPtr qemudDomainCreate(virConnectPtr conn, const char *xml,
+ 
+     if (qemudStartVMDaemon(conn, driver, vm, NULL,
+                            (flags & VIR_DOMAIN_START_PAUSED) != 0,
+-                           -1) < 0) {
++                           -1, NULL) < 0) {
+         if (qemuDomainObjEndJob(vm) > 0)
+             virDomainRemoveInactive(&driver->domains,
+                                     vm);
+@@ -6765,7 +6767,7 @@ qemudDomainSaveImageStartVM(virConnectPtr conn,
+     }
+ 
+     /* Set the migration source and start it up. */
+-    ret = qemudStartVMDaemon(conn, driver, vm, "stdio", true, fd);
++    ret = qemudStartVMDaemon(conn, driver, vm, "stdio", true, fd, path);
+ 
+     if (intermediate_pid != -1) {
+         /* Wait for intermediate process to exit */
+@@ -7222,7 +7224,7 @@ static int qemudDomainObjStart(virConnectPtr conn,
+             goto cleanup;
+     }
+ 
+-    ret = qemudStartVMDaemon(conn, driver, vm, NULL, false, -1);
++    ret = qemudStartVMDaemon(conn, driver, vm, NULL, false, -1, NULL);
+     if (ret != -1) {
+         virDomainEventPtr event =
+             virDomainEventNewFromObj(vm,
+@@ -10718,7 +10720,8 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+     /* Start the QEMU daemon, with the same command-line arguments plus
+      * -incoming unix:/path/to/file or exec:nc -U /path/to/file
+      */
+-    internalret = qemudStartVMDaemon(dconn, driver, vm, migrateFrom, true, -1);
++    internalret = qemudStartVMDaemon(dconn, driver, vm, migrateFrom, true, -1,
++                                     NULL);
+     VIR_FREE(migrateFrom);
+     if (internalret < 0) {
+         /* Note that we don't set an error here because qemudStartVMDaemon
+@@ -10928,7 +10931,8 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+      * -incoming tcp:0.0.0.0:port
+      */
+     snprintf (migrateFrom, sizeof (migrateFrom), "tcp:0.0.0.0:%d", this_port);
+-    if (qemudStartVMDaemon (dconn, driver, vm, migrateFrom, true, -1) < 0) {
++    if (qemudStartVMDaemon (dconn, driver, vm, migrateFrom,
++                            true, -1, NULL) < 0) {
+         /* Note that we don't set an error here because qemudStartVMDaemon
+          * should have already done that.
+          */
+@@ -12427,7 +12431,7 @@ static int qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+                 goto endjob;
+ 
+             rc = qemudStartVMDaemon(snapshot->domain->conn, driver, vm, NULL,
+-                                    false, -1);
++                                    false, -1, NULL);
+             if (qemuDomainSnapshotSetInactive(vm, driver->snapshotDir) < 0)
+                 goto endjob;
+             if (rc < 0)
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index 3e4abe1..e6aea78 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -478,7 +478,7 @@ qemuSecurityDACSetChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ 
+ 
+ static int
+-qemuSecurityDACSetSecurityAllLabel(virDomainObjPtr vm)
++qemuSecurityDACSetSecurityAllLabel(virDomainObjPtr vm, const char *stdin_path ATTRIBUTE_UNUSED)
+ {
+     int i;
+ 
+diff --git a/src/qemu/qemu_security_stacked.c b/src/qemu/qemu_security_stacked.c
+index 8e8b503..df76135 100644
+--- a/src/qemu/qemu_security_stacked.c
++++ b/src/qemu/qemu_security_stacked.c
+@@ -196,18 +196,18 @@ qemuSecurityStackedRestoreSecurityHostdevLabel(virDomainObjPtr vm,
+ 
+ 
+ static int
+-qemuSecurityStackedSetSecurityAllLabel(virDomainObjPtr vm)
++qemuSecurityStackedSetSecurityAllLabel(virDomainObjPtr vm, const char *stdin_path)
+ {
+     int rc = 0;
+ 
+     if (driver->securitySecondaryDriver &&
+         driver->securitySecondaryDriver->domainSetSecurityAllLabel &&
+-        driver->securitySecondaryDriver->domainSetSecurityAllLabel(vm) < 0)
++        driver->securitySecondaryDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0)
+         rc = -1;
+ 
+     if (driver->securityPrimaryDriver &&
+         driver->securityPrimaryDriver->domainSetSecurityAllLabel &&
+-        driver->securityPrimaryDriver->domainSetSecurityAllLabel(vm) < 0)
++        driver->securityPrimaryDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0)
+         rc = -1;
+ 
+     return rc;
+diff --git a/src/security/security_driver.h b/src/security/security_driver.h
+index b37ebc5..99260a4 100644
+--- a/src/security/security_driver.h
++++ b/src/security/security_driver.h
+@@ -49,7 +49,8 @@ typedef int (*virSecurityDomainRestoreSavedStateLabel) (virDomainObjPtr vm,
+ typedef int (*virSecurityDomainGenLabel) (virDomainObjPtr sec);
+ typedef int (*virSecurityDomainReserveLabel) (virDomainObjPtr sec);
+ typedef int (*virSecurityDomainReleaseLabel) (virDomainObjPtr sec);
+-typedef int (*virSecurityDomainSetAllLabel) (virDomainObjPtr sec);
++typedef int (*virSecurityDomainSetAllLabel) (virDomainObjPtr sec,
++                                             const char *stdin_path);
+ typedef int (*virSecurityDomainRestoreAllLabel) (virDomainObjPtr vm,
+                                                  int migrated);
+ typedef int (*virSecurityDomainGetProcessLabel) (virDomainObjPtr vm,
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index 7f044db..49e0f44 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -974,7 +974,7 @@ SELinuxSetSecurityChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ 
+ 
+ static int
+-SELinuxSetSecurityAllLabel(virDomainObjPtr vm)
++SELinuxSetSecurityAllLabel(virDomainObjPtr vm, const char *stdin_path ATTRIBUTE_UNUSED)
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+     int i;
+-- 
+1.7.1
+

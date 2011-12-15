@@ -1,0 +1,109 @@
+The parallel, serial, console and channel devices are all just
+character devices. A lot of code needs todo the same thing to
+all these devices. This provides an convenient API for iterating
+over all of them.
+
+* src/conf/domain_conf.c, src/conf/domain_conf.c,
+  src/libvirt_private.syms: Add virDomainChrDefForeach
+---
+ src/conf/domain_conf.c   |   52 ++++++++++++++++++++++++++++++++++++++++++++++
+ src/conf/domain_conf.h   |    9 ++++++++
+ src/libvirt_private.syms |    1 +
+ 3 files changed, 62 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 9c3184a..7239e7a 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -7406,4 +7406,56 @@ int virDomainSnapshotHasChildren(virDomainSnapshotObjPtr snap,
+ }
+ 
+ 
++int virDomainChrDefForeach(virDomainDefPtr def,
++                           bool abortOnError,
++                           virDomainChrDefIterator iter,
++                           void *opaque)
++{
++    int i;
++    int rc = 0;
++
++    for (i = 0 ; i < def->nserials ; i++) {
++        if ((iter)(def,
++                   def->serials[i],
++                   opaque) < 0)
++            rc = -1;
++
++        if (abortOnError && rc != 0)
++            goto done;
++    }
++
++    for (i = 0 ; i < def->nparallels ; i++) {
++        if ((iter)(def,
++                   def->parallels[i],
++                   opaque) < 0)
++            rc = -1;
++
++        if (abortOnError && rc != 0)
++            goto done;
++    }
++
++    for (i = 0 ; i < def->nchannels ; i++) {
++        if ((iter)(def,
++                   def->channels[i],
++                   opaque) < 0)
++            rc = -1;
++
++        if (abortOnError && rc != 0)
++            goto done;
++    }
++    if (def->console) {
++        if ((iter)(def,
++                   def->console,
++                   opaque) < 0)
++            rc = -1;
++
++        if (abortOnError && rc != 0)
++            goto done;
++    }
++
++done:
++    return rc;
++}
++
++
+ #endif /* ! PROXY */
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 0e529d4..4f47f72 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1100,6 +1100,15 @@ int virDomainObjListGetInactiveNames(virDomainObjListPtr doms,
+                                      char **const names,
+                                      int maxnames);
+ 
++typedef int (*virDomainChrDefIterator)(virDomainDefPtr def,
++                                       virDomainChrDefPtr dev,
++                                       void *opaque);
++
++int virDomainChrDefForeach(virDomainDefPtr def,
++                           bool abortOnError,
++                           virDomainChrDefIterator iter,
++                           void *opaque);
++
+ 
+ VIR_ENUM_DECL(virDomainVirt)
+ VIR_ENUM_DECL(virDomainBoot)
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index b3bf8a4..35a934d 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -220,6 +220,7 @@ virDomainSnapshotDefParseString;
+ virDomainSnapshotDefFormat;
+ virDomainSnapshotAssignDef;
+ virDomainObjAssignDef;
++virDomainChrDefForeach;
+ 
+ 
+ # domain_event.h
+-- 
+1.6.6.1
+

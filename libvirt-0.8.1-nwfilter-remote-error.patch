@@ -1,0 +1,50 @@
+commit 34a7f3f6be9c63ac3d4c4604c1fb2482a4e5053b
+Author: Matthew Booth <mbooth@redhat.com>
+Date:   Fri May 7 16:38:05 2010 +0200
+
+    Remove unused nwfilter field from struct remote_error
+    
+    Change 965466c1 added a new field to struct remote_error, which broke
+    the RPC protocol. Fortunately the new field is unused, so this change
+    simply removes it again.
+    
+    * src/remote/remote_protocol.(c|h|x): Remove remote_nwfilter from struct
+      remote_error
+
+diff --git a/src/remote/remote_protocol.c b/src/remote/remote_protocol.c
+index 187281d..972bf52 100644
+--- a/src/remote/remote_protocol.c
++++ b/src/remote/remote_protocol.c
+@@ -227,8 +227,6 @@ xdr_remote_error (XDR *xdrs, remote_error *objp)
+                  return FALSE;
+          if (!xdr_remote_network (xdrs, &objp->net))
+                  return FALSE;
+-         if (!xdr_remote_nwfilter (xdrs, &objp->nwfilter))
+-                 return FALSE;
+         return TRUE;
+ }
+ 
+diff --git a/src/remote/remote_protocol.h b/src/remote/remote_protocol.h
+index 6f01da7..a600af6 100644
+--- a/src/remote/remote_protocol.h
++++ b/src/remote/remote_protocol.h
+@@ -143,7 +143,6 @@ struct remote_error {
+         int int1;
+         int int2;
+         remote_network net;
+-        remote_nwfilter nwfilter;
+ };
+ typedef struct remote_error remote_error;
+ 
+diff --git a/src/remote/remote_protocol.x b/src/remote/remote_protocol.x
+index 8000ee0..1ce488c 100644
+--- a/src/remote/remote_protocol.x
++++ b/src/remote/remote_protocol.x
+@@ -266,7 +266,6 @@ struct remote_error {
+     int int1;
+     int int2;
+     remote_network net;
+-    remote_nwfilter nwfilter;
+ };
+ 
+ /* Authentication types available thus far.... */

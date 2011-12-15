@@ -1,0 +1,52 @@
+commit eca81e08be2ca7fa322b91983e4aa65664341c47
+Author: Jiri Denemark <jdenemar@redhat.com>
+Date:   Mon May 3 14:04:44 2010 +0200
+
+    lxc: Check domain is active/inactive as required by operation
+    
+    Report VIR_ERR_OPERATION_INVALID when operation which requires running
+    domain is called on inactive domain and vice versa.
+
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index 6884fea..fc0df37 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -1378,6 +1378,12 @@ static int lxcDomainStart(virDomainPtr dom)
+         goto cleanup;
+     }
+ 
++    if (virDomainObjIsActive(vm)) {
++        lxcError(VIR_ERR_OPERATION_INVALID,
++                 "%s", _("Domain is already running"));
++        goto cleanup;
++    }
++
+     ret = lxcVmStart(dom->conn, driver, vm);
+ 
+     if (ret == 0)
+@@ -1483,6 +1489,12 @@ static int lxcDomainShutdown(virDomainPtr dom)
+         goto cleanup;
+     }
+ 
++    if (!virDomainObjIsActive(vm)) {
++        lxcError(VIR_ERR_OPERATION_INVALID,
++                 "%s", _("Domain is not running"));
++        goto cleanup;
++    }
++
+     ret = lxcVmTerminate(driver, vm, 0);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+@@ -1662,6 +1674,12 @@ static int lxcDomainDestroy(virDomainPtr dom)
+         goto cleanup;
+     }
+ 
++    if (!virDomainObjIsActive(vm)) {
++        lxcError(VIR_ERR_OPERATION_INVALID,
++                 "%s", _("Domain is not running"));
++        goto cleanup;
++    }
++
+     ret = lxcVmTerminate(driver, vm, SIGKILL);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,

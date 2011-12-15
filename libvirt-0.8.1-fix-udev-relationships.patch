@@ -1,0 +1,86 @@
+Fixes:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=593995
+
+Improve nodedev parent/child relationships
+
+* If a nodedev has a parent that we don't want to display, we should
+  continue walking up the udev device tree to see if any of its
+  earlier ancestors are devices that we display.  It makes the tree
+  much nicer looking than having a whole lot of devices hanging off
+  the root node.
+---
+ src/node_device/node_device_udev.c |   54 ++++++++++++++++++++++--------------
+ 1 files changed, 33 insertions(+), 21 deletions(-)
+
+diff --git a/src/node_device/node_device_udev.c b/src/node_device/node_device_udev.c
+index 40138f1..8cba13a 100644
+--- a/src/node_device/node_device_udev.c
++++ b/src/node_device/node_device_udev.c
+@@ -1223,31 +1223,43 @@ static int udevSetParent(struct udev_device *device,
+     virNodeDeviceObjPtr dev = NULL;
+     int ret = -1;
+
+-    parent_device = udev_device_get_parent(device);
+-    if (parent_device == NULL) {
+-        VIR_INFO("Could not find udev parent for device with sysfs path '%s'",
+-                 udev_device_get_syspath(device));
+-    }
++    parent_device = device;
++    do {
+
+-    parent_sysfs_path = udev_device_get_syspath(parent_device);
+-    if (parent_sysfs_path == NULL) {
+-        VIR_INFO("Could not get syspath for parent of '%s'",
+-                 udev_device_get_syspath(device));
+-        parent_sysfs_path = "";
+-    }
++        parent_device = udev_device_get_parent(parent_device);
++        if (parent_device == NULL) {
++            break;
++        }
+
+-    def->parent_sysfs_path = strdup(parent_sysfs_path);
+-    if (def->parent_sysfs_path == NULL) {
+-        virReportOOMError();
+-        goto out;
+-    }
++        parent_sysfs_path = udev_device_get_syspath(parent_device);
++        if (parent_sysfs_path == NULL) {
++            VIR_INFO("Could not get syspath for parent of '%s'",
++                     udev_device_get_syspath(parent_device));
++        }
+
+-    dev = virNodeDeviceFindBySysfsPath(&driverState->devs, parent_sysfs_path);
+-    if (dev == NULL) {
++        dev = virNodeDeviceFindBySysfsPath(&driverState->devs,
++                                           parent_sysfs_path);
++        if (dev != NULL) {
++            def->parent = strdup(dev->def->name);
++            virNodeDeviceObjUnlock(dev);
++
++            if (def->parent == NULL) {
++                virReportOOMError();
++                goto out;
++            }
++
++            def->parent_sysfs_path = strdup(parent_sysfs_path);
++            if (def->parent_sysfs_path == NULL) {
++                virReportOOMError();
++                goto out;
++            }
++
++        }
++
++    } while (def->parent == NULL && parent_device != NULL);
++
++    if (def->parent == NULL) {
+         def->parent = strdup("computer");
+-    } else {
+-        def->parent = strdup(dev->def->name);
+-        virNodeDeviceObjUnlock(dev);
+     }
+
+     if (def->parent == NULL) {
+-- 
+1.6.6.1

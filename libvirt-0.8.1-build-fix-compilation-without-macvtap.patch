@@ -1,0 +1,31 @@
+>From 8d9c7a93bcbad1cb80134715ebc88f8534e6131e Mon Sep 17 00:00:00 2001
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 25 May 2010 16:44:05 -0600
+Subject: [PATCH] build: fix compilation without macvtap
+
+* src/util/macvtap.c: (associatePortProfileId)
+(disassociatePortProfileId): Move inside HAVE_MACVTAP
+conditional.
+Reported by Eduardo Otubo.
+---
+ src/util/macvtap.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff -rupN a/src/util/macvtap.c b/src/util/macvtap.c
+--- a/src/util/macvtap.c	2010-06-03 12:21:22.017264774 -0400
++++ b/src/util/macvtap.c	2010-06-03 12:30:52.392264782 -0400
+@@ -718,8 +718,6 @@ delMacvtap(const char *ifname,
+     }
+ }
+ 
+-#endif
+-
+ 
+ /**
+  * associatePortProfile
+@@ -801,3 +799,5 @@ disassociatePortProfileId(const char *ma
+ 
+     return rc;
+ }
++
++#endif /* WITH_MACVTAP */

@@ -1,0 +1,56 @@
+Fixes:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=597998
+
+* Set return value in error cases
+* Clarify error message when parent device is not vport capable
+---
+ src/conf/node_device_conf.c          |    4 ++--
+ src/node_device/node_device_driver.c |    3 ++-
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/node_device_conf.c b/src/conf/node_device_conf.c
+index 7f2dac8..6583570 100644
+--- a/src/conf/node_device_conf.c
++++ b/src/conf/node_device_conf.c
+@@ -1308,7 +1308,7 @@ virNodeDeviceGetParentHost(const virNodeDeviceObjListPtr devs,
+     parent = virNodeDeviceFindByName(devs, parent_name);
+     if (parent == NULL) {
+         virNodeDeviceReportError(VIR_ERR_INTERNAL_ERROR,
+-                                 _("Could not find parent HBA for '%s'"),
++                                 _("Could not find parent device for '%s'"),
+                                  dev_name);
+         ret = -1;
+         goto out;
+@@ -1328,7 +1328,7 @@ virNodeDeviceGetParentHost(const virNodeDeviceObjListPtr devs,
+
+     if (cap == NULL) {
+         virNodeDeviceReportError(VIR_ERR_INTERNAL_ERROR,
+-                                 _("Parent HBA %s is not capable "
++                                 _("Parent device %s is not capable "
+                                    "of vport operations"),
+                                  parent->def->name);
+         ret = -1;
+diff --git a/src/node_device/node_device_driver.c b/src/node_device/node_device_driver.c
+index b0ea986..1b6d7aa 100644
+--- a/src/node_device/node_device_driver.c
++++ b/src/node_device/node_device_driver.c
+@@ -584,7 +584,7 @@ cleanup:
+ static int
+ nodeDeviceDestroy(virNodeDevicePtr dev)
+ {
+-    int ret = 0;
++    int ret = -1;
+     virDeviceMonitorStatePtr driver = dev->conn->devMonPrivateData;
+     virNodeDeviceObjPtr obj = NULL;
+     char *parent_name = NULL, *wwnn = NULL, *wwpn = NULL;
+@@ -631,6 +631,7 @@ nodeDeviceDestroy(virNodeDevicePtr dev)
+         goto out;
+     }
+
++    ret = 0;
+ out:
+     if (obj)
+         virNodeDeviceObjUnlock(obj);
+-- 
+1.6.6.1

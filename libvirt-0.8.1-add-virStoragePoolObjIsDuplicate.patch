@@ -1,0 +1,153 @@
+The storage pool driver is not doing correct checking for
+duplicate UUID/name values. This introduces a new method
+virStoragePoolObjIsDuplicate, based on the previously
+written virDomainObjIsDuplicate.
+
+* src/conf/storage_conf.c, src/conf/storage_conf.c,
+  src/libvirt_private.syms: Add virStoragePoolObjIsDuplicate,
+* src/storage/storage_driver.c: Call virStoragePoolObjIsDuplicate
+  for checking uniqueness of uuid/names
+---
+ src/conf/storage_conf.c      |   63 ++++++++++++++++++++++++++++++++++++++++++
+ src/conf/storage_conf.h      |    4 ++
+ src/libvirt_private.syms     |    1 +
+ src/storage/storage_driver.c |   14 ++------
+ 4 files changed, 72 insertions(+), 10 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 3a6c39a..7d2aa7a 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -1636,6 +1636,69 @@ char *virStoragePoolSourceListFormat(virStoragePoolSourceListPtr def)
+ }
+ 
+ 
++/*
++ * virStoragePoolObjIsDuplicate:
++ * @doms : virStoragePoolObjListPtr to search
++ * @def  : virStoragePoolDefPtr definition of pool to lookup
++ * @check_active: If true, ensure that pool is not active
++ *
++ * Returns: -1 on error
++ *          0 if pool is new
++ *          1 if pool is a duplicate
++ */
++int virStoragePoolObjIsDuplicate(virStoragePoolObjListPtr pools,
++                                 virStoragePoolDefPtr def,
++                                 unsigned int check_active)
++{
++    int ret = -1;
++    int dupPool = 0;
++    virStoragePoolObjPtr pool = NULL;
++
++    /* See if a Pool with matching UUID already exists */
++    pool = virStoragePoolObjFindByUUID(pools, def->uuid);
++    if (pool) {
++        /* UUID matches, but if names don't match, refuse it */
++        if (STRNEQ(pool->def->name, def->name)) {
++            char uuidstr[VIR_UUID_STRING_BUFLEN];
++            virUUIDFormat(pool->def->uuid, uuidstr);
++            virStorageReportError(VIR_ERR_OPERATION_FAILED,
++                                  _("pool '%s' is already defined with uuid %s"),
++                                  pool->def->name, uuidstr);
++            goto cleanup;
++        }
++
++        if (check_active) {
++            /* UUID & name match, but if Pool is already active, refuse it */
++            if (virStoragePoolObjIsActive(pool)) {
++                virStorageReportError(VIR_ERR_OPERATION_INVALID,
++                                      _("pool is already active as '%s'"),
++                                      pool->def->name);
++                goto cleanup;
++            }
++        }
++
++        dupPool = 1;
++    } else {
++        /* UUID does not match, but if a name matches, refuse it */
++        pool = virStoragePoolObjFindByName(pools, def->name);
++        if (pool) {
++            char uuidstr[VIR_UUID_STRING_BUFLEN];
++            virUUIDFormat(pool->def->uuid, uuidstr);
++            virStorageReportError(VIR_ERR_OPERATION_FAILED,
++                                  _("pool '%s' already exists with uuid %s"),
++                                  def->name, uuidstr);
++            goto cleanup;
++        }
++    }
++
++    ret = dupPool;
++cleanup:
++    if (pool)
++        virStoragePoolObjUnlock(pool);
++    return ret;
++}
++
++
+ void virStoragePoolObjLock(virStoragePoolObjPtr obj)
+ {
+     virMutexLock(&obj->lock);
+diff --git a/src/conf/storage_conf.h b/src/conf/storage_conf.h
+index 1c9ba04..58b88e4 100644
+--- a/src/conf/storage_conf.h
++++ b/src/conf/storage_conf.h
+@@ -379,6 +379,10 @@ virStoragePoolSourcePtr
+ virStoragePoolSourceListNewSource(virStoragePoolSourceListPtr list);
+ char *virStoragePoolSourceListFormat(virStoragePoolSourceListPtr def);
+ 
++int virStoragePoolObjIsDuplicate(virStoragePoolObjListPtr pools,
++                                 virStoragePoolDefPtr def,
++                                 unsigned int check_active);
++
+ void virStoragePoolObjLock(virStoragePoolObjPtr obj);
+ void virStoragePoolObjUnlock(virStoragePoolObjPtr obj);
+ 
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 35a934d..bf2ac1e 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -607,6 +607,7 @@ virStoragePoolTypeFromString;
+ virStoragePartedFsTypeTypeToString;
+ virStoragePoolObjLock;
+ virStoragePoolObjUnlock;
++virStoragePoolObjIsDuplicate;
+ 
+ # storage_encryption_conf.h
+ virStorageEncryptionFree;
+diff --git a/src/storage/storage_driver.c b/src/storage/storage_driver.c
+index 1a10221..ccfbb09 100644
+--- a/src/storage/storage_driver.c
++++ b/src/storage/storage_driver.c
+@@ -521,17 +521,8 @@ storagePoolCreate(virConnectPtr conn,
+     if (!(def = virStoragePoolDefParseString(xml)))
+         goto cleanup;
+ 
+-    pool = virStoragePoolObjFindByUUID(&driver->pools, def->uuid);
+-    if (!pool)
+-        pool = virStoragePoolObjFindByName(&driver->pools, def->name);
+-
+-    if (pool) {
+-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
+-                              "%s", _("storage pool already exists"));
+-        virStoragePoolObjUnlock(pool);
+-        pool = NULL;
++    if (virStoragePoolObjIsDuplicate(&driver->pools, def, 1) < 0)
+         goto cleanup;
+-    }
+ 
+     if ((backend = virStorageBackendForType(def->type)) == NULL)
+         goto cleanup;
+@@ -579,6 +570,9 @@ storagePoolDefine(virConnectPtr conn,
+     if (!(def = virStoragePoolDefParseString(xml)))
+         goto cleanup;
+ 
++    if (virStoragePoolObjIsDuplicate(&driver->pools, def, 0) < 0)
++        goto cleanup;
++
+     if (virStorageBackendForType(def->type) == NULL)
+         goto cleanup;
+ 
+-- 
+1.6.6.1
+

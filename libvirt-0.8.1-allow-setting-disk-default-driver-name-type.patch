@@ -1,0 +1,108 @@
+Record a default driver name/type in capabilities struct. Use this
+when parsing disks if value is not set in XML config.
+
+* src/conf/capabilities.h: Record default driver name/type for disks
+* src/conf/domain_conf.c: Fallback to default driver name/type
+  when parsing disks
+* src/qemu/qemu_driver.c: Set default driver name/type to raw
+---
+ src/conf/capabilities.h |    2 ++
+ src/conf/domain_conf.c  |   21 ++++++++++++++++++---
+ src/qemu/qemu_driver.c  |    8 ++++++++
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/capabilities.h b/src/conf/capabilities.h
+index bdf44fa..d4ea4e4 100644
+--- a/src/conf/capabilities.h
++++ b/src/conf/capabilities.h
+@@ -121,6 +121,8 @@ struct _virCaps {
+     virCapsGuestPtr *guests;
+     unsigned char macPrefix[VIR_MAC_PREFIX_BUFLEN];
+     unsigned int emulatorRequired : 1;
++    const char *defaultDiskDriverName;
++    const char *defaultDiskDriverType;
+     void *(*privateDataAllocFunc)(void);
+     void (*privateDataFreeFunc)(void *);
+     int (*privateDataXMLFormat)(virBufferPtr, void *);
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index ee3922f..4523b38 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1420,7 +1420,8 @@ virDomainDiskDefAssignAddress(virDomainDiskDefPtr def)
+  * @param node XML nodeset to parse for disk definition
+  */
+ static virDomainDiskDefPtr
+-virDomainDiskDefParseXML(xmlNodePtr node,
++virDomainDiskDefParseXML(virCapsPtr caps,
++                         xmlNodePtr node,
+                          int flags) {
+     virDomainDiskDefPtr def;
+     xmlNodePtr cur;
+@@ -1649,6 +1650,16 @@ virDomainDiskDefParseXML(xmlNodePtr node,
+     def->serial = serial;
+     serial = NULL;
+ 
++    if (!def->driverType &&
++        caps->defaultDiskDriverType &&
++        !(def->driverType = strdup(caps->defaultDiskDriverType)))
++        goto no_memory;
++
++    if (!def->driverName &&
++        caps->defaultDiskDriverName &&
++        !(def->driverName = strdup(caps->defaultDiskDriverName)))
++        goto no_memory;
++
+     if (def->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE
+         && virDomainDiskDefAssignAddress(def) < 0)
+         goto error;
+@@ -1669,6 +1680,9 @@ cleanup:
+ 
+     return def;
+ 
++no_memory:
++    virReportOOMError();
++
+  error:
+     virDomainDiskDefFree(def);
+     def = NULL;
+@@ -3897,7 +3911,7 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+ 
+     if (xmlStrEqual(node->name, BAD_CAST "disk")) {
+         dev->type = VIR_DOMAIN_DEVICE_DISK;
+-        if (!(dev->data.disk = virDomainDiskDefParseXML(node, flags)))
++        if (!(dev->data.disk = virDomainDiskDefParseXML(caps, node, flags)))
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "filesystem")) {
+         dev->type = VIR_DOMAIN_DEVICE_FS;
+@@ -4404,7 +4418,8 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     if (n && VIR_ALLOC_N(def->disks, n) < 0)
+         goto no_memory;
+     for (i = 0 ; i < n ; i++) {
+-        virDomainDiskDefPtr disk = virDomainDiskDefParseXML(nodes[i],
++        virDomainDiskDefPtr disk = virDomainDiskDefParseXML(caps,
++                                                            nodes[i],
+                                                             flags);
+         if (!disk)
+             goto error;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 81ee51f..377db3e 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1734,6 +1734,14 @@ qemuCreateCapabilities(virCapsPtr oldcaps,
+         return NULL;
+     }
+ 
++    if (driver->allowDiskFormatProbing) {
++        caps->defaultDiskDriverName = NULL;
++        caps->defaultDiskDriverType = NULL;
++    } else {
++        caps->defaultDiskDriverName = "qemu";
++        caps->defaultDiskDriverType = "raw";
++    }
++
+     /* Domain XML parser hooks */
+     caps->privateDataAllocFunc = qemuDomainObjPrivateAlloc;
+     caps->privateDataFreeFunc = qemuDomainObjPrivateFree;
+-- 
+1.7.1.1
+

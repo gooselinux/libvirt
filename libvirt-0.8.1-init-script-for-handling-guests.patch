@@ -1,0 +1,494 @@
+Upstream: 66823690e46944f17e195b1f82c5eee527ddee20
+
+Example output during shutdown:
+
+Running guests on default URI: console, rhel6-1, rhel5-64
+Running guests on lxc:/// URI: lxc-shell
+Running guests on xen:/// URI: error: no hypervisor driver available for xen:///
+error: failed to connect to the hypervisor
+Running guests on vbox+tcp://orkuz/system URI: no running guests.
+Suspending guests on default URI...
+Suspending console: done
+Suspending rhel6-1: done
+Suspending rhel5-64: done
+Suspending guests on lxc:/// URI...
+Suspending lxc-shell: error: Failed to save domain 9cba8bfb-56f4-6589-2d12-8a58c886dd3b state
+error: this function is not supported by the hypervisor: virDomainManagedSave
+
+Note, the "Suspending $guest: " shows progress during the suspend phase
+if domjobinfo gives meaningful output.
+
+Example output during boot:
+
+Resuming guests on default URI...
+Resuming guest rhel6-1: done
+Resuming guest rhel5-64: done
+Resuming guest console: done
+Resuming guests on lxc:/// URI...
+Resuming guest lxc-shell: already active
+
+Configuration used for generating the examples above:
+URIS='default lxc:/// xen:/// vbox+tcp://orkuz/system'
+
+The script uses /var/lib/libvirt/libvirt-guests files to note all active
+guest it should try to resume on next boot. It's content looks like:
+
+default 7f8b9d93-30e1-f0b9-47a7-cb408482654b 085b4c95-5da2-e8e1-712f-6ea6a4156af2 fb4d8360-5305-df3a-2da1-07d682891b8c
+lxc:/// 9cba8bfb-56f4-6589-2d12-8a58c886dd3b
+
+ble
+---
+ daemon/Makefile.am            |   16 ++-
+ daemon/Makefile.in            |   16 ++-
+ daemon/libvirt-guests.init.in |  295 +++++++++++++++++++++++++++++++++++++++++
+ daemon/libvirt-guests.sysconf |   24 ++++
+ libvirt.spec.in               |    4 +
+ 5 files changed, 347 insertions(+), 8 deletions(-)
+ create mode 100644 daemon/libvirt-guests.init.in
+ create mode 100644 daemon/libvirt-guests.sysconf
+
+diff --git a/daemon/Makefile.am b/daemon/Makefile.am
+index a82e9a9..ed469bf 100644
+--- a/daemon/Makefile.am
++++ b/daemon/Makefile.am
+@@ -29,6 +29,8 @@ EXTRA_DIST =						\
+ 	libvirtd.lxc.logrotate.in                       \
+ 	libvirtd.uml.logrotate.in                       \
+ 	test_libvirtd.aug                               \
++	libvirt-guests.init.in				\
++	libvirt-guests.sysconf				\
+ 	$(AVAHI_SOURCES)				\
+ 	$(DAEMON_SOURCES)
+ 
+@@ -216,21 +218,27 @@ install-logrotate: $(LOGROTATE_CONFS)
+ 	$(INSTALL_DATA) libvirtd.uml.logrotate $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.uml
+ 
+ if LIBVIRT_INIT_SCRIPT_RED_HAT
+-install-init: libvirtd.init
++install-init: libvirtd.init libvirt-guests.init
+ 	mkdir -p $(DESTDIR)$(sysconfdir)/rc.d/init.d
+ 	$(INSTALL_SCRIPT) libvirtd.init \
+ 	  $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirtd
++	$(INSTALL_SCRIPT) libvirt-guests.init \
++	  $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirt-guests
+ 	mkdir -p $(DESTDIR)$(sysconfdir)/sysconfig
+ 	$(INSTALL_SCRIPT) $(srcdir)/libvirtd.sysconf \
+ 	  $(DESTDIR)$(sysconfdir)/sysconfig/libvirtd
++	$(INSTALL_SCRIPT) $(srcdir)/libvirt-guests.sysconf \
++	  $(DESTDIR)$(sysconfdir)/sysconfig/libvirt-guests
+ 
+ uninstall-init:
+ 	rm -f $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirtd \
+-		$(DESTDIR)$(sysconfdir)/sysconfig/libvirtd
++		$(DESTDIR)$(sysconfdir)/sysconfig/libvirtd \
++		$(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirt-guests \
++		$(DESTDIR)$(sysconfdir)/sysconfig/libvirt-guests
+ 
+-BUILT_SOURCES += libvirtd.init
++BUILT_SOURCES += libvirtd.init libvirt-guests.init
+ 
+-libvirtd.init: libvirtd.init.in
++%.init: %.init.in
+ 	$(AM_V_GEN)sed					\
+ 	    -e s!\@localstatedir\@!@localstatedir@!g	\
+ 	    -e s!\@sbindir\@!@sbindir@!g		\
+diff --git a/daemon/Makefile.in b/daemon/Makefile.in
+index 7529813..2ff7260 100644
+--- a/daemon/Makefile.in
++++ b/daemon/Makefile.in
+@@ -51,7 +51,7 @@ host_triplet = @host@
+ @HAVE_AVAHI_TRUE@@WITH_LIBVIRTD_TRUE@am__append_13 = $(AVAHI_CFLAGS)
+ @HAVE_AVAHI_TRUE@@WITH_LIBVIRTD_TRUE@am__append_14 = $(AVAHI_LIBS)
+ @WITH_LIBVIRTD_TRUE@am__append_15 = $(LOGROTATE_CONFS)
+-@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@am__append_16 = libvirtd.init
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@am__append_16 = libvirtd.init libvirt-guests.init
+ subdir = daemon
+ DIST_COMMON = $(srcdir)/Makefile.am $(srcdir)/Makefile.in
+ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
+@@ -1065,6 +1065,8 @@ EXTRA_DIST = \
+ 	libvirtd.lxc.logrotate.in                       \
+ 	libvirtd.uml.logrotate.in                       \
+ 	test_libvirtd.aug                               \
++	libvirt-guests.init.in				\
++	libvirt-guests.sysconf				\
+ 	$(AVAHI_SOURCES)				\
+ 	$(DAEMON_SOURCES)
+ 
+@@ -1699,19 +1701,25 @@ uninstall-am: uninstall-augeasDATA uninstall-augeastestsDATA \
+ @WITH_LIBVIRTD_TRUE@	$(INSTALL_DATA) libvirtd.lxc.logrotate $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.lxc
+ @WITH_LIBVIRTD_TRUE@	$(INSTALL_DATA) libvirtd.uml.logrotate $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.uml
+ 
+-@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@install-init: libvirtd.init
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@install-init: libvirtd.init libvirt-guests.init
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	mkdir -p $(DESTDIR)$(sysconfdir)/rc.d/init.d
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	$(INSTALL_SCRIPT) libvirtd.init \
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	  $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirtd
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	$(INSTALL_SCRIPT) libvirt-guests.init \
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	  $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirt-guests
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	mkdir -p $(DESTDIR)$(sysconfdir)/sysconfig
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	$(INSTALL_SCRIPT) $(srcdir)/libvirtd.sysconf \
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	  $(DESTDIR)$(sysconfdir)/sysconfig/libvirtd
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	$(INSTALL_SCRIPT) $(srcdir)/libvirt-guests.sysconf \
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	  $(DESTDIR)$(sysconfdir)/sysconfig/libvirt-guests
+ 
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@uninstall-init:
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	rm -f $(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirtd \
+-@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@		$(DESTDIR)$(sysconfdir)/sysconfig/libvirtd
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@		$(DESTDIR)$(sysconfdir)/sysconfig/libvirtd \
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@		$(DESTDIR)$(sysconfdir)/rc.d/init.d/libvirt-guests \
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@		$(DESTDIR)$(sysconfdir)/sysconfig/libvirt-guests
+ 
+-@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@libvirtd.init: libvirtd.init.in
++@LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@%.init: %.init.in
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	$(AM_V_GEN)sed					\
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	    -e s!\@localstatedir\@!@localstatedir@!g	\
+ @LIBVIRT_INIT_SCRIPT_RED_HAT_TRUE@@WITH_LIBVIRTD_TRUE@	    -e s!\@sbindir\@!@sbindir@!g		\
+diff --git a/daemon/libvirt-guests.init.in b/daemon/libvirt-guests.init.in
+new file mode 100644
+index 0000000..b87c11b
+--- /dev/null
++++ b/daemon/libvirt-guests.init.in
+@@ -0,0 +1,295 @@
++#!/bin/sh
++
++# the following is the LSB init header
++#
++### BEGIN INIT INFO
++# Provides: libvirt-guests
++# Required-Start: libvirtd
++# Required-Stop: libvirtd
++# Default-Start: 3 4 5
++# Short-Description: suspend/resume libvirt guests on shutdown/boot
++# Description: This is a script for suspending active libvirt guests
++#              on shutdown and resuming them on next boot
++#              See http://libvirt.org
++### END INIT INFO
++
++# the following is chkconfig init header
++#
++# libvirt-guests:   suspend/resume libvirt guests on shutdown/boot
++#
++# chkconfig: 345 98 02
++# description:  This is a script for suspending active libvirt guests \
++#               on shutdown and resuming them on next boot \
++#               See http://libvirt.org
++#
++
++sysconfdir=@sysconfdir@
++localstatedir=@localstatedir@
++
++# Source function library.
++. "$sysconfdir"/rc.d/init.d/functions
++
++URIS=default
++ON_BOOT=start
++ON_SHUTDOWN=suspend
++SHUTDOWN_TIMEOUT=0
++
++test -f "$sysconfdir"/sysconfig/libvirt-guests && . "$sysconfdir"/sysconfig/libvirt-guests
++
++LISTFILE="$localstatedir"/lib/libvirt/libvirt-guests
++
++RETVAL=0
++
++retval() {
++    "$@"
++    if [ $? -ne 0 ]; then
++        RETVAL=1
++        return 1
++    else
++        return 0
++    fi
++}
++
++run_virsh() {
++    uri=$1
++    shift
++
++    if [ "x$uri" = xdefault ]; then
++        conn=
++    else
++        conn="-c $uri"
++    fi
++
++    virsh $conn "$@"
++}
++
++run_virsh_c() {
++    ( export LC_ALL=C; run_virsh "$@" )
++}
++
++list_guests() {
++    uri=$1
++
++    list=$(run_virsh_c $uri list)
++    if [ $? -ne 0 ]; then
++        RETVAL=1
++        return 1
++    fi
++
++    uuids=
++    for id in $(echo "$list" | awk 'NR > 2 {print $1}'); do
++        uuid=$(run_virsh_c $uri dominfo $id | awk '/^UUID:/{print $2}')
++        if [ -z "$uuid" ]; then
++            RETVAL=1
++            return 1
++        fi
++        uuids="$uuids $uuid"
++    done
++
++    echo $uuids
++}
++
++guest_name() {
++    uri=$1
++    uuid=$2
++
++    name=$(run_virsh_c $uri dominfo $uuid 2>/dev/null | \
++           awk '/^Name:/{print $2}')
++    [ -n "$name" ] || name=$uuid
++
++    echo "$name"
++}
++
++guest_is_on() {
++    uri=$1
++    uuid=$2
++
++    guest_running=false
++    info=$(run_virsh_c $uri dominfo $uuid)
++    if [ $? -ne 0 ]; then
++        RETVAL=1
++        return 1
++    fi
++
++    id=$(echo "$info" | awk '/^Id:/{print $2}')
++
++    [ -n "$id" ] && [ "x$id" != x- ] && guest_running=true
++    return 0
++}
++
++start() {
++    [ -f $LISTFILE ] || return 0
++
++    if [ "x$ON_BOOT" != xstart ]; then
++        echo $"libvirt-guests is configured not to start any guests on boot"
++        rm -f $LISTFILE
++        return 0
++    fi
++
++    while read uri list; do
++        configured=false
++        for confuri in $URIS; do
++            if [ $confuri = $uri ]; then
++                configured=true
++                break
++            fi
++        done
++        if ! $configured; then
++            echo $"Ignoring guests on $uri URI"
++            continue
++        fi
++
++        echo $"Resuming guests on $uri URI..."
++        for guest in $list; do
++            name=$(guest_name $uri $guest)
++            echo -n $"Resuming guest $name: "
++            if guest_is_on $uri $guest; then
++                if $guest_running; then
++                    echo $"already active"
++                else
++                    retval run_virsh $uri start "$name" >/dev/null && \
++                    echo $"done"
++                fi
++            fi
++        done
++    done <$LISTFILE
++
++    rm -f $LISTFILE
++}
++
++suspend_guest()
++{
++    uri=$1
++    guest=$2
++
++    name=$(guest_name $uri $guest)
++    label=$"Suspending $name: "
++    echo -n "$label"
++    run_virsh $uri managedsave $guest >/dev/null &
++    virsh_pid=$!
++    while true; do
++        sleep 1
++        kill -0 $virsh_pid >&/dev/null || break
++        progress=$(run_virsh_c $uri domjobinfo $guest 2>/dev/null | \
++                   awk '/^Data processed:/{print $3, $4}')
++        if [ -n "$progress" ]; then
++            printf '\r%s%12s ' "$label" "$progress"
++        else
++            printf '\r%s%-12s ' "$label" "..."
++        fi
++    done
++    retval wait $virsh_pid && printf '\r%s%-12s\n' "$label" $"done"
++}
++
++shutdown_guest()
++{
++    uri=$1
++    guest=$2
++
++    name=$(guest_name $uri $guest)
++    label=$"Shutting down $name: "
++    echo -n "$label"
++    retval run_virsh $uri shutdown $guest >/dev/null || return
++    timeout=$SHUTDOWN_TIMEOUT
++    while [ $timeout -gt 0 ]; do
++        sleep 1
++        timeout=$[timeout - 1]
++        guest_is_on $uri $guest || return
++        $guest_running || break
++        printf '\r%s%-12d ' "$label" $timeout
++    done
++
++    if guest_is_on $uri $guest; then
++        if $guest_running; then
++            printf '\r%s%-12s\n' "$label" $"failed to shutdown in time"
++        else
++            printf '\r%s%-12s\n' "$label" $"done"
++        fi
++    fi
++}
++
++stop() {
++    # last stop was not followed by start
++    [ -f $LISTFILE ] && return 0
++
++    suspending=true
++    if [ "x$ON_SHUTDOWN" = xshutdown ]; then
++        suspending=false
++        if [ $SHUTDOWN_TIMEOUT -le 0 ]; then
++            echo $"Shutdown action requested but SHUTDOWN_TIMEOUT was not set"
++            RETVAL=6
++            return
++        fi
++    fi
++
++    : >$LISTFILE
++    for uri in $URIS; do
++        echo -n $"Running guests on $uri URI: "
++        list=$(list_guests $uri)
++        if [ $? -eq 0 ]; then
++            empty=true
++            for uuid in $list; do
++                $empty || printf ", "
++                echo -n $(guest_name $uri $uuid)
++                empty=false
++            done
++            if $empty; then
++                echo $"no running guests."
++            else
++                echo
++                echo $uri $list >>$LISTFILE
++            fi
++        fi
++    done
++
++    while read uri list; do
++        if $suspending; then
++            echo $"Suspending guests on $uri URI..."
++        else
++            echo $"Shutting down guests on $uri URI..."
++        fi
++
++        for guest in $list; do
++            if $suspending; then
++                suspend_guest $uri $guest
++            else
++                shutdown_guest $uri $guest
++            fi
++        done
++    done <$LISTFILE
++}
++
++gueststatus() {
++    for uri in $URIS; do
++        echo "* $uri URI:"
++        retval run_virsh $uri list || echo
++    done
++}
++
++# See how we were called.
++case "$1" in
++    start|stop|gueststatus)
++        $1
++        ;;
++    restart)
++        stop && start
++        ;;
++    force-reload)
++        ;;
++    status)
++        if [ -f $LISTFILE ]; then
++            RETVAL=3
++        else
++            RETVAL=0
++        fi
++        ;;
++    shutdown)
++        ON_SHUTDOWN=shutdown
++        stop
++        ;;
++    *)
++        echo $"Usage: $0 {start|stop|restart|force-reload|gueststatus|shutdown}"
++        exit 3
++        ;;
++esac
++exit $RETVAL
+diff --git a/daemon/libvirt-guests.sysconf b/daemon/libvirt-guests.sysconf
+new file mode 100644
+index 0000000..cd58728
+--- /dev/null
++++ b/daemon/libvirt-guests.sysconf
+@@ -0,0 +1,24 @@
++# URIs to check for running guests
++# example: URIS='default xen:/// vbox+tcp://host/system lxc:///'
++#URIS=default
++
++# action taken on host boot
++# - start   all guests which were running on shutdown are started on boot
++#           regardless on their autostart settings
++# - ignore  libvirt-guests init script won't start any guest on boot, however,
++#           guests marked as autostart will still be automatically started by
++#           libvirtd
++#ON_BOOT=start
++
++# action taken on host shutdown
++# - suspend   all running guests are suspended using virsh managedsave
++# - shutdown  all running guests are asked to shutdown. Please be careful with
++#             this settings since there is no way to distinguish between a
++#             guest which is stuck or ignores shutdown requests and a guest
++#             which just needs a long time to shutdown. When setting
++#             ON_SHUTDOWN=shutdown, you must also set SHUTDOWN_TIMEOUT to a
++#             value suitable for your guests.
++#ON_SHUTDOWN=suspend
++
++# number of seconds we're willing to wait for a guest to shut down
++#SHUTDOWN_TIMEOUT=0
+diff --git a/libvirt.spec.in b/libvirt.spec.in
+index 47e3050..cf6f1b3 100644
+--- a/libvirt.spec.in
++++ b/libvirt.spec.in
+@@ -811,6 +811,10 @@ fi
+ 
+ %{_datadir}/libvirt/cpu_map.xml
+ 
++%{_sysconfdir}/rc.d/init.d/libvirt-guests
++%config(noreplace) %{_sysconfdir}/sysconfig/libvirt-guests
++%dir %attr(0700, root, root) %{_localstatedir}/lib/libvirt
++
+ %if %{with_sasl}
+ %config(noreplace) %{_sysconfdir}/sasl2/libvirt.conf
+ %endif
+-- 
+1.7.1
+

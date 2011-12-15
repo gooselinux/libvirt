@@ -1,0 +1,66 @@
+From: Justin Clift <justin@salasaga.org>
+
+Presently the vol-key command only supports being provided with
+a volume path.
+
+This patch adds support for providing it with a pool and volume
+identifier pair as well.
+
+    virsh # vol-key --pool <pool-name-or-uuid> <vol-name-or-path>
+(cherry picked from commit 31495ef6a1308109b10ffa17e94eb550f716f14c)
+---
+ tools/virsh.c   |    6 +++---
+ tools/virsh.pod |    7 ++++---
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 6f6920a..e26b0f3 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -6024,12 +6024,13 @@ cmdVolPool(vshControl *ctl, const vshCmd *cmd)
+  * "vol-key" command
+  */
+ static const vshCmdInfo info_vol_key[] = {
+-    {"help", N_("convert a vol UUID to vol key")},
++    {"help", N_("returns the volume key for a given volume name or path")},
+     {"desc", ""},
+     {NULL, NULL}
+ };
+
+ static const vshCmdOptDef opts_vol_key[] = {
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol uuid")},
+     {NULL, 0, 0, NULL}
+ };
+@@ -6042,8 +6043,7 @@ cmdVolKey(vshControl *ctl, const vshCmd *cmd)
+     if (!vshConnectionUsability(ctl, ctl->conn, TRUE))
+         return FALSE;
+
+-    if (!(vol = vshCommandOptVolBy(ctl, cmd, "vol", "pool", NULL,
+-                                   VSH_BYUUID)))
++    if (!(vol = vshCommandOptVol(ctl, cmd, "vol", "pool", NULL)))
+         return FALSE;
+
+     vshPrint(ctl, "%s\n", virStorageVolGetKey(vol));
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 3513d9f..1b6b832 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -850,10 +850,11 @@ I<vol-name-or-key> is the name or key of the volume to return the path for.
+ Return the name for a given volume.
+ I<vol-key-or-path> is the key or path of the volume to return the name for.
+
+-=item B<vol-key> I<vol-uuid>
++=item B<vol-key> [optional I<--pool> I<pool-or-uuid>] I<vol-name-or-path>
+
+-Return the volume key for a given volume UUID.
+-I<vol-uuid> is the UUID of the volume to return the volume key for.
++Return the volume key for a given volume.
++I<--pool> I<pool-or-uuid> is the name or UUID of the storage pool the volume is in.
++I<vol-name-or-path> is the name or path of the volume to return the volume key for.
+
+ =back
+
+-- 
+1.7.0.1
+

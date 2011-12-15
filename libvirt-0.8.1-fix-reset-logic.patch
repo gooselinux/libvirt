@@ -1,0 +1,161 @@
+From: Chris Wright <chrisw@redhat.com>
+
+    When doing a PCI secondary bus reset, we must be sure that there are no
+    active devices on the same bus segment.  The active device tracking is
+    designed to only track host devices that are active in use by guests.
+    This ignores host devices that are actively in use by the host.  So the
+    current logic will reset host devices.
+    
+    Switch this logic around and allow sbus reset when we are assigning all
+    devices behind a bridge to the same guest at guest startup or as a result
+    of a single attach-device command.
+    
+    * src/util/pci.h: change signature of pciResetDevice to add an
+      inactive devices list
+    * src/qemu/qemu_driver.c src/xen/xen_driver.c: use (or not) the new
+      functionality of pciResetDevice() depending on the place of use
+    * src/util/pci.c: implement the interface and logic changes
+
+diff -urp libvirt-0.8.1-p4/src/qemu/qemu_driver.c libvirt-0.8.1-p5/src/qemu/qemu_driver.c
+--- libvirt-0.8.1-p4/src/qemu/qemu_driver.c	2010-07-27 12:59:48.835020810 -0400
++++ libvirt-0.8.1-p5/src/qemu/qemu_driver.c	2010-07-27 13:01:19.651760431 -0400
+@@ -3296,7 +3296,7 @@ qemuPrepareHostdevPCIDevices(struct qemu
+      * reset them */
+     for (i = 0; i < pciDeviceListCount(pcidevs); i++) {
+         pciDevice *dev = pciDeviceListGet(pcidevs, i);
+-        if (pciResetDevice(dev, driver->activePciHostdevs) < 0)
++        if (pciResetDevice(dev, driver->activePciHostdevs, pcidevs) < 0)
+             goto cleanup;
+     }
+ 
+@@ -3442,7 +3442,7 @@ qemuDomainReAttachHostdevDevices(struct 
+ 
+     for (i = 0; i < pciDeviceListCount(pcidevs); i++) {
+         pciDevice *dev = pciDeviceListGet(pcidevs, i);
+-        if (pciResetDevice(dev, driver->activePciHostdevs) < 0) {
++        if (pciResetDevice(dev, driver->activePciHostdevs, pcidevs) < 0) {
+             virErrorPtr err = virGetLastError();
+             VIR_ERROR(_("Failed to reset PCI device: %s"),
+                       err ? err->message : "");
+@@ -9157,7 +9157,7 @@ static int qemudDomainDetachHostPciDevic
+     else {
+         pciDeviceSetManaged(pci, detach->managed);
+         pciDeviceListDel(driver->activePciHostdevs, pci);
+-        if (pciResetDevice(pci, driver->activePciHostdevs) < 0)
++        if (pciResetDevice(pci, driver->activePciHostdevs, NULL) < 0)
+             ret = -1;
+         qemudReattachManagedDevice(pci);
+         pciFreeDevice(pci);
+@@ -11805,7 +11805,7 @@ qemudNodeDeviceReset (virNodeDevicePtr d
+ 
+     qemuDriverLock(driver);
+ 
+-    if (pciResetDevice(pci, driver->activePciHostdevs) < 0)
++    if (pciResetDevice(pci, driver->activePciHostdevs, NULL) < 0)
+         goto out;
+ 
+     ret = 0;
+diff -urp libvirt-0.8.1-p4/src/util/pci.c libvirt-0.8.1-p5/src/util/pci.c
+--- libvirt-0.8.1-p4/src/util/pci.c	2010-07-27 11:59:55.993011181 -0400
++++ libvirt-0.8.1-p5/src/util/pci.c	2010-07-27 13:01:19.653764527 -0400
+@@ -440,11 +440,11 @@ pciDetectPowerManagementReset(pciDevice 
+     return 0;
+ }
+ 
+-/* Any active devices other than the one supplied on the same domain/bus ? */
++/* Any active devices on the same domain/bus ? */
+ static int
+ pciSharesBusWithActive(pciDevice *dev, pciDevice *check, void *data)
+ {
+-    pciDeviceList *activeDevs = data;
++    pciDeviceList *inactiveDevs = data;
+ 
+     /* Different domain, different bus, or simply identical device */
+     if (dev->domain != check->domain ||
+@@ -453,7 +453,8 @@ pciSharesBusWithActive(pciDevice *dev, p
+          dev->function == check->function))
+         return 0;
+ 
+-    if (activeDevs && !pciDeviceListFind(activeDevs, check))
++    /* same bus, but inactive, i.e. about to be assigned to guest */
++    if (inactiveDevs && pciDeviceListFind(inactiveDevs, check))
+         return 0;
+ 
+     return 1;
+@@ -461,11 +462,11 @@ pciSharesBusWithActive(pciDevice *dev, p
+ 
+ static pciDevice *
+ pciBusContainsActiveDevices(pciDevice *dev,
+-                            pciDeviceList *activeDevs)
++                            pciDeviceList *inactiveDevs)
+ {
+     pciDevice *active = NULL;
+     if (pciIterDevices(pciSharesBusWithActive,
+-                       dev, &active, activeDevs) < 0)
++                       dev, &active, inactiveDevs) < 0)
+         return NULL;
+     return active;
+ }
+@@ -512,7 +513,7 @@ pciGetParentDevice(pciDevice *dev)
+  */
+ static int
+ pciTrySecondaryBusReset(pciDevice *dev,
+-                        pciDeviceList *activeDevs)
++                        pciDeviceList *inactiveDevs)
+ {
+     pciDevice *parent, *conflict;
+     uint8_t config_space[PCI_CONF_LEN];
+@@ -524,7 +525,7 @@ pciTrySecondaryBusReset(pciDevice *dev,
+      * In future, we could allow it so long as those devices
+      * are not in use by the host or other guests.
+      */
+-    if ((conflict = pciBusContainsActiveDevices(dev, activeDevs))) {
++    if ((conflict = pciBusContainsActiveDevices(dev, inactiveDevs))) {
+         pciReportError(VIR_ERR_NO_SUPPORT,
+                        _("Active %s devices on bus with %s, not doing bus reset"),
+                        conflict->name, dev->name);
+@@ -642,7 +643,8 @@ pciInitDevice(pciDevice *dev)
+ 
+ int
+ pciResetDevice(pciDevice *dev,
+-               pciDeviceList *activeDevs)
++               pciDeviceList *activeDevs,
++               pciDeviceList *inactiveDevs)
+ {
+     int ret = -1;
+ 
+@@ -670,7 +672,7 @@ pciResetDevice(pciDevice *dev,
+ 
+     /* Bus reset is not an option with the root bus */
+     if (ret < 0 && dev->bus != 0)
+-        ret = pciTrySecondaryBusReset(dev, activeDevs);
++        ret = pciTrySecondaryBusReset(dev, inactiveDevs);
+ 
+     if (ret < 0) {
+         virErrorPtr err = virGetLastError();
+diff -urp libvirt-0.8.1-p4/src/util/pci.h libvirt-0.8.1-p5/src/util/pci.h
+--- libvirt-0.8.1-p4/src/util/pci.h	2010-03-18 08:30:08.000000000 -0400
++++ libvirt-0.8.1-p5/src/util/pci.h	2010-07-27 13:01:19.655778192 -0400
+@@ -35,7 +35,8 @@ void       pciFreeDevice     (pciDevice 
+ int        pciDettachDevice  (pciDevice     *dev);
+ int        pciReAttachDevice (pciDevice     *dev);
+ int        pciResetDevice    (pciDevice     *dev,
+-                              pciDeviceList *activeDevs);
++                              pciDeviceList *activeDevs,
++                              pciDeviceList *inactiveDevs);
+ void      pciDeviceSetManaged(pciDevice     *dev,
+                               unsigned       managed);
+ unsigned  pciDeviceGetManaged(pciDevice     *dev);
+diff -urp libvirt-0.8.1-p4/src/xen/xen_driver.c libvirt-0.8.1-p5/src/xen/xen_driver.c
+--- libvirt-0.8.1-p4/src/xen/xen_driver.c	2010-04-30 08:46:09.000000000 -0400
++++ libvirt-0.8.1-p5/src/xen/xen_driver.c	2010-07-27 13:01:19.657769856 -0400
+@@ -1884,7 +1884,7 @@ xenUnifiedNodeDeviceReset (virNodeDevice
+     if (!pci)
+         return -1;
+ 
+-    if (pciResetDevice(pci, NULL) < 0)
++    if (pciResetDevice(pci, NULL, NULL) < 0)
+         goto out;
+ 
+     ret = 0;
+

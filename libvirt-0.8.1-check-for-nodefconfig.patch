@@ -1,0 +1,54 @@
+From: Laine Stump <laine@laine.org>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=608859
+
+We previously assumed that if the -device option existed in qemu, that
+-nodefconfig would also exist. It turns out that isn't the case, as
+demonstrated by qemu-kvm-0.12.3 in Fedora 13.
+
+*/src/qemu/qemu_conf.[hc] - add a new QEMUD_CMD_FLAG, set it via the
+                            help output, and check it before adding
+                            -nodefconfig to the qemu commandline.
+---
+ src/qemu/qemu_conf.c |    5 ++++-
+ src/qemu/qemu_conf.h |    1 +
+ 2 files changed, 5 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 509e810..75c57a1 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -1225,6 +1225,8 @@ static unsigned long long qemudComputeCmdFlags(const char *help,
+         flags |= QEMUD_CMD_FLAG_BALLOON;
+     if (strstr(help, "-device"))
+         flags |= QEMUD_CMD_FLAG_DEVICE;
++    if (strstr(help, "-nodefconfig"))
++        flags |= QEMUD_CMD_FLAG_NODEFCONFIG;
+     /* The trailing ' ' is important to avoid a bogus match */
+     if (strstr(help, "-rtc "))
+         flags |= QEMUD_CMD_FLAG_RTC;
+@@ -3864,7 +3866,8 @@ int qemudBuildCommandLine(virConnectPtr conn,
+         ADD_ARG_LIT("-nographic");
+ 
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+-        ADD_ARG_LIT("-nodefconfig"); /* Disabling global config files */
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_NODEFCONFIG)
++            ADD_ARG_LIT("-nodefconfig"); /* Disabling global config files */
+         ADD_ARG_LIT("-nodefaults");  /* Disabling default guest devices */
+     }
+ 
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index f21407f..4aeb804 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -91,6 +91,7 @@ enum qemud_cmd_flags {
+     QEMUD_CMD_FLAG_VGA_QXL       = (1LL << 36), /* The 'qxl' arg for '-vga' */
+     QEMUD_CMD_FLAG_SPICE         = (1LL << 37), /* Is -spice avail (RHEL-6 custom) */
+     QEMUD_CMD_FLAG_PCI_CONFIGFD  = (1LL << 38), /* pci-assign.configfd */
++    QEMUD_CMD_FLAG_NODEFCONFIG   = (1LL << 39), /* -nodefconfig */
+ };
+ 
+ /* Main driver state */
+-- 
+1.7.1
+

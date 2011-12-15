@@ -1,0 +1,71 @@
+From: Chris Lalancette <clalance@redhat.com>
+
+Since the qemu process is running as qemu:qemu, it can't actually
+look at the unix socket in /var/run/libvirt/qemu which is owned by
+root and has permission 700.  Move the unix socket to
+/var/lib/libvirt/qemu, which is already owned by qemu:qemu.
+
+Thanks to Justin Clift for test this out for me.
+
+BZ 624062
+
+Signed-off-by: Chris Lalancette <clalance@redhat.com>
+---
+ src/qemu/qemu_driver.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+From: Chris Lalancette <clalance@redhat.com>
+
+The problem is that on the source of the migration, libvirtd
+is responsible for creating the unix socket over which the data
+will flow.  Since libvirtd is running as root, this file will
+be created as root.  When the qemu process running as qemu:qemu
+goes to access the unix file to write data to it, it will get
+permission denied and fail.  Make sure to change the owner
+of the unix file to qemu:qemu.
+
+Thanks to Justin Clift for testing this patch out for me.
+
+BZ 624062
+
+Signed-off-by: Chris Lalancette <clalance@redhat.com>
+---
+ src/qemu/qemu_driver.c |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 2dbb624..aa14a06 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10482,7 +10482,7 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+     vm->def->id = -1;
+ 
+     if (virAsprintf(&unixfile, "%s/qemu.tunnelmigrate.dest.%s",
+-                    driver->stateDir, vm->def->name) < 0) {
++                    driver->libDir, vm->def->name) < 0) {
+         virReportOOMError();
+         goto endjob;
+     }
+@@ -10951,7 +10951,7 @@ static int doTunnelMigrate(virDomainPtr dom,
+     /* Stage 1. setup local support infrastructure */
+ 
+     if (virAsprintf(&unixfile, "%s/qemu.tunnelmigrate.src.%s",
+-                    driver->stateDir, vm->def->name) < 0) {
++                    driver->libDir, vm->def->name) < 0) {
+         virReportOOMError();
+         goto cleanup;
+     }
+@@ -10985,6 +10985,13 @@ static int doTunnelMigrate(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
++    if (chown(unixfile, qemu_driver->user, qemu_driver->group) < 0) {
++        virReportSystemError(errno,
++                             _("Cannot change unix socket '%s' owner"),
++                             unixfile);
++        goto cleanup;
++    }
++
+     /* check that this qemu version supports the unix migration */
+     if (qemudExtractVersionInfo(vm->def->emulator, NULL, &qemuCmdFlags) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,

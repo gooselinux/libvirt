@@ -1,0 +1,177 @@
+For 
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=616517
+
+A Linux software bridge will assume the MAC address of the enslaved
+interface with the numerically lowest MAC addr. When the bridge
+changes MAC address there is a period of network blackout, so a
+change should be avoided. The kernel gives TAP devices a completely
+random MAC address. Occassionally the random TAP device MAC is lower
+than that of the physical interface (eth0, eth1etc) that is enslaved,
+causing the bridge to change its MAC.
+
+This change sets an explicit MAC address for all TAP devices created
+using the configured MAC from the XML, but with the high byte set
+to 0xFE. This should ensure TAP device MACs are higher than any
+physical interface MAC.
+
+* src/qemu/qemu_conf.c, src/uml/uml_conf.c: Pass in a MAC addr
+  for the TAP device with high byte set to 0xFE
+* src/util/bridge.c, src/util/bridge.h: Set a MAC when creating
+  the TAP device to override random MAC
+---
+ src/qemu/qemu_conf.c |   11 +++++++++--
+ src/uml/uml_conf.c   |   11 +++++++++--
+ src/util/bridge.c    |   42 ++++++++++++++++++++++++++++++++++++++++++
+ src/util/bridge.h    |    3 ++-
+ 4 files changed, 62 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 53aeb7e..568f75f 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -1657,6 +1657,7 @@ qemudNetworkIfaceConnect(virConnectPtr conn,
+     int tapfd = -1;
+     int vnet_hdr = 0;
+     int template_ifname = 0;
++    unsigned char tapmac[VIR_MAC_BUFLEN];
+ 
+     if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+         int active, fail = 0;
+@@ -1724,8 +1725,14 @@ qemudNetworkIfaceConnect(virConnectPtr conn,
+         net->model && STREQ(net->model, "virtio"))
+         vnet_hdr = 1;
+ 
+-    if ((err = brAddTap(driver->brctl, brname,
+-                        &net->ifname, vnet_hdr, &tapfd))) {
++    memcpy(tapmac, net->mac, VIR_MAC_BUFLEN);
++    tapmac[0] = 0xFE; /* Discourage bridge from using TAP dev MAC */
++    if ((err = brAddTap(driver->brctl,
++                        brname,
++                        &net->ifname,
++                        tapmac,
++                        vnet_hdr,
++                        &tapfd))) {
+         if (errno == ENOTSUP) {
+             /* In this particular case, give a better diagnostic. */
+             qemuReportError(VIR_ERR_INTERNAL_ERROR,
+diff --git a/src/uml/uml_conf.c b/src/uml/uml_conf.c
+index 785d627..ea40efb 100644
+--- a/src/uml/uml_conf.c
++++ b/src/uml/uml_conf.c
+@@ -113,6 +113,7 @@ umlConnectTapDevice(virDomainNetDefPtr net,
+     int tapfd = -1;
+     int template_ifname = 0;
+     int err;
++    unsigned char tapmac[VIR_MAC_BUFLEN];
+ 
+     if ((err = brInit(&brctl))) {
+         virReportSystemError(err, "%s",
+@@ -130,8 +131,14 @@ umlConnectTapDevice(virDomainNetDefPtr net,
+         template_ifname = 1;
+     }
+ 
+-    if ((err = brAddTap(brctl, bridge,
+-                        &net->ifname, BR_TAP_PERSIST, &tapfd))) {
++    memcpy(tapmac, net->mac, VIR_MAC_BUFLEN);
++    tapmac[0] = 0xFE; /* Discourage bridge from using TAP dev MAC */
++    if ((err = brAddTap(brctl,
++                        bridge,
++                        &net->ifname,
++                        tapmac,
++                        0,
++                        &tapfd))) {
+         if (errno == ENOTSUP) {
+             /* In this particular case, give a better diagnostic. */
+             umlReportError(VIR_ERR_INTERNAL_ERROR,
+diff --git a/src/util/bridge.c b/src/util/bridge.c
+index b236f80..7d0caae 100644
+--- a/src/util/bridge.c
++++ b/src/util/bridge.c
+@@ -285,6 +285,38 @@ brDeleteInterface(brControl *ctl ATTRIBUTE_UNUSED,
+ # endif
+ 
+ /**
++ * ifSetInterfaceMac:
++ * @ctl: bridge control pointer
++ * @ifname: interface name to set MTU for
++ * @macaddr: MAC address (VIR_MAC_BUFLEN in size)
++ *
++ * This function sets the @macaddr for a given interface @ifname. This
++ * gets rid of the kernel's automatically assigned random MAC.
++ *
++ * Returns 0 in case of success or an errno code in case of failure.
++ */
++static int ifSetInterfaceMac(brControl *ctl, const char *ifname,
++                             const unsigned char *macaddr)
++{
++    struct ifreq ifr;
++
++    if (!ctl || !ifname)
++        return EINVAL;
++
++    memset(&ifr, 0, sizeof(struct ifreq));
++    if (virStrcpyStatic(ifr.ifr_name, ifname) == NULL)
++        return EINVAL;
++
++    /* To fill ifr.ifr_hdaddr.sa_family field */
++    if (ioctl(ctl->fd, SIOCGIFHWADDR, &ifr) != 0)
++        return errno;
++
++    memcpy(ifr.ifr_hwaddr.sa_data, macaddr, VIR_MAC_BUFLEN);
++
++    return ioctl(ctl->fd, SIOCSIFHWADDR, &ifr) == 0 ? 0 : errno;
++}
++
++/**
+  * ifGetMtu
+  * @ctl: bridge control pointer
+  * @ifname: interface name get MTU for
+@@ -430,6 +462,7 @@ brProbeVnetHdr(int tapfd)
+  * @ctl: bridge control pointer
+  * @bridge: the bridge name
+  * @ifname: the interface name (or name template)
++ * @macaddr: desired MAC address (VIR_MAC_BUFLEN long)
+  * @vnet_hdr: whether to try enabling IFF_VNET_HDR
+  * @tapfd: file descriptor return value for the new tap device
+  *
+@@ -447,6 +480,7 @@ int
+ brAddTap(brControl *ctl,
+          const char *bridge,
+          char **ifname,
++         const unsigned char *macaddr,
+          int vnet_hdr,
+          int *tapfd)
+ {
+@@ -478,6 +512,14 @@ brAddTap(brControl *ctl,
+     if (ioctl(fd, TUNSETIFF, &ifr) < 0)
+         goto error;
+ 
++    /* We need to set the interface MAC before adding it
++     * to the bridge, because the bridge assumes the lowest
++     * MAC of all enslaved interfaces & we don't want it
++     * seeing the kernel allocate random MAC for the TAP
++     * device before we set our static MAC.
++     */
++    if ((errno = ifSetInterfaceMac(ctl, ifr.ifr_name, macaddr)))
++        goto error;
+     /* We need to set the interface MTU before adding it
+      * to the bridge, because the bridge will have its
+      * MTU adjusted automatically when we add the new interface.
+diff --git a/src/util/bridge.h b/src/util/bridge.h
+index d37d7db..96696ac 100644
+--- a/src/util/bridge.h
++++ b/src/util/bridge.h
+@@ -68,7 +68,8 @@ enum {
+ int     brAddTap                (brControl *ctl,
+                                  const char *bridge,
+                                  char **ifname,
+-                                 int features,
++                                 const unsigned char *macaddr,
++                                 int vnet_hdr,
+                                  int *tapfd);
+ 
+ int     brDeleteTap             (brControl *ctl,
+-- 
+1.7.1.1
+

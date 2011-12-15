@@ -1,0 +1,153 @@
+The network driver is not doing correct checking for
+duplicate UUID/name values. This introduces a new method
+virNetworkObjIsDuplicate, based on the previously
+written virDomainObjIsDuplicate.
+
+* src/conf/network_conf.c, src/conf/network_conf.c,
+  src/libvirt_private.syms: Add virNetworkObjIsDuplicate,
+* src/network/bridge_driver.c: Call virNetworkObjIsDuplicate
+  for checking uniqueness of uuid/names
+---
+ src/conf/network_conf.c     |   65 +++++++++++++++++++++++++++++++++++++++++++
+ src/conf/network_conf.h     |    4 ++
+ src/libvirt_private.syms    |    1 +
+ src/network/bridge_driver.c |    7 ++++
+ 4 files changed, 77 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 1f3a44c..8dd7092 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -941,6 +941,71 @@ error:
+     return ret;
+ }
+ 
++
++/*
++ * virNetworkObjIsDuplicate:
++ * @doms : virNetworkObjListPtr to search
++ * @def  : virNetworkDefPtr definition of network to lookup
++ * @check_active: If true, ensure that network is not active
++ *
++ * Returns: -1 on error
++ *          0 if network is new
++ *          1 if network is a duplicate
++ */
++int
++virNetworkObjIsDuplicate(virNetworkObjListPtr doms,
++                         virNetworkDefPtr def,
++                         unsigned int check_active)
++{
++    int ret = -1;
++    int dupVM = 0;
++    virNetworkObjPtr vm = NULL;
++
++    /* See if a VM with matching UUID already exists */
++    vm = virNetworkFindByUUID(doms, def->uuid);
++    if (vm) {
++        /* UUID matches, but if names don't match, refuse it */
++        if (STRNEQ(vm->def->name, def->name)) {
++            char uuidstr[VIR_UUID_STRING_BUFLEN];
++            virUUIDFormat(vm->def->uuid, uuidstr);
++            virNetworkReportError(VIR_ERR_OPERATION_FAILED,
++                                  _("network '%s' is already defined with uuid %s"),
++                                  vm->def->name, uuidstr);
++            goto cleanup;
++        }
++
++        if (check_active) {
++            /* UUID & name match, but if VM is already active, refuse it */
++            if (virNetworkObjIsActive(vm)) {
++                virNetworkReportError(VIR_ERR_OPERATION_INVALID,
++                                      _("network is already active as '%s'"),
++                                      vm->def->name);
++                goto cleanup;
++            }
++        }
++
++        dupVM = 1;
++    } else {
++        /* UUID does not match, but if a name matches, refuse it */
++        vm = virNetworkFindByName(doms, def->name);
++        if (vm) {
++            char uuidstr[VIR_UUID_STRING_BUFLEN];
++            virUUIDFormat(vm->def->uuid, uuidstr);
++            virNetworkReportError(VIR_ERR_OPERATION_FAILED,
++                                  _("network '%s' already exists with uuid %s"),
++                                  def->name, uuidstr);
++            goto cleanup;
++        }
++    }
++
++    ret = dupVM;
++cleanup:
++    if (vm)
++        virNetworkObjUnlock(vm);
++    return ret;
++}
++
++
+ void virNetworkObjLock(virNetworkObjPtr obj)
+ {
+     virMutexLock(&obj->lock);
+diff --git a/src/conf/network_conf.h b/src/conf/network_conf.h
+index 127a23a..c4956b6 100644
+--- a/src/conf/network_conf.h
++++ b/src/conf/network_conf.h
+@@ -169,6 +169,10 @@ int virNetworkSetBridgeName(const virNetworkObjListPtr nets,
+                             virNetworkDefPtr def,
+                             int check_collision);
+ 
++int virNetworkObjIsDuplicate(virNetworkObjListPtr doms,
++                             virNetworkDefPtr def,
++                             unsigned int check_active);
++
+ void virNetworkObjLock(virNetworkObjPtr obj);
+ void virNetworkObjUnlock(virNetworkObjPtr obj);
+ 
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index bf2ac1e..0303a2e 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -466,6 +466,7 @@ virNetworkSaveConfig;
+ virNetworkSetBridgeName;
+ virNetworkObjLock;
+ virNetworkObjUnlock;
++virNetworkObjIsDuplicate;
+ 
+ 
+ # nodeinfo.h
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 7d30544..a0a5764 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -1379,6 +1379,9 @@ static virNetworkPtr networkCreate(virConnectPtr conn, const char *xml) {
+     if (!(def = virNetworkDefParseString(xml)))
+         goto cleanup;
+ 
++    if (virNetworkObjIsDuplicate(&driver->networks, def, 1) < 0)
++        goto cleanup;
++
+     if (virNetworkSetBridgeName(&driver->networks, def, 1))
+         goto cleanup;
+ 
+@@ -1409,12 +1412,16 @@ static virNetworkPtr networkDefine(virConnectPtr conn, const char *xml) {
+     virNetworkDefPtr def;
+     virNetworkObjPtr network = NULL;
+     virNetworkPtr ret = NULL;
++    int dupNet;
+ 
+     networkDriverLock(driver);
+ 
+     if (!(def = virNetworkDefParseString(xml)))
+         goto cleanup;
+ 
++    if ((dupNet = virNetworkObjIsDuplicate(&driver->networks, def, 0)) < 0)
++        goto cleanup;
++
+     if (virNetworkSetBridgeName(&driver->networks, def, 1))
+         goto cleanup;
+ 
+-- 
+1.6.6.1
+

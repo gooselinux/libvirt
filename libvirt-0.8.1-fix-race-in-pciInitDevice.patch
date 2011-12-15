@@ -1,0 +1,61 @@
+commit 56b408231a913f07d81e4a9c24f907efdae7dbf5
+Author: Chris Lalancette <clalance@redhat.com>
+Date:   Wed Jul 28 14:07:08 2010 -0400
+
+    Fix a potential race in pciInitDevice.
+    
+    If detecting the FLR flag of a pci device fails, then we
+    could run into the situation of trying to close a file
+    descriptor twice, once in pciInitDevice() and once in pciFreeDevice().
+    Fix that by removing the pciCloseConfig() in pciInitDevice() and
+    just letting pciFreeDevice() handle it.
+    
+    Thanks to Chris Wright for pointing out this problem.
+    
+    While we are at it, fix an error check.  While it would actually
+    work as-is (since success returns 0), it's still more clear to
+    check for < 0 (as the rest of the code does).
+    
+    Signed-off-by: Chris Lalancette <clalance@redhat.com>
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 767265d..098f4da 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8018,7 +8018,7 @@ static int qemudDomainAttachHostPciDevice(struct qemud_driver *driver,
+         return -1;
+     }
+ 
+-    if (qemuPrepareHostdevPCIDevices(driver, &hostdev, 1))
++    if (qemuPrepareHostdevPCIDevices(driver, &hostdev, 1) < 0)
+         return -1;
+ 
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+diff --git a/src/util/pci.c b/src/util/pci.c
+index 02d88df..53f9ded 100644
+--- a/src/util/pci.c
++++ b/src/util/pci.c
+@@ -188,8 +188,10 @@ pciCloseConfig(pciDevice *dev)
+     if (!dev)
+         return;
+ 
+-    if (dev->fd >= 0)
++    if (dev->fd >= 0) {
+         close(dev->fd);
++        dev->fd = -1;
++    }
+ }
+ 
+ static int
+@@ -672,10 +674,8 @@ pciInitDevice(pciDevice *dev)
+     dev->pcie_cap_pos   = pciFindCapabilityOffset(dev, PCI_CAP_ID_EXP);
+     dev->pci_pm_cap_pos = pciFindCapabilityOffset(dev, PCI_CAP_ID_PM);
+     flr = pciDetectFunctionLevelReset(dev);
+-    if (flr < 0) {
+-        pciCloseConfig(dev);
++    if (flr < 0)
+         return flr;
+-    }
+     dev->has_flr        = flr;
+     dev->has_pm_reset   = pciDetectPowerManagementReset(dev);
+     dev->initted        = 1;

@@ -1,0 +1,481 @@
+From: "Daniel P. Berrange" <berrange@redhat.com>
+Subject: [PATCH RHEL-6] libvirt: Add support for NIC hotplug using netdev_add
+	in QEMU
+
+QEMU is gaining a new monitor command netdev_add for hotplugging
+NICs using the netdev backend code. We already support this on
+the command this, though it is disabled. This adds support for
+hotplug too, also to remain disabled until 0.13 QEMU is released
+
+NB: RHEL6 previous changes already enable netdev for RHEL6 QEMU
+
+https://bugzilla.redhat.com/show_bug.cgi?id=589978
+
+* src/qemu/qemu_driver.c: Support netdev hotplug for NICs
+* src/qemu/qemu_monitor.c, src/qemu/qemu_monitor.h,
+  src/qemu/qemu_monitor_json.c, src/qemu/qemu_monitor_json.h,
+  src/qemu/qemu_monitor_text.c, src/qemu/qemu_monitor_text.h: Add
+  support for netdev_add and netdev_remove commands
+---
+ src/qemu/qemu_driver.c       |   58 +++++++++++---
+ src/qemu/qemu_monitor.c      |   31 ++++++++
+ src/qemu/qemu_monitor.h      |    6 ++
+ src/qemu/qemu_monitor_json.c |  175 ++++++++++++++++++++++++++++--------------
+ src/qemu/qemu_monitor_json.h |    6 ++
+ src/qemu/qemu_monitor_text.c |   58 ++++++++++++++
+ src/qemu/qemu_monitor_text.h |    6 ++
+ 7 files changed, 269 insertions(+), 71 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index b8a021d..d5a0c68 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -7273,12 +7273,17 @@ static int qemudDomainAttachNetDevice(virConnectPtr conn,
+         qemuDomainPCIAddressEnsureAddr(priv->pciaddrs, &net->info) < 0)
+         goto cleanup;
+ 
+-    vlan = qemuDomainNetVLAN(net);
++    if ((qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV) &&
++        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++        vlan = -1;
++    } else {
++        vlan = qemuDomainNetVLAN(net);
+ 
+-    if (vlan < 0) {
+-        qemuReportError(VIR_ERR_NO_SUPPORT, "%s",
+-                        _("Unable to attach network devices without vlan"));
+-        goto cleanup;
++        if (vlan < 0) {
++            qemuReportError(VIR_ERR_NO_SUPPORT, "%s",
++                            _("Unable to attach network devices without vlan"));
++            goto cleanup;
++        }
+     }
+ 
+     if (tapfd != -1) {
+@@ -7306,9 +7311,17 @@ static int qemudDomainAttachNetDevice(virConnectPtr conn,
+     }
+ 
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-    if (qemuMonitorAddHostNetwork(priv->mon, netstr) < 0) {
+-        qemuDomainObjExitMonitorWithDriver(driver, vm);
+-        goto try_tapfd_close;
++    if ((qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV) &&
++        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++        if (qemuMonitorAddNetdev(priv->mon, netstr) < 0) {
++            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            goto try_tapfd_close;
++        }
++    } else {
++        if (qemuMonitorAddHostNetwork(priv->mon, netstr) < 0) {
++            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            goto try_tapfd_close;
++        }
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+@@ -7365,7 +7378,20 @@ cleanup:
+ 
+ try_remove:
+     if (vlan < 0) {
+-        VIR_WARN0(_("Unable to remove network backend"));
++        if ((qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV) &&
++            (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++            char *netdev_name;
++            if (virAsprintf(&netdev_name, "host%s", net->info.alias) < 0)
++                goto no_memory;
++            qemuDomainObjEnterMonitorWithDriver(driver, vm);
++            if (qemuMonitorRemoveNetdev(priv->mon, netdev_name) < 0)
++                VIR_WARN(_("Failed to remove network backend for netdev %s"),
++                         netdev_name);
++            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            VIR_FREE(netdev_name);
++        } else {
++            VIR_WARN0(_("Unable to remove network backend"));
++        }
+     } else {
+         char *hostnet_name;
+         if (virAsprintf(&hostnet_name, "host%s", net->info.alias) < 0)
+@@ -8197,9 +8223,17 @@ qemudDomainDetachNetDevice(struct qemud_driver *driver,
+         }
+     }
+ 
+-    if (qemuMonitorRemoveHostNetwork(priv->mon, vlan, hostnet_name) < 0) {
+-        qemuDomainObjExitMonitorWithDriver(driver, vm);
+-        goto cleanup;
++    if ((qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV) &&
++        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++        if (qemuMonitorRemoveNetdev(priv->mon, hostnet_name) < 0) {
++            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            goto cleanup;
++        }
++    } else {
++        if (qemuMonitorRemoveHostNetwork(priv->mon, vlan, hostnet_name) < 0) {
++            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            goto cleanup;
++        }
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 5eb05d3..4a8ee9d 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1437,6 +1437,37 @@ int qemuMonitorRemoveHostNetwork(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++
++int qemuMonitorAddNetdev(qemuMonitorPtr mon,
++                         const char *netdevstr)
++{
++    int ret;
++    DEBUG("mon=%p, fd=%d netdevstr=%s",
++          mon, mon->fd, netdevstr);
++
++    if (mon->json)
++        ret = qemuMonitorJSONAddNetdev(mon, netdevstr);
++    else
++        ret = qemuMonitorTextAddNetdev(mon, netdevstr);
++    return ret;
++}
++
++
++int qemuMonitorRemoveNetdev(qemuMonitorPtr mon,
++                            const char *alias)
++{
++    int ret;
++    DEBUG("mon=%p, fd=%d alias=%s",
++          mon, mon->fd, alias);
++
++    if (mon->json)
++        ret = qemuMonitorJSONRemoveNetdev(mon, alias);
++    else
++        ret = qemuMonitorTextRemoveNetdev(mon, alias);
++    return ret;
++}
++
++
+ int qemuMonitorGetPtyPaths(qemuMonitorPtr mon,
+                            virHashTablePtr paths)
+ {
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 4e3c4e8..0eeb563 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -325,6 +325,12 @@ int qemuMonitorRemoveHostNetwork(qemuMonitorPtr mon,
+                                  int vlan,
+                                  const char *netname);
+ 
++int qemuMonitorAddNetdev(qemuMonitorPtr mon,
++                         const char *netdevstr);
++
++int qemuMonitorRemoveNetdev(qemuMonitorPtr mon,
++                            const char *alias);
++
+ int qemuMonitorGetPtyPaths(qemuMonitorPtr mon,
+                            virHashTablePtr paths);
+ 
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 8249b99..79daaf3 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -457,6 +457,65 @@ error:
+ }
+ 
+ 
++static void
++qemuFreeKeywords(int nkeywords, char **keywords, char **values)
++{
++    int i;
++    for (i = 0 ; i < nkeywords ; i++) {
++        VIR_FREE(keywords[i]);
++        VIR_FREE(values[i]);
++    }
++    VIR_FREE(keywords);
++    VIR_FREE(values);
++}
++
++static virJSONValuePtr
++qemuMonitorJSONKeywordStringToJSON(const char *str, const char *firstkeyword)
++{
++    virJSONValuePtr ret = NULL;
++    char **keywords = NULL;
++    char **values = NULL;
++    int nkeywords = 0;
++    int i;
++
++    if (!(ret = virJSONValueNewObject()))
++        goto no_memory;
++
++    nkeywords = qemuParseKeywords(str, &keywords, &values, 1);
++
++    if (nkeywords < 0)
++        goto error;
++
++    for (i = 0 ; i < nkeywords ; i++) {
++        if (values[i] == NULL) {
++            if (i != 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                _("unexpected empty keyword in %s"), str);
++                goto error;
++            } else {
++                /* This 3rd arg isn't a typo - the way the parser works is
++                 * that the value ended up in the keyword field */
++                if (virJSONValueObjectAppendString(ret, firstkeyword, keywords[i]) < 0)
++                    goto no_memory;
++            }
++        } else {
++            if (virJSONValueObjectAppendString(ret, keywords[i], values[i]) < 0)
++                goto no_memory;
++        }
++    }
++
++    qemuFreeKeywords(nkeywords, keywords, values);
++    return ret;
++
++no_memory:
++    virReportOOMError();
++error:
++    qemuFreeKeywords(nkeywords, keywords, values);
++    virJSONValueFree(ret);
++    return NULL;
++}
++
++
+ static void qemuMonitorJSONHandleShutdown(qemuMonitorPtr mon, virJSONValuePtr data ATTRIBUTE_UNUSED)
+ {
+     qemuMonitorEmitShutdown(mon);
+@@ -1830,6 +1889,63 @@ int qemuMonitorJSONRemoveHostNetwork(qemuMonitorPtr mon,
+ }
+ 
+ 
++int qemuMonitorJSONAddNetdev(qemuMonitorPtr mon,
++                             const char *netdevstr)
++{
++    int ret = -1;
++    virJSONValuePtr cmd = NULL;
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr args = NULL;
++
++    cmd = qemuMonitorJSONMakeCommand("netdev_add", NULL);
++    if (!cmd)
++        return -1;
++
++    args = qemuMonitorJSONKeywordStringToJSON(netdevstr, "type");
++    if (!args)
++        goto cleanup;
++
++    if (virJSONValueObjectAppend(cmd, "arguments", args) < 0) {
++        virReportOOMError();
++        goto cleanup;
++    }
++    args = NULL; /* obj owns reference to args now */
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0)
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++
++cleanup:
++    virJSONValueFree(args);
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
++int qemuMonitorJSONRemoveNetdev(qemuMonitorPtr mon,
++                                const char *alias)
++{
++    int ret;
++    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("netdev_del",
++                                                     "s:id", alias,
++                                                     NULL);
++    virJSONValuePtr reply = NULL;
++    if (!cmd)
++        return -1;
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0)
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
+ /*
+  * Example return data
+  *
+@@ -2040,65 +2156,6 @@ int qemuMonitorJSONDelDevice(qemuMonitorPtr mon,
+ }
+ 
+ 
+-static void
+-qemuFreeKeywords(int nkeywords, char **keywords, char **values)
+-{
+-    int i;
+-    for (i = 0 ; i < nkeywords ; i++) {
+-        VIR_FREE(keywords[i]);
+-        VIR_FREE(values[i]);
+-    }
+-    VIR_FREE(keywords);
+-    VIR_FREE(values);
+-}
+-
+-static virJSONValuePtr
+-qemuMonitorJSONKeywordStringToJSON(const char *str, const char *firstkeyword)
+-{
+-    virJSONValuePtr ret = NULL;
+-    char **keywords = NULL;
+-    char **values = NULL;
+-    int nkeywords = 0;
+-    int i;
+-
+-    if (!(ret = virJSONValueNewObject()))
+-        goto no_memory;
+-
+-    nkeywords = qemuParseKeywords(str, &keywords, &values, 1);
+-
+-    if (nkeywords < 0)
+-        goto error;
+-
+-    for (i = 0 ; i < nkeywords ; i++) {
+-        if (values[i] == NULL) {
+-            if (i != 0) {
+-                qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                                _("unexpected empty keyword in %s"), str);
+-                goto error;
+-            } else {
+-                /* This 3rd arg isn't a typo - the way the parser works is
+-                 * that the value ended up in the keyword field */
+-                if (virJSONValueObjectAppendString(ret, firstkeyword, keywords[i]) < 0)
+-                    goto no_memory;
+-            }
+-        } else {
+-            if (virJSONValueObjectAppendString(ret, keywords[i], values[i]) < 0)
+-                goto no_memory;
+-        }
+-    }
+-
+-    qemuFreeKeywords(nkeywords, keywords, values);
+-    return ret;
+-
+-no_memory:
+-    virReportOOMError();
+-error:
+-    qemuFreeKeywords(nkeywords, keywords, values);
+-    virJSONValueFree(ret);
+-    return NULL;
+-}
+-
+-
+ int qemuMonitorJSONAddDevice(qemuMonitorPtr mon,
+                              const char *devicestr)
+ {
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 5cfbe6c..4dcb3e0 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -159,6 +159,12 @@ int qemuMonitorJSONRemoveHostNetwork(qemuMonitorPtr mon,
+                                      int vlan,
+                                      const char *netname);
+ 
++int qemuMonitorJSONAddNetdev(qemuMonitorPtr mon,
++                             const char *netdevstr);
++
++int qemuMonitorJSONRemoveNetdev(qemuMonitorPtr mon,
++                                const char *alias);
++
+ int qemuMonitorJSONGetPtyPaths(qemuMonitorPtr mon,
+                                virHashTablePtr paths);
+ 
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index 3f917bf..faa144d 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -1813,6 +1813,64 @@ cleanup:
+ }
+ 
+ 
++int qemuMonitorTextAddNetdev(qemuMonitorPtr mon,
++                             const char *netdevstr)
++{
++    char *cmd;
++    char *reply = NULL;
++    int ret = -1;
++
++    if (virAsprintf(&cmd, "netdev_add %s", netdevstr) < 0) {
++        virReportOOMError();
++        return -1;
++    }
++
++    if (qemuMonitorCommand(mon, cmd, &reply) < 0) {
++        qemuReportError(VIR_ERR_OPERATION_FAILED,
++                        _("failed to add netdev with '%s'"), cmd);
++        goto cleanup;
++    }
++
++    /* XXX error messages here ? */
++
++    ret = 0;
++
++cleanup:
++    VIR_FREE(cmd);
++    VIR_FREE(reply);
++    return ret;
++}
++
++
++int qemuMonitorTextRemoveNetdev(qemuMonitorPtr mon,
++                                const char *alias)
++{
++    char *cmd;
++    char *reply = NULL;
++    int ret = -1;
++
++    if (virAsprintf(&cmd, "netdev_del %s", alias) < 0) {
++        virReportOOMError();
++        return -1;
++    }
++
++    if (qemuMonitorCommand(mon, cmd, &reply) < 0) {
++        qemuReportError(VIR_ERR_OPERATION_FAILED,
++                        _("failed to remove netdev in qemu with '%s'"), cmd);
++        goto cleanup;
++    }
++
++    /* XXX error messages here ? */
++
++    ret = 0;
++
++cleanup:
++    VIR_FREE(cmd);
++    VIR_FREE(reply);
++    return ret;
++}
++
++
+ /* Parse the output of "info chardev" and return a hash of pty paths.
+  *
+  * Output is:
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 23c3a45..25be828 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -154,6 +154,12 @@ int qemuMonitorTextRemoveHostNetwork(qemuMonitorPtr mon,
+                                      int vlan,
+                                      const char *netname);
+ 
++int qemuMonitorTextAddNetdev(qemuMonitorPtr mon,
++                             const char *netdevstr);
++
++int qemuMonitorTextRemoveNetdev(qemuMonitorPtr mon,
++                                const char *alias);
++
+ int qemuMonitorTextGetPtyPaths(qemuMonitorPtr mon,
+                                virHashTablePtr paths);
+ 

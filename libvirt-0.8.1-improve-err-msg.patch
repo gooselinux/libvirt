@@ -1,0 +1,50 @@
+For bug
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=595609
+
+If there is no driver for a URI we report
+
+  "no hypervisor driver available"
+
+This is bad because not all virt drivers are hypervisors (ie container
+based virt).
+
+If there is no driver support for an API we report
+
+  "this function is not supported by the hypervisor"
+
+This is bad for the same reason, and additionally because it is
+also used for the network, interface & storage drivers.
+
+* src/util/virterror.c: Improve error messages
+---
+ src/util/virterror.c |    8 ++++----
+ 1 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/util/virterror.c b/src/util/virterror.c
+index 96dd1e7..9f632ec 100644
+--- a/src/util/virterror.c
++++ b/src/util/virterror.c
+@@ -760,15 +760,15 @@ virErrorMsg(virErrorNumber error, const char *info)
+             break;
+         case VIR_ERR_NO_SUPPORT:
+             if (info == NULL)
+-                errmsg = _("this function is not supported by the hypervisor");
++                errmsg = _("this function is not supported by the connection driver");
+             else
+-                errmsg = _("this function is not supported by the hypervisor: %s");
++                errmsg = _("this function is not supported by the connection driver: %s");
+             break;
+         case VIR_ERR_NO_CONNECT:
+             if (info == NULL)
+-                errmsg = _("no hypervisor driver available");
++                errmsg = _("no connection driver available");
+             else
+-                errmsg = _("no hypervisor driver available for %s");
++                errmsg = _("no connection driver available for %s");
+             break;
+         case VIR_ERR_INVALID_CONN:
+             if (info == NULL)
+-- 
+1.6.6.1
+

@@ -1,0 +1,331 @@
+From 6ef4fc718a8c0e2f61e6e7dacfc2b028ae9f5977 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 9 Apr 2010 16:49:31 +0100
+Subject: [PATCH 11/16] Support password expiry in the QEMU driver
+
+The RHEL6 build of QEMU has a custom monitor command that allows
+an expiry time to be set. We try to use that command first when
+setting a VNC/SPICE password. If that doesn't work we fallback
+to the legacy VNC only password, and throw an error if they try
+to use SPICE.
+
+* src/qemu/qemu_monitor.c, src/qemu/qemu_monitor.h,
+  src/qemu/qemu_monitor_json.c, src/qemu/qemu_monitor_json.h: Add
+  support for __com.redhat_set_password
+* src/qemu/qemu_driver.c: Wire up SPICE/VNC passwords with expiry
+---
+ src/qemu/qemu_driver.c       |  140 ++++++++++++++++++++++++++++++++++++------
+ src/qemu/qemu_monitor.c      |   26 ++++++++-
+ src/qemu/qemu_monitor.h      |    5 ++
+ src/qemu/qemu_monitor_json.c |   33 ++++++++++
+ src/qemu/qemu_monitor_json.h |    4 +
+ 5 files changed, 189 insertions(+), 19 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 013d85d..beb4595 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -2182,6 +2182,60 @@ qemudInitCpuAffinity(virDomainObjPtr vm)
+ 
+ 
+ static int
++qemuInitGraphicsPasswords(struct qemud_driver *driver,
++                          virDomainObjPtr vm,
++                          int type,
++                          virDomainGraphicsAuthDefPtr auth,
++                          const char *defaultPasswd)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    time_t now = time(NULL);
++    time_t lifetime;
++    int ret;
++
++    if (!auth->passwd && !driver->vncPassword)
++        return 0;
++
++    if (auth->expires) {
++        lifetime = auth->validTo - now;
++        /* QEMU treats '0' as dont expire, so we need to force it to expire
++         * immediately */
++        if (lifetime == 0)
++            lifetime = -1;
++    } else {
++        lifetime = 0; /* don't expire */
++    }
++
++    qemuDomainObjEnterMonitorWithDriver(driver, vm);
++    ret = qemuMonitorSetGraphicsPassword(priv->mon,
++                                         type,
++                                         auth->passwd ? auth->passwd : defaultPasswd,
++                                         lifetime);
++
++    if (ret == -2) {
++        if (type != VIR_DOMAIN_GRAPHICS_TYPE_VNC) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("Only VNC graphics are supported"));
++            ret = -1;
++        }
++        /* XXX we could fake this with a timer */
++        if (auth->expires) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("Expiry of VNC passwords is not supported"));
++            ret = -1;
++        }
++    }
++
++    if (ret == -2)
++        ret = qemuMonitorSetVNCPassword(priv->mon,
++                                        auth->passwd ? auth->passwd : defaultPasswd);
++
++    qemuDomainObjExitMonitorWithDriver(driver, vm);
++
++    return ret;
++}
++
++static int
+ qemuInitPasswords(virConnectPtr conn,
+                   struct qemud_driver *driver,
+                   virDomainObjPtr vm,
+@@ -2189,16 +2243,18 @@ qemuInitPasswords(virConnectPtr conn,
+     int ret = 0;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+ 
+-    if ((vm->def->ngraphics == 1) &&
+-        vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
+-        (vm->def->graphics[0]->data.vnc.auth.passwd || driver->vncPassword)) {
+-
+-        qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-        ret = qemuMonitorSetVNCPassword(priv->mon,
+-                                        vm->def->graphics[0]->data.vnc.auth.passwd ?
+-                                        vm->def->graphics[0]->data.vnc.auth.passwd :
+-                                        driver->vncPassword);
+-        qemuDomainObjExitMonitorWithDriver(driver, vm);
++    if (vm->def->ngraphics == 1) {
++        if (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC) {
++            ret = qemuInitGraphicsPasswords(driver, vm,
++                                            VIR_DOMAIN_GRAPHICS_TYPE_VNC,
++                                            &vm->def->graphics[0]->data.vnc.auth,
++                                            driver->vncPassword);
++        } else if (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++            ret = qemuInitGraphicsPasswords(driver, vm,
++                                            VIR_DOMAIN_GRAPHICS_TYPE_SPICE,
++                                            &vm->def->graphics[0]->data.vnc.auth,
++                                            driver->vncPassword);
++        }
+     }
+ 
+     if (ret < 0)
+@@ -3497,6 +3553,12 @@ cleanup:
+         vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
+         vm->def->graphics[0]->data.vnc.autoport)
+         vm->def->graphics[0]->data.vnc.port = -1;
++    if ((vm->def->ngraphics == 1) &&
++        vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE &&
++        vm->def->graphics[0]->data.spice.autoport) {
++        vm->def->graphics[0]->data.spice.port = -1;
++        vm->def->graphics[0]->data.spice.tlsPort = -1;
++    }
+     if (logfile != -1)
+         close(logfile);
+     vm->def->id = -1;
+@@ -7583,7 +7645,6 @@ qemuDomainChangeGraphics(struct qemud_driver *driver,
+                          virDomainGraphicsDefPtr dev)
+ {
+     virDomainGraphicsDefPtr olddev = qemuDomainFindGraphics(vm, dev);
+-    qemuDomainObjPrivatePtr priv = vm->privateData;
+     int ret = -1;
+ 
+     if (!olddev) {
+@@ -7611,20 +7672,63 @@ qemuDomainChangeGraphics(struct qemud_driver *driver,
+             return -1;
+         }
+ 
+-        if (STRNEQ_NULLABLE(olddev->data.vnc.auth.passwd, dev->data.vnc.auth.passwd)) {
++        /* If a password lifetime was, or is set, then we must always run,
++         * even if new password matches old password */
++        if (olddev->data.vnc.auth.expires ||
++            dev->data.vnc.auth.expires ||
++            STRNEQ_NULLABLE(olddev->data.vnc.auth.passwd, dev->data.vnc.auth.passwd)) {
+             VIR_DEBUG("Updating password on VNC server %p %p", dev->data.vnc.auth.passwd, driver->vncPassword);
+-            qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-            ret = qemuMonitorSetVNCPassword(priv->mon,
+-                                            dev->data.vnc.auth.passwd ?
+-                                            dev->data.vnc.auth.passwd :
+-                                            driver->vncPassword);
+-            qemuDomainObjExitMonitorWithDriver(driver, vm);
++            ret = qemuInitGraphicsPasswords(driver, vm, VIR_DOMAIN_GRAPHICS_TYPE_VNC,
++                                            &dev->data.vnc.auth, driver->vncPassword);
+ 
+             /* Steal the new dev's  char * reference */
+             VIR_FREE(olddev->data.vnc.auth.passwd);
+             olddev->data.vnc.auth.passwd = dev->data.vnc.auth.passwd;
+             dev->data.vnc.auth.passwd = NULL;
++            olddev->data.vnc.auth.validTo = dev->data.vnc.auth.validTo;
++            olddev->data.vnc.auth.expires = dev->data.vnc.auth.expires;
++        } else {
++            VIR_DEBUG0("Not updating since password didn't change");
++            ret = 0;
++        }
++        break;
++
++    case VIR_DOMAIN_GRAPHICS_TYPE_SPICE:
++        if ((olddev->data.spice.autoport != dev->data.spice.autoport) ||
++            (!dev->data.spice.autoport && (olddev->data.spice.port != dev->data.spice.port)) ||
++            (!dev->data.spice.autoport && (olddev->data.spice.tlsPort != dev->data.spice.tlsPort))) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("cannot change port settings on spice graphics"));
++            return -1;
++        }
++        if (STRNEQ_NULLABLE(olddev->data.spice.listenAddr, dev->data.spice.listenAddr)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("cannot change listen address setting on spice graphics"));
++            return -1;
++        }
++        if (STRNEQ_NULLABLE(olddev->data.spice.keymap, dev->data.spice.keymap)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("cannot change keymap setting on spice graphics"));
++            return -1;
++        }
++
++        /* If a password lifetime was, or is set, then we must always run,
++         * even if new password matches old password */
++        if (olddev->data.spice.auth.expires ||
++            dev->data.spice.auth.expires ||
++            STRNEQ_NULLABLE(olddev->data.spice.auth.passwd, dev->data.spice.auth.passwd)) {
++            VIR_DEBUG("Updating password on SPICE server %p %p", dev->data.spice.auth.passwd, driver->spicePassword);
++            ret = qemuInitGraphicsPasswords(driver, vm, VIR_DOMAIN_GRAPHICS_TYPE_SPICE,
++                                            &dev->data.spice.auth, driver->spicePassword);
++
++            /* Steal the new dev's  char * reference */
++            VIR_FREE(olddev->data.spice.auth.passwd);
++            olddev->data.spice.auth.passwd = dev->data.spice.auth.passwd;
++            dev->data.spice.auth.passwd = NULL;
++            olddev->data.spice.auth.validTo = dev->data.spice.auth.validTo;
++            olddev->data.spice.auth.expires = dev->data.spice.auth.expires;
+         } else {
++            VIR_DEBUG0("Not updating since password didn't change");
+             ret = 0;
+         }
+         break;
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 01e3a46..4012560 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -989,7 +989,8 @@ int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
+                               const char *password)
+ {
+     int ret;
+-    DEBUG("mon=%p, fd=%d", mon, mon->fd);
++    DEBUG("mon=%p, fd=%d, password=%p",
++          mon, mon->fd, password);
+ 
+     if (!password)
+         password = "";
+@@ -998,6 +999,29 @@ int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
+         ret = qemuMonitorJSONSetVNCPassword(mon, password);
+     else
+         ret = qemuMonitorTextSetVNCPassword(mon, password);
++
++    return ret;
++}
++
++
++/* Returns -2 if not supported with this monitor connection */
++int qemuMonitorSetGraphicsPassword(qemuMonitorPtr mon,
++                                   int type,
++                                   const char *password,
++                                   unsigned int expiry)
++{
++    int ret;
++    DEBUG("mon=%p, fd=%d type=%d, password=%p, expiry=%u",
++          mon, mon->fd, type, password, expiry);
++
++    if (!password)
++        password = "";
++
++    if (mon->json)
++        ret = qemuMonitorJSONSetGraphicsPassword(mon, type, password, expiry);
++    else {
++        ret = -2;
++    }
+     return ret;
+ }
+ 
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 21b8989..735832d 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -183,6 +183,11 @@ int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
+ 
+ int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
+                               const char *password);
++int qemuMonitorSetGraphicsPassword(qemuMonitorPtr mon,
++                                   int type,
++                                   const char *password,
++                                   unsigned int expiry);
++
+ int qemuMonitorSetBalloon(qemuMonitorPtr mon,
+                           unsigned long newmem);
+ int qemuMonitorSetCPU(qemuMonitorPtr mon, int cpu, int online);
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 2904201..2413b65 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1020,6 +1020,39 @@ int qemuMonitorJSONSetVNCPassword(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++/* Returns -1 on error, -2 if not supported */
++int qemuMonitorJSONSetGraphicsPassword(qemuMonitorPtr mon,
++                                       int type,
++                                       const char *password,
++                                       unsigned int expiry)
++{
++    int ret = -1;
++    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("__com.redhat_set_password",
++                                                     "s:protocol", type == VIR_DOMAIN_GRAPHICS_TYPE_VNC ? "vnc" : "spice",
++                                                     "s:password", password,
++                                                     "i:expiration", (int)expiry,
++                                                     NULL);
++    virJSONValuePtr reply = NULL;
++    if (!cmd)
++        return -1;
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0) {
++        if (qemuMonitorJSONHasError(reply, "CommandNotFound")) {
++            ret = -2;
++            goto cleanup;
++        }
++
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++    }
++
++cleanup:
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
+ /*
+  * Returns: 0 if balloon not supported, +1 if balloon adjust worked
+  * or -1 on failure
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index e7baf84..57daa68 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -57,6 +57,10 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+ 
+ int qemuMonitorJSONSetVNCPassword(qemuMonitorPtr mon,
+                                   const char *password);
++int qemuMonitorJSONSetGraphicsPassword(qemuMonitorPtr mon,
++                                       int type,
++                                       const char *password,
++                                       unsigned int expiry);
+ int qemuMonitorJSONSetBalloon(qemuMonitorPtr mon,
+                               unsigned long newmem);
+ int qemuMonitorJSONSetCPU(qemuMonitorPtr mon, int cpu, int online);
+-- 
+1.6.6.1
+

@@ -1,0 +1,128 @@
+From 0135f0ea9ef017793fb3255b24d352a3e7d4fe5d Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 9 Apr 2010 17:26:06 +0100
+Subject: [PATCH 12/16] Support multiple QXL video cards
+
+QEMU crashes & burns if you try multiple Cirrus video cards, but
+QXL copes fine. Adapt QEMU config code to allow multiple QXL
+video cards
+
+* src/qemu/qemu_conf.c: Support multiple QXL video cards
+---
+ src/qemu/qemu_conf.c                               |   64 +++++++++++++++++--
+ .../qemuxml2argv-graphics-spice-rhel6.args         |    2 +-
+ .../qemuxml2argv-graphics-spice-rhel6.xml          |    3 +
+ 3 files changed, 61 insertions(+), 8 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index b924142..8ee7a8b 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -2922,6 +2922,36 @@ error:
+ }
+ 
+ 
++static char *
++qemuBuildVideoDevStr(virDomainVideoDefPtr video)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++    const char *model = qemuVideoTypeToString(video->type);
++
++    if (!model) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("invalid video model"));
++        goto error;
++    }
++
++    virBufferVSprintf(&buf, "%s", model);
++    virBufferVSprintf(&buf, ",id=%s", video->info.alias);
++    if (qemuBuildDeviceAddressStr(&buf, &video->info) < 0)
++        goto error;
++
++    if (virBufferError(&buf)) {
++        virReportOOMError();
++        goto error;
++    }
++
++    return virBufferContentAndReset(&buf);
++
++error:
++    virBufferFreeAndReset(&buf);
++    return NULL;
++}
++
++
+ char *
+ qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev)
+ {
+@@ -4510,13 +4540,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                         "%s", _("unsupported graphics output requested"));
+     }
+ 
+-    if (def->nvideos) {
+-        if (def->nvideos > 1) {
+-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                            "%s", _("only one video card is currently supported"));
+-            goto error;
+-        }
+-
++    if (def->nvideos > 0) {
+         if (qemuCmdFlags & QEMUD_CMD_FLAG_VGA) {
+             if (def->videos[0]->type == VIR_DOMAIN_VIDEO_TYPE_XEN) {
+                 /* nothing - vga has no effect on Xen pvfb */
+@@ -4562,6 +4586,32 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                 goto error;
+             }
+         }
++
++        if (def->nvideos > 1) {
++            if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
++                for (i = 1 ; i < def->nvideos ; i++) {
++                    char *str;
++                    if (def->videos[i]->type != VIR_DOMAIN_VIDEO_TYPE_QXL) {
++                        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                        _("video type %s is only valid as primary video card"),
++                                        virDomainVideoTypeToString(def->videos[0]->type));
++                        goto error;
++                    }
++
++                    ADD_ARG_LIT("-device");
++
++                    if (!(str = qemuBuildVideoDevStr(def->videos[i])))
++                        goto error;
++
++                    ADD_ARG(str);
++                }
++            } else {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("only one video card is currently supported"));
++                goto error;
++            }
++        }
++
+     } else {
+         /* If we have -device, then we set -nodefault already */
+         if (!(qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) &&
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+index e412fdb..44809b0 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice /usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,x509-dir=/etc/pki/libvirt-spice -vga qxl -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice /usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,x509-dir=/etc/pki/libvirt-spice -vga qxl -device qxl,id=video1,bus=pci.0,addr=0x4 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+index 08dfb26..6fe9a60 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+@@ -25,5 +25,8 @@
+     <video>
+       <model type='qxl' vram='65536' heads='1'/>
+     </video>
++    <video>
++      <model type='qxl' vram='65536' heads='1'/>
++    </video>
+   </devices>
+ </domain>
+-- 
+1.6.6.1
+

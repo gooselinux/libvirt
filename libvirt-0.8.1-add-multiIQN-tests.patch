@@ -1,0 +1,121 @@
+Test fix for:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=587700
+
+Add multiIQN tests
+
+* Fix broken rng schema
+* Add test input & output files
+---
+ docs/schemas/storagepool.rng                       |   16 ++++++++------
+ tests/storagepoolxml2xmlin/pool-iscsi-multiiqn.xml |   22 ++++++++++++++++++++
+ .../storagepoolxml2xmlout/pool-iscsi-multiiqn.xml  |   22 ++++++++++++++++++++
+ tests/storagepoolxml2xmltest.c                     |    1 +
+ 4 files changed, 54 insertions(+), 7 deletions(-)
+ create mode 100644 tests/storagepoolxml2xmlin/pool-iscsi-multiiqn.xml
+ create mode 100644 tests/storagepoolxml2xmlout/pool-iscsi-multiiqn.xml
+
+diff --git a/docs/schemas/storagepool.rng b/docs/schemas/storagepool.rng
+index cfcf9a6..b911f7c 100644
+--- a/docs/schemas/storagepool.rng
++++ b/docs/schemas/storagepool.rng
+@@ -188,12 +188,14 @@
+     </element>
+   </define>
+
+-  <define name='initiatorinfoiqn'>
+-    <element name='iqn'>
+-      <attribute name='name'>
+-        <text/>
+-      </attribute>
+-      <empty/>
++  <define name='initiatorinfo'>
++    <element name='initiator'>
++      <element name='iqn'>
++        <attribute name='name'>
++          <text/>
++        </attribute>
++        <empty/>
++      </element>
+     </element>
+   </define>
+
+@@ -372,7 +374,7 @@
+       <ref name='sourceinfohost'/>
+       <ref name='sourceinfodev'/>
+       <optional>
+-      <ref name='initiatorinfoiqn'/>
++        <ref name='initiatorinfo'/>
+       </optional>
+       <optional>
+         <ref name='sourceinfoauth'/>
+diff --git a/tests/storagepoolxml2xmlin/pool-iscsi-multiiqn.xml b/tests/storagepoolxml2xmlin/pool-iscsi-multiiqn.xml
+new file mode 100644
+index 0000000..4c77086
+--- /dev/null
++++ b/tests/storagepoolxml2xmlin/pool-iscsi-multiiqn.xml
+@@ -0,0 +1,22 @@
++<pool type='iscsi'>
++  <name>multiiqn</name>
++  <uuid>e9392370-2917-565e-792c-e057f46512d7</uuid>
++  <capacity>0</capacity>
++  <allocation>0</allocation>
++  <available>0</available>
++  <source>
++    <host name='iscsi.example.com'/>
++    <device path='demo-target'/>
++    <initiator>
++      <iqn name='initiator0'/>
++    </initiator>
++  </source>
++  <target>
++    <path>/dev/disk/by-path</path>
++    <permissions>
++      <mode>0700</mode>
++      <owner>0</owner>
++      <group>0</group>
++    </permissions>
++  </target>
++</pool>
+diff --git a/tests/storagepoolxml2xmlout/pool-iscsi-multiiqn.xml b/tests/storagepoolxml2xmlout/pool-iscsi-multiiqn.xml
+new file mode 100644
+index 0000000..4c77086
+--- /dev/null
++++ b/tests/storagepoolxml2xmlout/pool-iscsi-multiiqn.xml
+@@ -0,0 +1,22 @@
++<pool type='iscsi'>
++  <name>multiiqn</name>
++  <uuid>e9392370-2917-565e-792c-e057f46512d7</uuid>
++  <capacity>0</capacity>
++  <allocation>0</allocation>
++  <available>0</available>
++  <source>
++    <host name='iscsi.example.com'/>
++    <device path='demo-target'/>
++    <initiator>
++      <iqn name='initiator0'/>
++    </initiator>
++  </source>
++  <target>
++    <path>/dev/disk/by-path</path>
++    <permissions>
++      <mode>0700</mode>
++      <owner>0</owner>
++      <group>0</group>
++    </permissions>
++  </target>
++</pool>
+diff --git a/tests/storagepoolxml2xmltest.c b/tests/storagepoolxml2xmltest.c
+index 4550407..33a7343 100644
+--- a/tests/storagepoolxml2xmltest.c
++++ b/tests/storagepoolxml2xmltest.c
+@@ -95,6 +95,7 @@ mymain(int argc, char **argv)
+     DO_TEST("pool-netfs");
+     DO_TEST("pool-scsi");
+     DO_TEST("pool-mpath");
++    DO_TEST("pool-iscsi-multiiqn");
+
+     return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+ }
+-- 
+1.6.6.1

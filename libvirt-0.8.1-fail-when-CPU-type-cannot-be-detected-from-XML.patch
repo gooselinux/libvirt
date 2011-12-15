@@ -1,0 +1,39 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=613760
+
+When autodetecting whether XML describes guest or host CPU, the presence
+of <arch> element is checked. If it's present, we treat the XML as host
+CPU definition. Which is right, since guest CPU definitions do not
+contain <arch> element. However, if at the same time the root <cpu>
+element contains `match' attribute, we would silently ignore it and
+still treat the XML as host CPU. We should rather refuse such invalid
+XML.
+(cherry picked from commit 517aba9fac9040c8c6b25112c9104d2e0f4c5e25)
+---
+ src/conf/cpu_conf.c |   10 ++++++++--
+ 1 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/conf/cpu_conf.c b/src/conf/cpu_conf.c
+index d9aa69c..3274659 100644
+--- a/src/conf/cpu_conf.c
++++ b/src/conf/cpu_conf.c
+@@ -130,9 +130,15 @@ virCPUDefParseXML(const xmlNodePtr node,
+     }
+ 
+     if (mode == VIR_CPU_TYPE_AUTO) {
+-        if (virXPathBoolean("boolean(./arch)", ctxt))
++        if (virXPathBoolean("boolean(./arch)", ctxt)) {
++            if (virXPathBoolean("boolean(./@match)", ctxt)) {
++                virCPUReportError(VIR_ERR_XML_ERROR, "%s",
++                        _("'arch' element element cannot be used inside 'cpu'"
++                          " element with 'match' attribute'"));
++                goto error;
++            }
+             def->type = VIR_CPU_TYPE_HOST;
+-        else
++        } else
+             def->type = VIR_CPU_TYPE_GUEST;
+     } else
+         def->type = mode;
+-- 
+1.7.1.1
+

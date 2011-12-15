@@ -1,0 +1,34 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=613765
+
+When comparing a CPU without <model> element, such as
+
+    <cpu>
+        <topology sockets='1' cores='1' threads='1'/>
+    </cpu>
+
+libvirt would happily crash without warning.
+(cherry picked from commit f5055f2310950633510dd808d1b67123e13d6f03)
+---
+ src/cpu/cpu.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/src/cpu/cpu.c b/src/cpu/cpu.c
+index 279eee7..def6974 100644
+--- a/src/cpu/cpu.c
++++ b/src/cpu/cpu.c
+@@ -90,6 +90,12 @@ cpuCompareXML(virCPUDefPtr host,
+     if (cpu == NULL)
+         goto cleanup;
+ 
++    if (!cpu->model) {
++        virCPUReportError(VIR_ERR_OPERATION_INVALID,
++                "%s", _("no CPU model specified"));
++        goto cleanup;
++    }
++
+     ret = cpuCompare(host, cpu);
+ 
+ cleanup:
+-- 
+1.7.1.1
+

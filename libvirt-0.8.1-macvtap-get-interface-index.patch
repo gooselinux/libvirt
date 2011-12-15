@@ -1,0 +1,22 @@
+commit 045a5722ab7c5d321754a051b3a556e3317627b6
+Author: Stefan Berger <stefanb@us.ibm.com>
+Date:   Thu Jun 17 07:05:38 2010 -0400
+
+    macvtap: work-around for 2.6.32 and older kernels
+    
+    This patch works around a recent extension of the netlink driver I had made use of when building the netlink messages. Unfortunately older kernels don't accept IFLA_IFNAME + name of interface as a replacement for the interface's index, so this patch now gets the interface index ifindex if it's not provided (ifindex <= 0).
+
+diff --git a/src/util/macvtap.c b/src/util/macvtap.c
+index fb333eb..635458d 100644
+--- a/src/util/macvtap.c
++++ b/src/util/macvtap.c
+@@ -905,6 +905,9 @@ ifaceGetNthParent(int ifindex, const char *ifname, unsigned int nthParent,
+ 
+     *nth = 0;
+ 
++    if (ifindex <= 0 && ifaceGetIndex(true, ifname, &ifindex) != 0)
++        return 1;
++
+     while (!end && i <= nthParent) {
+         rc = link_dump(true, ifname, ifindex, tb, &recvbuf);
+         if (rc)

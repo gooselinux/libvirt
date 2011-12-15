@@ -1,0 +1,95 @@
+diff -urp libvirt-0.8.1.orig/src/Makefile.am libvirt-0.8.1/src/Makefile.am
+--- libvirt-0.8.1.orig/src/Makefile.am	2010-07-14 00:42:49.407125892 -0400
++++ libvirt-0.8.1/src/Makefile.am	2010-07-14 00:45:26.193042901 -0400
+@@ -964,9 +964,14 @@ if WITH_LIBVIRTD
+ libexec_PROGRAMS += libvirt_parthelper
+ 
+ libvirt_parthelper_SOURCES = $(STORAGE_HELPER_DISK_SOURCES)
+-libvirt_parthelper_LDFLAGS = $(WARN_CFLAGS) $(COVERAGE_LDCFLAGS)
+-libvirt_parthelper_LDADD = $(LIBPARTED_LIBS)
+-libvirt_parthelper_CFLAGS = $(LIBPARTED_CFLAGS) ../gnulib/lib/libgnu.la
++libvirt_parthelper_LDFLAGS = $(WARN_LDFLAGS) $(COVERAGE_LDFLAGS)
++libvirt_parthelper_LDADD =		\
++		$(LIBPARTED_LIBS)	\
++		$(DEVMAPPER_LIBS)	\
++		libvirt_util.la		\
++		../gnulib/lib/libgnu.la
++
++libvirt_parthelper_CFLAGS = $(LIBPARTED_CFLAGS) $(DEVMAPPER_CFLAGS)
+ endif
+ endif
+ EXTRA_DIST += $(STORAGE_HELPER_DISK_SOURCES)
+diff -urp libvirt-0.8.1.orig/src/storage/parthelper.c libvirt-0.8.1/src/storage/parthelper.c
+--- libvirt-0.8.1.orig/src/storage/parthelper.c	2010-07-14 00:42:49.403125808 -0400
++++ libvirt-0.8.1/src/storage/parthelper.c	2010-07-14 00:43:14.896963021 -0400
+@@ -35,7 +35,12 @@
+ #include <parted/parted.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <libdevmapper.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
++#include "util.h"
+ #include "c-ctype.h"
+ 
+ /* we don't need to include the full internal.h just for this */
+@@ -52,6 +57,18 @@ enum diskCommand {
+     DISK_GEOMETRY
+ };
+ 
++static int
++is_dm_device(const char *devname)
++{
++    struct stat buf;
++
++    if (devname && !stat(devname, &buf) && dm_is_dm_major(major(buf.st_rdev))) {
++        return 1;
++    }
++
++    return 0;
++}
++
+ int main(int argc, char **argv)
+ {
+     PedDevice *dev;
+@@ -59,6 +76,7 @@ int main(int argc, char **argv)
+     PedPartition *part;
+     int cmd = DISK_LAYOUT;
+     const char *path;
++    char *canonical_path;
+     const char *partsep;
+ 
+     if (argc == 3 && STREQ(argv[2], "-g")) {
+@@ -69,7 +87,20 @@ int main(int argc, char **argv)
+     }
+ 
+     path = argv[1];
+-    partsep = *path && c_isdigit(path[strlen(path)-1]) ? "p" : "";
++    if (is_dm_device(path)) {
++        partsep = "p";
++        canonical_path = strdup(path);
++        if (canonical_path == NULL) {
++            return 2;
++        }
++    } else {
++        if (virFileResolveLink(path, &canonical_path) != 0) {
++            return 2;
++        }
++
++        partsep = *canonical_path &&
++            c_isdigit(canonical_path[strlen(canonical_path)-1]) ? "p" : "";
++    }
+ 
+     if ((dev = ped_device_get(path)) == NULL) {
+         fprintf(stderr, "unable to access device %s\n", path);
+@@ -125,7 +156,7 @@ int main(int argc, char **argv)
+          */
+         if (part->num != -1) {
+             printf("%s%s%d%c%s%c%s%c%llu%c%llu%c%llu%c",
+-                   path, partsep,
++                   canonical_path, partsep,
+                    part->num, '\0',
+                    type, '\0',
+                    content, '\0',

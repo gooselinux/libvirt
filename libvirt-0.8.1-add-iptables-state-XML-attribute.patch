@@ -1,0 +1,175 @@
+From: Stefan Berger <stefanb@us.ibm.com>
+
+This patch adds an optional XML attribute to a nwfilter rule to give the user control over whether the rule is supposed to be using the iptables state match or not. A rule may now look like shown in the XML below with the statematch attribute either having value '0' or 'false' (case-insensitive).
+
+[...]
+<rule action='accept' direction='in' statematch='false'>
+<tcp srcmacaddr='1:2:3:4:5:6'
+           srcipaddr='10.1.2.3' srcipmask='32'
+           dscp='33'
+           srcportstart='20' srcportend='21'
+           dstportstart='100' dstportend='1111'/>
+</rule>
+[...]
+
+I am also extending the nwfilter schema and add this attribute to a test case.
+---
+ docs/schemas/nwfilter.rng                 |   10 ++++++++++
+ src/conf/nwfilter_conf.c                  |   10 ++++++++++
+ src/conf/nwfilter_conf.h                  |    5 +++++
+ src/nwfilter/nwfilter_ebiptables_driver.c |    3 +++
+ tests/nwfilterxml2xmlin/tcp-test.xml      |    4 ++--
+ tests/nwfilterxml2xmlout/tcp-test.xml     |    4 ++--
+ 6 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/docs/schemas/nwfilter.rng b/docs/schemas/nwfilter.rng
+index e8be9fc..262e420 100644
+--- a/docs/schemas/nwfilter.rng
++++ b/docs/schemas/nwfilter.rng
+@@ -299,6 +299,11 @@
+         <ref name='priority-type'/>
+       </attribute>
+     </optional>
++    <optional>
++      <attribute name="statematch">
++        <ref name='statematch-type'/>
++      </attribute>
++    </optional>
+   </define>
+ 
+   <define name="match-attribute">
+@@ -816,4 +821,9 @@
+         <param name="maxInclusive">1000</param>
+       </data>
+   </define>
++  <define name='statematch-type'>
++    <data type="string">
++      <param name="pattern">([Ff][Aa][Ll][Ss][Ee]|0)</param>
++    </data>
++  </define>
+ </grammar>
+diff --git a/src/conf/nwfilter_conf.c b/src/conf/nwfilter_conf.c
+index ea73a33..0119fd4 100644
+--- a/src/conf/nwfilter_conf.c
++++ b/src/conf/nwfilter_conf.c
+@@ -1580,6 +1580,7 @@ virNWFilterRuleParse(xmlNodePtr node)
+     char *action;
+     char *direction;
+     char *prio;
++    char *statematch;
+     int found;
+     int found_i = 0;
+     unsigned int priority;
+@@ -1595,6 +1596,7 @@ virNWFilterRuleParse(xmlNodePtr node)
+     action    = virXMLPropString(node, "action");
+     direction = virXMLPropString(node, "direction");
+     prio      = virXMLPropString(node, "priority");
++    statematch= virXMLPropString(node, "statematch");
+ 
+     if (!action) {
+         virNWFilterReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -1633,6 +1635,10 @@ virNWFilterRuleParse(xmlNodePtr node)
+         }
+     }
+ 
++    if (statematch &&
++        (STREQ(statematch, "0") || STRCASEEQ(statematch, "false")))
++        ret->flags |= RULE_FLAG_NO_STATEMATCH;
++
+     cur = node->children;
+ 
+     found = 0;
+@@ -1677,6 +1683,7 @@ cleanup:
+     VIR_FREE(prio);
+     VIR_FREE(action);
+     VIR_FREE(direction);
++    VIR_FREE(statematch);
+ 
+     return ret;
+ 
+@@ -2531,6 +2538,9 @@ virNWFilterRuleDefFormat(virNWFilterRuleDefPtr def)
+                       virNWFilterRuleDirectionTypeToString(def->tt),
+                       def->priority);
+ 
++    if ((def->flags & RULE_FLAG_NO_STATEMATCH))
++        virBufferAddLit(&buf, " statematch='false'");
++
+     i = 0;
+     while (virAttr[i].id) {
+         if (virAttr[i].prtclType == def->prtclType) {
+diff --git a/src/conf/nwfilter_conf.h b/src/conf/nwfilter_conf.h
+index b7b62ad..99ef1d4 100644
+--- a/src/conf/nwfilter_conf.h
++++ b/src/conf/nwfilter_conf.h
+@@ -345,11 +345,16 @@ enum virNWFilterEbtablesTableType {
+ 
+ # define MAX_RULE_PRIORITY  1000
+ 
++enum virNWFilterRuleFlags {
++    RULE_FLAG_NO_STATEMATCH = (1 << 0),
++};
++
+ 
+ typedef struct _virNWFilterRuleDef  virNWFilterRuleDef;
+ typedef virNWFilterRuleDef *virNWFilterRuleDefPtr;
+ struct _virNWFilterRuleDef {
+     unsigned int priority;
++    enum virNWFilterRuleFlags flags;
+     int action; /*enum virNWFilterRuleActionType*/
+     int tt; /*enum virNWFilterRuleDirectionType*/
+     enum virNWFilterRuleProtocolType prtclType;
+diff --git a/src/nwfilter/nwfilter_ebiptables_driver.c b/src/nwfilter/nwfilter_ebiptables_driver.c
+index 92b8f4b..9129085 100644
+--- a/src/nwfilter/nwfilter_ebiptables_driver.c
++++ b/src/nwfilter/nwfilter_ebiptables_driver.c
+@@ -1498,6 +1498,9 @@ iptablesCreateRuleInstance(virNWFilterDefPtr nwfilter,
+             needState = 0;
+     }
+ 
++    if ((rule->flags & RULE_FLAG_NO_STATEMATCH))
++        needState = 0;
++
+     chainPrefix[0] = 'F';
+ 
+     maySkipICMP = directionIn || inout;
+diff --git a/tests/nwfilterxml2xmlin/tcp-test.xml b/tests/nwfilterxml2xmlin/tcp-test.xml
+index e3111e8..3fe5299 100644
+--- a/tests/nwfilterxml2xmlin/tcp-test.xml
++++ b/tests/nwfilterxml2xmlin/tcp-test.xml
+@@ -5,14 +5,14 @@
+           dstipaddr='10.1.2.3' dstipmask='255.255.255.255'
+           dscp='2'/>
+   </rule>
+-  <rule action='accept' direction='in'>
++  <rule action='accept' direction='in' statematch='false'>
+      <tcp srcmacaddr='1:2:3:4:5:6'
+           srcipaddr='10.1.2.3' srcipmask='32'
+           dscp='33'
+           srcportstart='20' srcportend='21'
+           dstportstart='100' dstportend='1111'/>
+   </rule>
+-  <rule action='accept' direction='in'>
++  <rule action='accept' direction='in' statematch='0'>
+      <tcp srcmacaddr='1:2:3:4:5:6'
+           srcipaddr='10.1.2.3' srcipmask='32'
+           dscp='63'
+diff --git a/tests/nwfilterxml2xmlout/tcp-test.xml b/tests/nwfilterxml2xmlout/tcp-test.xml
+index a13afe1..4037808 100644
+--- a/tests/nwfilterxml2xmlout/tcp-test.xml
++++ b/tests/nwfilterxml2xmlout/tcp-test.xml
+@@ -3,10 +3,10 @@
+   <rule action='accept' direction='out' priority='500'>
+     <tcp srcmacaddr='01:02:03:04:05:06' dstipaddr='10.1.2.3' dstipmask='32' dscp='2'/>
+   </rule>
+-  <rule action='accept' direction='in' priority='500'>
++  <rule action='accept' direction='in' priority='500' statematch='false'>
+     <tcp srcmacaddr='01:02:03:04:05:06' srcipaddr='10.1.2.3' srcipmask='32' dscp='33' srcportstart='20' srcportend='21' dstportstart='100' dstportend='1111'/>
+   </rule>
+-  <rule action='accept' direction='in' priority='500'>
++  <rule action='accept' direction='in' priority='500' statematch='false'>
+     <tcp srcmacaddr='01:02:03:04:05:06' srcipaddr='10.1.2.3' srcipmask='32' dscp='63' srcportstart='255' srcportend='256' dstportstart='65535'/>
+   </rule>
+ </filter>
+-- 
+1.6.6.1
+

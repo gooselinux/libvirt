@@ -1,0 +1,34 @@
+For bug
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=610056
+
+Normally when QEMU fails to start this will be detected when
+initially connecting to the monitor. There are some nasty
+edge cases which occur during restore that mean QEMU stays
+alive long enough to connect to the monitor, but then just
+exits. qemuWaitForMonitor was mistakenly overwriting the
+error status, so it appeared successful even though the
+geust had quit. It just hung forever waiting for a monitor
+command reply that would never arrive.
+
+* src/qemu/qemu_driver.c: Don't overwrite exit status
+  after setting QMP capabilities
+---
+ src/qemu/qemu_driver.c |    1 -
+ 1 files changed, 0 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 1cebf30..9188592 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1608,7 +1608,6 @@ qemuConnectMonitor(struct qemud_driver *driver, virDomainObjPtr vm)
+     ret = qemuMonitorSetCapabilities(priv->mon);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    ret = 0;
+ error:
+     if (ret < 0)
+         qemuMonitorClose(priv->mon);
+-- 
+1.6.6.1
+

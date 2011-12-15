@@ -1,0 +1,25 @@
+From: Laine Stump <laine@laine.org>
+
+This resolves: https://bugzilla.redhat.com/show_bug.cgi?id=620837
+
+It is a cherry-pick of upstream commit
+6328dfcb670953c17e6061fae02417f8756726bb.
+---
+ src/conf/interface_conf.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/interface_conf.c b/src/conf/interface_conf.c
+index 920b090..827c526 100644
+--- a/src/conf/interface_conf.c
++++ b/src/conf/interface_conf.c
+@@ -84,6 +84,7 @@ void virInterfaceDefFree(virInterfaceDefPtr def)
+ 
+     switch (def->type) {
+         case VIR_INTERFACE_TYPE_BRIDGE:
++            VIR_FREE(def->data.bridge.delay);
+             for (i = 0;i < def->data.bridge.nbItf;i++) {
+                 if (def->data.bridge.itf[i] != NULL)
+                     virInterfaceDefFree(def->data.bridge.itf[i]);
+-- 
+1.7.2
+

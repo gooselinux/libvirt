@@ -1,0 +1,43 @@
+diff -urp libvirt-0.8.1/src/conf/domain_conf.c libvirt-0.8.1.new/src/conf/domain_conf.c
+--- libvirt-0.8.1/src/conf/domain_conf.c	2010-06-28 11:35:21.647855142 -0400
++++ libvirt-0.8.1.new/src/conf/domain_conf.c	2010-06-28 11:35:06.473474579 -0400
+@@ -1855,12 +1855,6 @@ cleanup:
+ }
+ 
+ 
+-static bool
+-isValidIfname(const char *ifname) {
+-    return ifname[strspn(ifname, VALID_IFNAME_CHARS)] == 0;
+-}
+-
+-
+ static int
+ virVirtualPortProfileParamsParseXML(xmlNodePtr node,
+                                     virVirtualPortProfileParamsPtr virtPort)
+@@ -2135,11 +2129,9 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                        xmlStrEqual(cur->name, BAD_CAST "target")) {
+                 ifname = virXMLPropString(cur, "dev");
+                 if ((ifname != NULL) &&
+-                    (((flags & VIR_DOMAIN_XML_INACTIVE) &&
+-                      (STRPREFIX((const char*)ifname, "vnet"))) ||
+-                     (!isValidIfname(ifname)))) {
++                    ((flags & VIR_DOMAIN_XML_INACTIVE) &&
++                      (STRPREFIX((const char*)ifname, "vnet")))) {
+                     /* An auto-generated target name, blank it out */
+-                    /* blank out invalid interface names */
+                     VIR_FREE(ifname);
+                 }
+             } else if ((script == NULL) &&
+diff -urp libvirt-0.8.1/src/conf/domain_conf.h libvirt-0.8.1.new/src/conf/domain_conf.h
+--- libvirt-0.8.1/src/conf/domain_conf.h	2010-06-28 11:35:21.640848755 -0400
++++ libvirt-0.8.1.new/src/conf/domain_conf.h	2010-06-28 11:32:29.638475034 -0400
+@@ -301,9 +301,6 @@ struct _virDomainNetDef {
+     virNWFilterHashTablePtr filterparams;
+ };
+ 
+-# define VALID_IFNAME_CHARS \
+- "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_/"
+-
+ enum virDomainChrTargetType {
+     VIR_DOMAIN_CHR_TARGET_TYPE_NULL = 0,
+     VIR_DOMAIN_CHR_TARGET_TYPE_MONITOR,

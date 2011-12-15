@@ -1,0 +1,140 @@
+RHEL6 bug: https://bugzilla.redhat.com/show_bug.cgi?id=593903
+
+Currently there is no way to opt out of libvirt dropping privileged
+capabilities for qemu. This at least is a useful debugging tool, but
+is also wanted by users (and distributors):
+
+https://bugzilla.redhat.com/show_bug.cgi?id=559154
+https://bugzilla.redhat.com/show_bug.cgi?id=573850
+
+For RHEL6, disabling this option is needed if passing a non-trivial
+interface script to qemu via libvirt.
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ src/qemu/libvirtd_qemu.aug      |    1 +
+ src/qemu/qemu.conf              |    9 +++++++++
+ src/qemu/qemu_conf.c            |    5 +++++
+ src/qemu/qemu_conf.h            |    2 ++
+ src/qemu/qemu_driver.c          |   11 +++++++++--
+ src/qemu/test_libvirtd_qemu.aug |    4 ++++
+ 6 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/libvirtd_qemu.aug b/src/qemu/libvirtd_qemu.aug
+index 5bd60b3..2c40bff 100644
+--- a/src/qemu/libvirtd_qemu.aug
++++ b/src/qemu/libvirtd_qemu.aug
+@@ -38,6 +38,7 @@ module Libvirtd_qemu =
+                  | str_entry "save_image_format"
+                  | str_entry "hugetlbfs_mount"
+                  | bool_entry "relaxed_acs_check"
++                 | bool_entry "clear_emulator_capabilities"
+ 
+    (* Each enty in the config is one of the following three ... *)
+    let entry = vnc_entry
+diff --git a/src/qemu/qemu.conf b/src/qemu/qemu.conf
+index 980dc8b..1ef8015 100644
+--- a/src/qemu/qemu.conf
++++ b/src/qemu/qemu.conf
+@@ -208,3 +208,12 @@
+ # be assigned to guests.
+ #
+ # relaxed_acs_check = 1
++
++# If clear_emulator_capabilities is enabled, libvirt will drop all
++# privileged capabilities of the QEmu/KVM emulator. This is enabled by
++# default.
++#
++# Warning: Disabling this option means that a compromised guest can
++# exploit the privileges and possibly do damage to the host.
++#
++# clear_emulator_capabilities = 1
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index c4555b7..67e825a 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -105,6 +105,7 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
+ 
+     /* Setup critical defaults */
+     driver->dynamicOwnership = 1;
++    driver->clearEmulatorCapabilities = 1;
+ 
+     if (!(driver->vncListen = strdup("127.0.0.1"))) {
+         virReportOOMError();
+@@ -398,6 +399,10 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
+     CHECK_TYPE ("relaxed_acs_check", VIR_CONF_LONG);
+     if (p) driver->relaxedACS = p->l;
+ 
++    p = virConfGetValue (conf, "clear_emulator_capabilities");
++    CHECK_TYPE ("clear_emulator_capabilities", VIR_CONF_LONG);
++    if (p) driver->clearEmulatorCapabilities = p->l;
++
+     virConfFree (conf);
+     return 0;
+ }
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index 74f0219..f21407f 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -144,6 +144,8 @@ struct qemud_driver {
+ 
+     unsigned int relaxedACS : 1;
+ 
++    unsigned int clearEmulatorCapabilities : 1;
++
+     virCapsPtr caps;
+ 
+     /* An array of callbacks */
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 06a4df0..5efcb44 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3713,7 +3713,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+                               int stdin_fd) {
+     const char **argv = NULL, **tmp;
+     const char **progenv = NULL;
+-    int i, ret;
++    int i, ret, runflags;
+     struct stat sb;
+     int *vmfds = NULL;
+     int nvmfds = 0;
+@@ -3948,9 +3948,16 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     for (i = 0 ; i < nvmfds ; i++)
+         FD_SET(vmfds[i], &keepfd);
+ 
++    VIR_DEBUG("Clear emulator capabilities: %d",
++              driver->clearEmulatorCapabilities);
++    runflags = VIR_EXEC_NONBLOCK;
++    if (driver->clearEmulatorCapabilities) {
++        runflags |= VIR_EXEC_CLEAR_CAPS;
++    }
++
+     ret = virExecDaemonize(argv, progenv, &keepfd, &child,
+                            stdin_fd, &logfile, &logfile,
+-                           VIR_EXEC_NONBLOCK | VIR_EXEC_CLEAR_CAPS,
++                           runflags,
+                            qemudSecurityHook, &hookData,
+                            pidfile);
+     VIR_FREE(pidfile);
+diff --git a/src/qemu/test_libvirtd_qemu.aug b/src/qemu/test_libvirtd_qemu.aug
+index 2feedc0..676fd31 100644
+--- a/src/qemu/test_libvirtd_qemu.aug
++++ b/src/qemu/test_libvirtd_qemu.aug
+@@ -97,6 +97,8 @@ save_image_format = \"gzip\"
+ hugetlbfs_mount = \"/dev/hugepages\"
+ 
+ relaxed_acs_check = 1
++
++clear_emulator_capabilities = 0
+ "
+ 
+    test Libvirtd_qemu.lns get conf =
+@@ -204,3 +206,5 @@ relaxed_acs_check = 1
+ { "hugetlbfs_mount" = "/dev/hugepages" }
+ { "#empty" }
+ { "relaxed_acs_check" = "1" }
++{ "#empty" }
++{ "clear_emulator_capabilities" = "0" }
+-- 
+1.6.6.1
+

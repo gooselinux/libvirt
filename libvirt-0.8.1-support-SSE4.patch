@@ -1,0 +1,27 @@
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=592977
+
+Straight from upstream c/s b02db3518ebfc9736aa437fa349445956e19c3a7
+
+---
+ src/cpu/cpu_map.xml |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/src/cpu/cpu_map.xml b/src/cpu/cpu_map.xml
+index 30c28d7..084b879 100644
+--- a/src/cpu/cpu_map.xml
++++ b/src/cpu/cpu_map.xml
+@@ -126,6 +126,12 @@
+     <feature name='dca'> <!-- CPUID_EXT_DCA -->
+       <cpuid function='0x00000001' ecx='0x00040000'/>
+     </feature>
++    <feature name='sse4.1'> <!-- CPUID_EXT_SSE41 -->
++      <cpuid function='0x00000001' ecx='0x00080000'/>
++    </feature>
++    <feature name='sse4.2'> <!-- CPUID_EXT_SSE42 -->
++      <cpuid function='0x00000001' ecx='0x00100000'/>
++    </feature>
+     <feature name='x2apic'> <!-- CPUID_EXT_X2APIC -->
+       <cpuid function='0x00000001' ecx='0x00200000'/>
+     </feature>
+-- 
+1.7.1

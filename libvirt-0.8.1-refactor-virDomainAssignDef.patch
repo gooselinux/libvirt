@@ -1,0 +1,94 @@
+Upstream: 575cf9a9ce125f668e228485179fd8b41aeebab1
+
+We need to be able to assign new def to an existing virDomainObj which
+is already locked. This patch factors out the relevant code from
+virDomainAssignDef into virDomainObjAssignDef.
+---
+ src/conf/domain_conf.c   |   36 +++++++++++++++++++++---------------
+ src/conf/domain_conf.h   |    3 +++
+ src/libvirt_private.syms |    1 +
+ 3 files changed, 25 insertions(+), 15 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 978db61..d9c67df 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -842,6 +842,26 @@ static virDomainObjPtr virDomainObjNew(virCapsPtr caps)
+     return domain;
+ }
+ 
++void virDomainObjAssignDef(virDomainObjPtr domain,
++                           const virDomainDefPtr def,
++                           bool live)
++{
++    if (!virDomainObjIsActive(domain)) {
++        if (live) {
++            /* save current configuration to be restored on domain shutdown */
++            if (!domain->newDef)
++                domain->newDef = domain->def;
++            domain->def = def;
++        } else {
++            virDomainDefFree(domain->def);
++            domain->def = def;
++        }
++    } else {
++        virDomainDefFree(domain->newDef);
++        domain->newDef = def;
++    }
++}
++
+ virDomainObjPtr virDomainAssignDef(virCapsPtr caps,
+                                    virDomainObjListPtr doms,
+                                    const virDomainDefPtr def,
+@@ -851,21 +871,7 @@ virDomainObjPtr virDomainAssignDef(virCapsPtr caps,
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+ 
+     if ((domain = virDomainFindByUUID(doms, def->uuid))) {
+-        if (!virDomainObjIsActive(domain)) {
+-            if (live) {
+-                /* save current configuration to be restored on domain shutdown */
+-                if (!domain->newDef)
+-                    domain->newDef = domain->def;
+-                domain->def = def;
+-            } else {
+-                virDomainDefFree(domain->def);
+-                domain->def = def;
+-            }
+-        } else {
+-            virDomainDefFree(domain->newDef);
+-            domain->newDef = def;
+-        }
+-
++        virDomainObjAssignDef(domain, def, live);
+         return domain;
+     }
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 6f8693c..22662bd 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -992,6 +992,9 @@ virDomainObjPtr virDomainAssignDef(virCapsPtr caps,
+                                    virDomainObjListPtr doms,
+                                    const virDomainDefPtr def,
+                                    bool live);
++void virDomainObjAssignDef(virDomainObjPtr domain,
++                           const virDomainDefPtr def,
++                           bool live);
+ void virDomainRemoveInactive(virDomainObjListPtr doms,
+                              virDomainObjPtr dom);
+ 
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 7d7ee14..711ec18 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -219,6 +219,7 @@ virDomainSnapshotObjUnref;
+ virDomainSnapshotDefParseString;
+ virDomainSnapshotDefFormat;
+ virDomainSnapshotAssignDef;
++virDomainObjAssignDef;
+ 
+ 
+ # domain_event.h
+-- 
+1.7.1
+

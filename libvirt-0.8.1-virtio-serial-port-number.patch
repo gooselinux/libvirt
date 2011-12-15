@@ -1,0 +1,152 @@
+To ensure that the device addressing scheme is stable across
+hotplug/unplug, all virtio serial channels needs to have an
+associated port number in their address. This is then specified
+to QEMU using the nr=NNN parameter
+
+* src/conf/domain_conf.c, src/conf/domain_conf.h: Parsing
+  for port number in vioserial address types.
+* src/qemu/qemu_conf.c: Set 'nr=NNN' parameter with virtio
+  serial port number
+* tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args,
+  tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml: Expand
+  data set to ensure coverage of port addressing
+---
+ src/conf/domain_conf.c                             |   30 ++++++++++++++++++--
+ src/conf/domain_conf.h                             |    1 +
+ src/qemu/qemu_conf.c                               |    3 ++
+ .../qemuxml2argv-channel-virtio.args               |    2 +-
+ .../qemuxml2argv-channel-virtio.xml                |   14 ++++++++-
+ 5 files changed, 45 insertions(+), 5 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index dc7b6bb..047507c 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1089,9 +1089,10 @@ static int virDomainDeviceInfoFormat(virBufferPtr buf,
+         break;
+ 
+     case VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL:
+-        virBufferVSprintf(buf, " controller='%d' bus='%d'",
++        virBufferVSprintf(buf, " controller='%d' bus='%d' port='%d'",
+                           info->addr.vioserial.controller,
+-                          info->addr.vioserial.bus);
++                          info->addr.vioserial.bus,
++                          info->addr.vioserial.port);
+         break;
+ 
+     default:
+@@ -1224,13 +1225,14 @@ virDomainDeviceVirtioSerialAddressParseXML(
+     virDomainDeviceVirtioSerialAddressPtr addr
+ )
+ {
+-    char *controller, *bus;
++    char *controller, *bus, *port;
+     int ret = -1;
+ 
+     memset(addr, 0, sizeof(*addr));
+ 
+     controller = virXMLPropString(node, "controller");
+     bus = virXMLPropString(node, "bus");
++    port = virXMLPropString(node, "port");
+ 
+     if (controller &&
+         virStrToLong_ui(controller, NULL, 10, &addr->controller) < 0) {
+@@ -1246,6 +1248,13 @@ virDomainDeviceVirtioSerialAddressParseXML(
+         goto cleanup;
+     }
+ 
++    if (port &&
++        virStrToLong_ui(port, NULL, 10, &addr->port) < 0) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                             _("Cannot parse <address> 'port' attribute"));
++        goto cleanup;
++    }
++
+     if (!virDomainDeviceVirtioSerialAddressIsValid(addr)) {
+         virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                              _("Insufficient specification for "
+@@ -4547,6 +4556,21 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+             goto error;
+ 
+         def->channels[def->nchannels++] = chr;
++
++        if (chr->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
++            chr->info.addr.vioserial.port == 0) {
++            int maxport = -1;
++            int j;
++            for (j = 0 ; j < i ; j++) {
++                virDomainChrDefPtr thischr = def->channels[j];
++                if (thischr->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
++                    thischr->info.addr.vioserial.controller == chr->info.addr.vioserial.controller &&
++                    thischr->info.addr.vioserial.bus == chr->info.addr.vioserial.bus &&
++                    (int)thischr->info.addr.vioserial.port > maxport)
++                    maxport = thischr->info.addr.vioserial.port;
++            }
++            chr->info.addr.vioserial.port = maxport + 1;
++        }
+     }
+     VIR_FREE(nodes);
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 43d4679..0e529d4 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -98,6 +98,7 @@ typedef virDomainDeviceVirtioSerialAddress *virDomainDeviceVirtioSerialAddressPt
+ struct _virDomainDeviceVirtioSerialAddress {
+     unsigned int controller;
+     unsigned int bus;
++    unsigned int port;
+ };
+ 
+ typedef struct _virDomainDeviceInfo virDomainDeviceInfo;
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index c4555b7..1c1258d 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -3318,6 +3318,9 @@ qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev)
+                           ",bus=" QEMU_VIRTIO_SERIAL_PREFIX "%d.%d",
+                           dev->info.addr.vioserial.controller,
+                           dev->info.addr.vioserial.bus);
++        virBufferVSprintf(&buf,
++                          ",nr=%d",
++                          dev->info.addr.vioserial.port);
+     }
+ 
+     virBufferVSprintf(&buf, ",chardev=%s", dev->info.alias);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+index 4097065..8e5fbe2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,chardev=channel1,name=org.linux-kvm.port.1 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+index 6c3317b..04a3e1c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+@@ -28,7 +28,19 @@
+       <target type='virtio' name='org.linux-kvm.port.0'/>
+     </channel>
+     <channel type='pty'>
+-      <target type='virtio' name='org.linux-kvm.port.1'/>
++      <target type='virtio' name='org.linux-kvm.port.foo'/>
++      <address type='virtio-serial' controller='1' bus='0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.bar'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.wizz'/>
++      <address type='virtio-serial' controller='0' bus='0'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.ooh'/>
+       <address type='virtio-serial' controller='1' bus='0'/>
+     </channel>
+   </devices>
+-- 
+1.6.6.1
+
+
+-- 

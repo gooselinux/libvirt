@@ -1,0 +1,40 @@
+commit 6ef9d9da5e4fcefb7aa84006202b15600480023b
+Author: Jiri Denemark <jdenemar@redhat.com>
+Date:   Mon May 10 15:13:17 2010 +0200
+
+    Remove watches before calling REMOTE_PROC_CLOSE
+    
+    First calling REMOTE_PROC_CLOSE and then removing watches might lead to
+    a hang as HANGUP event can be triggered before the watches are actually
+    removed but after virConnectPtr is already freed. As a result of that
+    remoteDomainEventFired() would try to lock uninitialized mutex, which
+    would hang for ever.
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index e4a68ad..990bfce 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -1418,11 +1418,6 @@ verify_certificate (virConnectPtr conn ATTRIBUTE_UNUSED,
+ static int
+ doRemoteClose (virConnectPtr conn, struct private_data *priv)
+ {
+-    if (call (conn, priv, 0, REMOTE_PROC_CLOSE,
+-              (xdrproc_t) xdr_void, (char *) NULL,
+-              (xdrproc_t) xdr_void, (char *) NULL) == -1)
+-        return -1;
+-
+     if (priv->eventFlushTimer >= 0) {
+         /* Remove timeout */
+         virEventRemoveTimeout(priv->eventFlushTimer);
+@@ -1431,6 +1426,11 @@ doRemoteClose (virConnectPtr conn, struct private_data *priv)
+         priv->watch = -1;
+     }
+ 
++    if (call (conn, priv, 0, REMOTE_PROC_CLOSE,
++              (xdrproc_t) xdr_void, (char *) NULL,
++              (xdrproc_t) xdr_void, (char *) NULL) == -1)
++        return -1;
++
+     /* Close socket. */
+     if (priv->uses_tls && priv->session) {
+         gnutls_bye (priv->session, GNUTLS_SHUT_RDWR);

@@ -1,0 +1,33 @@
+From a944e211eb50b9fdf65d58f83e325ff86eabf286 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Mon, 12 Apr 2010 18:16:38 +0100
+Subject: [PATCH 02/16] Fix comment for <video> tag in domain RNG schema
+
+The comment for the <video> tag was a cut+paste error duplicating
+info about the <graphics> tag
+
+* docs/schemas/domain.rng: Fix comment for <video> tag
+---
+ docs/schemas/domain.rng |    6 ++----
+ 1 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 58c9fcb..5e5c4bd 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1035,10 +1035,8 @@
+     </element>
+   </define>
+   <!--
+-     A graphic description, currently in Xen only 2 types are supported:
+-       - sdl with optional display, xauth and fullscreen
+-       - vnc with a required port and optional listen IP address, password
+-         and keymap
++     A video adapter description, allowing configuration of device
++     model, number of virtual heads, and video ram size
+    -->
+   <define name="video">
+     <element name="video">
+-- 
+1.6.6.1
+

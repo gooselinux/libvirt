@@ -1,0 +1,89 @@
+From: Justin Clift <justin salasaga org>
+
+This patch adds the persistence status (yes/no) to the output of the virsh
+dominfo and pool-info commands.  This patch also adds the autostart status
+to the output of the virsh pool-info command.
+
+Red Hat BZ for this:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=603696
+(cherry picked from commit c2160b137d74a50f390cd5f186fa696029473262)
+---
+ tests/virshtest.c |    1 +
+ tools/virsh.c     |   28 ++++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+), 0 deletions(-)
+
+diff --git a/tests/virshtest.c b/tests/virshtest.c
+index ad3e2fc..f6790bc 100644
+--- a/tests/virshtest.c
++++ b/tests/virshtest.c
+@@ -23,6 +23,7 @@ State:          running\n\
+ CPU(s):         1\n\
+ Max memory:     261072 kB\n\
+ Used memory:    131072 kB\n\
++Persistent:     yes\n\
+ Autostart:      disable\n\
+ \n";
+ static const char *domuuid_fc4 = DOM_UUID "\n\n";
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 6f6920a..d8a4f28 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -1905,6 +1905,7 @@ cmdDominfo(vshControl *ctl, const vshCmd *cmd)
+     virDomainPtr dom;
+     virSecurityModel secmodel;
+     virSecurityLabel seclabel;
++    int persistent = 0;
+     int ret = TRUE, autostart;
+     unsigned int id;
+     char *str, uuid[VIR_UUID_STRING_BUFLEN];
+@@ -1958,6 +1959,15 @@ cmdDominfo(vshControl *ctl, const vshCmd *cmd)
+         ret = FALSE;
+     }
+
++    /* Check and display whether the domain is persistent or not */
++    persistent = virDomainIsPersistent(dom);
++    vshDebug(ctl, 5, "Domain persistent flag value: %d\n", persistent);
++    if (persistent < 0)
++        vshPrint(ctl, "%-15s %s\n", _("Persistent:"), _("unknown"));
++    else
++        vshPrint(ctl, "%-15s %s\n", _("Persistent:"), persistent ? _("yes") : _("no"));
++
++    /* Check and display whether the domain autostarts or not */
+     if (!virDomainGetAutostart(dom, &autostart)) {
+         vshPrint(ctl, "%-15s %s\n", _("Autostart:"),
+                  autostart ? _("enable") : _("disable") );
+@@ -5130,6 +5140,8 @@ cmdPoolInfo(vshControl *ctl, const vshCmd *cmd)
+ {
+     virStoragePoolInfo info;
+     virStoragePoolPtr pool;
++    int autostart = 0;
++    int persistent = 0;
+     int ret = TRUE;
+     char uuid[VIR_UUID_STRING_BUFLEN];
+
+@@ -5166,6 +5178,22 @@ cmdPoolInfo(vshControl *ctl, const vshCmd *cmd)
+             break;
+         }
+
++        /* Check and display whether the pool is persistent or not */
++        persistent = virStoragePoolIsPersistent(pool);
++        vshDebug(ctl, 5, "Pool persistent flag value: %d\n", persistent);
++        if (persistent < 0)
++            vshPrint(ctl, "%-15s %s\n", _("Persistent:"),  _("unknown"));
++        else
++            vshPrint(ctl, "%-15s %s\n", _("Persistent:"), persistent ? _("yes") : _("no"));
++
++        /* Check and display whether the pool is autostarted or not */
++        virStoragePoolGetAutostart(pool, &autostart);
++        vshDebug(ctl, 5, "Pool autostart flag value: %d\n", autostart);
++        if (autostart < 0)
++            vshPrint(ctl, "%-15s %s\n", _("Autostart:"), _("no autostart"));
++        else
++            vshPrint(ctl, "%-15s %s\n", _("Autostart:"), autostart ? _("yes") : _("no"));
++
+         if (info.state == VIR_STORAGE_POOL_RUNNING ||
+             info.state == VIR_STORAGE_POOL_DEGRADED) {
+             val = prettyCapacity(info.capacity, &unit);
+-- 
+1.7.0.1

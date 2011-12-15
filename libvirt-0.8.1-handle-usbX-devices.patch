@@ -1,0 +1,29 @@
+RHEL bug: http://bugzilla.redhat.com/show_bug.cgi?id=603867
+
+Some files under /sys/bus/usb/devices/ have the format 'usbX', where
+X is the USB bus number. Currently we error if trying to start a VM
+with one of these USB devices attached.
+
+Use STRPREFIX to correctly parse the bus numbers.
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ src/util/hostusb.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/util/hostusb.c b/src/util/hostusb.c
+index 78b601f..2d6e414 100644
+--- a/src/util/hostusb.c
++++ b/src/util/hostusb.c
+@@ -121,7 +121,7 @@ static int usbFindBusByVendor(unsigned vendor, unsigned product,
+             char *tmpstr = de->d_name;
+             unsigned found_bus, found_addr;
+ 
+-            if (STREQ(de->d_name, "usb"))
++            if (STRPREFIX(de->d_name, "usb"))
+                 tmpstr += 3;
+ 
+             if (virStrToLong_ui(tmpstr, &ignore, 10, &found_bus) < 0) {
+-- 
+1.6.6.1
+

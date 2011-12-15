@@ -1,0 +1,50 @@
+Daniel's patch works with gcc and CFLAGS containing -O (the
+autoconf default), but fails with non-gcc or with other
+CFLAGS (such as -g), since c-ctype.h declares c_isdigit as
+a macro only for certain compilation settings.
+
+* src/Makefile.am (libvirt_parthelper_LDFLAGS): Add gnulib
+library, for when c_isdigit is not a macro.
+* src/storage/parthelper.c (main): Avoid out-of-bounds
+dereference, noticed by Jim Meyering.
+(cherry picked from commit 352b6df34d930eb6e7c1f79f295ab6dff9b273e2)
+---
+
+Changes in v2: fix the second bug as noticed by Jim.
+The upstream version has finally been pushed as two patches,
+matching the fact that Daniel's patch is already in 0.8.1-8.el6,
+such that this patch is a simple backport.
+
+ src/Makefile.am          |    2 +-
+ src/storage/parthelper.c |    2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 3d57da6..d1dfa83 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -966,7 +966,7 @@ libexec_PROGRAMS += libvirt_parthelper
+ libvirt_parthelper_SOURCES = $(STORAGE_HELPER_DISK_SOURCES)
+ libvirt_parthelper_LDFLAGS = $(WARN_CFLAGS) $(COVERAGE_LDCFLAGS)
+ libvirt_parthelper_LDADD = $(LIBPARTED_LIBS)
+-libvirt_parthelper_CFLAGS =  $(LIBPARTED_CFLAGS)
++libvirt_parthelper_CFLAGS = $(LIBPARTED_CFLAGS) ../gnulib/lib/libgnu.la
+ endif
+ endif
+ EXTRA_DIST += $(STORAGE_HELPER_DISK_SOURCES)
+diff --git a/src/storage/parthelper.c b/src/storage/parthelper.c
+index 28d88c9..ca74456 100644
+--- a/src/storage/parthelper.c
++++ b/src/storage/parthelper.c
+@@ -69,7 +69,7 @@ int main(int argc, char **argv)
+     }
+
+     path = argv[1];
+-    partsep = c_isdigit(path[strlen(path)-1]) ? "p" : "";
++    partsep = *path && c_isdigit(path[strlen(path)-1]) ? "p" : "";
+
+     if ((dev = ped_device_get(path)) == NULL) {
+         fprintf(stderr, "unable to access device %s\n", path);
+-- 
+1.7.0.1
+

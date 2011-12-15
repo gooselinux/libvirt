@@ -1,0 +1,218 @@
+Any method which intends to invoke a monitor command must have
+a check for virDomainObjIsActive() before using the monitor to
+ensure that priv->mon != NULL.
+
+There is one subtle edge case in this though. If a method invokes
+multiple monitor commands, and calls qemuDomainObjExitMonitor()
+in between two of these commands then there is no guarentee that
+priv->mon != NULL anymore. This is because the QEMU process may
+exit or die at any time, and because qemuDomainObjEnterMonitor()
+releases the lock on virDomainObj, it is possible for the background
+thread to close the monitor handle and thus qemuDomainObjExitMonitor
+will release the last reference allowing priv->mon to become NULL.
+
+This affects several methods, most notably migration but also some
+hotplug methods. This patch takes a variety of approaches to solve
+the problem, depending on the particular usage scenario. Generally
+though it suffices to add an extra virDomainObjIsActive() check
+if qemuDomainObjExitMonitor() was called during the method.
+
+* src/qemu/qemu_driver.c: Fix multiple potential NULL pointer flaws
+  in usage of the monitor
+---
+ src/qemu/qemu_driver.c |   82 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 files changed, 80 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 1d9b606..c537ed1 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5095,6 +5095,12 @@ qemuDomainWaitForMigrationComplete(struct qemud_driver *driver, virDomainObjPtr
+         struct timeval now;
+         int rc;
+ 
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit during migration"));
++            goto cleanup;
++        }
++
+         if (priv->jobSignals & QEMU_JOB_SIGNAL_CANCEL) {
+             priv->jobSignals ^= QEMU_JOB_SIGNAL_CANCEL;
+             VIR_DEBUG0("Cancelling migration at client request");
+@@ -5122,6 +5128,15 @@ qemuDomainWaitForMigrationComplete(struct qemud_driver *driver, virDomainObjPtr
+                 VIR_WARN0("Unable to set migration downtime");
+         }
+ 
++        /* Repeat check because the job signals might have caused
++         * guest to die
++         */
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit during migration"));
++            goto cleanup;
++        }
++
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         rc = qemuMonitorGetMigrationStatus(priv->mon,
+                                            &status,
+@@ -5320,6 +5335,12 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+             goto endjob;
+         }
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
++
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit"));
++            goto endjob;
++        }
+     }
+ 
+     /* Get XML for the domain */
+@@ -5835,6 +5856,12 @@ static int qemudDomainCoreDump(virDomainPtr dom,
+         }
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
+         paused = 1;
++
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit"));
++            goto endjob;
++        }
+     }
+ 
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+@@ -5867,7 +5894,7 @@ endjob:
+     /* Since the monitor is always attached to a pty for libvirt, it
+        will support synchronous operations so we always get here after
+        the migration is complete.  */
+-    else if (resume && paused) {
++    else if (resume && paused && priv->mon) {
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         if (qemuMonitorStartCPUs(priv->mon, dom->conn) < 0) {
+             if (virGetLastError() == NULL)
+@@ -5918,6 +5945,12 @@ static int qemudDomainHotplugVcpus(virDomainObjPtr vm, unsigned int nvcpus)
+             if (rc < 0)
+                 goto cleanup;
+ 
++            if (!virDomainObjIsActive(vm)) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                _("guest unexpectedly quit"));
++                goto cleanup;
++            }
++
+             vm->def->vcpus++;
+         }
+     } else {
+@@ -5931,6 +5964,12 @@ static int qemudDomainHotplugVcpus(virDomainObjPtr vm, unsigned int nvcpus)
+             if (rc < 0)
+                 goto cleanup;
+ 
++            if (!virDomainObjIsActive(vm)) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                _("guest unexpectedly quit"));
++                goto cleanup;
++            }
++
+             vm->def->vcpus--;
+         }
+     }
+@@ -7484,6 +7523,15 @@ qemuDomainFindOrCreateSCSIDiskController(struct qemud_driver *driver,
+         VIR_FREE(cont);
+         return NULL;
+     }
++
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("guest unexpectedly quit"));
++        /* cont doesn't need freeing here, since the reference
++         * now held in def->controllers */
++        return NULL;
++    }
++
+     return cont;
+ }
+ 
+@@ -7765,6 +7813,12 @@ static int qemudDomainAttachNetDevice(virConnectPtr conn,
+             goto cleanup;
+         }
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
++
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit"));
++            goto cleanup;
++        }
+     }
+ 
+     /* FIXME - need to support vhost-net here (5th arg) */
+@@ -7798,6 +7852,12 @@ static int qemudDomainAttachNetDevice(virConnectPtr conn,
+         close(tapfd);
+     tapfd = -1;
+ 
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("guest unexpectedly quit"));
++        goto cleanup;
++    }
++
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (!(nicstr = qemuBuildNicDevStr(net, vlan)))
+             goto try_remove;
+@@ -7846,6 +7906,9 @@ cleanup:
+     return ret;
+ 
+ try_remove:
++    if (!priv->mon)
++        goto cleanup;
++
+     if (vlan < 0) {
+         if ((qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV) &&
+             (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+@@ -7875,6 +7938,9 @@ try_remove:
+     goto cleanup;
+ 
+ try_tapfd_close:
++    if (!priv->mon)
++        goto cleanup;
++
+     if (tapfd_name) {
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         if (qemuMonitorCloseFileHandle(priv->mon, tapfd_name) < 0)
+@@ -10856,6 +10922,12 @@ static int doTunnelMigrate(virDomainPtr dom,
+         goto finish;
+     }
+ 
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("guest unexpectedly quit"));
++        goto cleanup;
++    }
++
+     /* From this point onwards we *must* call cancel to abort the
+      * migration on source if anything goes wrong */
+ 
+@@ -10891,7 +10963,7 @@ static int doTunnelMigrate(virDomainPtr dom,
+     retval = doTunnelSendAll(st, client_sock);
+ 
+ cancel:
+-    if (retval != 0) {
++    if (retval != 0 && priv->mon) {
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         qemuMonitorMigrateCancel(priv->mon);
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
+@@ -11179,6 +11251,12 @@ qemudDomainMigrateFinish2 (virConnectPtr dconn,
+      * object, but if no, clean up the empty qemu process.
+      */
+     if (retcode == 0) {
++        if (!virDomainObjIsActive(vm)) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("guest unexpectedly quit"));
++            goto cleanup;
++        }
++
+         if (flags & VIR_MIGRATE_PERSIST_DEST) {
+             if (vm->persistent)
+                 newVM = 0;
+-- 
+1.6.6.1

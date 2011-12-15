@@ -1,0 +1,35 @@
+>From 81457f5d89331eea9cbf211e59536e4011108bf6 Mon Sep 17 00:00:00 2001
+From: Justin Clift <justin@salasaga.org>
+Date: Mon, 31 May 2010 00:24:51 +1000
+Subject: [PATCH 2/2] Add --source-format argument to virsh pool-define-as and pool-create-as
+
+This is the corresponding patch for the virsh man page (virsh.pod).
+---
+ tools/virsh.pod |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index c97e443..a7d6112 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -680,7 +680,7 @@ Build a given pool.
+ Create and start a pool object from the XML I<file>.
+ 
+ =item B<pool-create-as> I<name> I<--print-xml> I<type> optional I<source-host>
+-I<source-path> I<source-dev> I<source-name> <target>
++I<source-path> I<source-dev> I<source-name> <target> I<--source-format format>
+ 
+ Create and start a pool object I<name> from the raw parameters.  If
+ I<--print-xml> is specified, then print the XML of the pool object
+@@ -692,7 +692,7 @@ I<type>.
+ Create, but do not start, a pool object from the XML I<file>.
+ 
+ =item B<pool-define-as> I<name> I<--print-xml> I<type> optional I<source-host>
+-I<source-path> I<source-dev> I<source-name> <target>
++I<source-path> I<source-dev> I<source-name> <target> I<--source-format format>
+ 
+ Create, but do not start, a pool object I<name> from the raw parameters.  If
+ I<--print-xml> is specified, then print the XML of the pool object
+-- 
+1.6.6.1
+

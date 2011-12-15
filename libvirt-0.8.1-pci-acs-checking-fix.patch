@@ -1,0 +1,202 @@
+>From 153ab14ef7d1f81eea569d98438ded33807a4263 Mon Sep 17 00:00:00 2001
+From: Chris Lalancette <clalance@redhat.com>
+Date: Wed, 28 Jul 2010 16:53:00 -0400
+Subject: [PATCH] Fix the ACS checking in the PCI code.
+
+When trying to assign a PCI device to a guest, we have
+to check that all bridges upstream of that device support
+ACS.  That means that we have to find the parent bridge of
+the current device, check for ACS, then find the parent bridge
+of that device, check for ACS, etc.  As it currently stands,
+the code to do this iterates through all PCI devices on the
+system, looking for a device that has a range of busses that
+included the current device's bus.
+
+That check is not restrictive enough, though.  Depending on
+how we iterated through the list of PCI devices, we could first
+find the *topmost* bridge in the system; since it necessarily had
+a range of busses including the current device's bus, we
+would only ever check the topmost bridge, and not check
+any of the intermediate bridges.
+
+Note that this also caused a fairly serious bug in the
+secondary bus reset code, where we could erroneously
+find and reset the topmost bus instead of the inner bus.
+
+This patch changes pciGetParentDevice() so that it first
+checks if a bridge device's secondary bus exactly matches
+the bus of the device we are looking for.  If it does, we've
+found the correct parent bridge and we are done.  If it does not,
+then we check to see if this bridge device's busses *include* the
+bus of the device we care about.  If so, we mark this bridge device
+as best, and go on.  If we later find another bridge device whose
+busses include this device, but is more restrictive, then we
+free up the previous best and mark the new one as best.  This
+algorithm ensures that in the normal case we find the direct
+parent, but in the case that the parent bridge secondary bus
+is not exactly the same as the device, we still find the
+correct bridge.
+
+This patch was tested by me on a 4-port NIC with a
+bridge without ACS (where assignment failed), a 4-port
+NIC with a bridge with ACS (where assignment succeeded),
+and a 2-port NIC with no bridges (where assignment
+succeeded).
+
+Signed-off-by: Chris Lalancette <clalance@redhat.com>
+---
+ src/util/pci.c |   78 +++++++++++++++++++++++++++++++++++++++++++++++--------
+ 1 files changed, 66 insertions(+), 12 deletions(-)
+
+diff --git a/src/util/pci.c b/src/util/pci.c
+index 26d55b8..f2890bd 100644
+--- a/src/util/pci.c
++++ b/src/util/pci.c
+@@ -283,6 +283,7 @@ pciIterDevices(pciIterPredicate predicate,
+     DIR *dir;
+     struct dirent *entry;
+     int ret = 0;
++    int rc;
+ 
+     *matched = NULL;
+ 
+@@ -322,11 +323,20 @@ pciIterDevices(pciIterPredicate predicate,
+             break;
+         }
+ 
+-        if (predicate(dev, check, data)) {
++        rc = predicate(dev, check, data);
++        if (rc < 0) {
++            /* the predicate returned an error, bail */
++            pciFreeDevice(check);
++            ret = -1;
++            break;
++        }
++        else if (rc == 1) {
+             VIR_DEBUG("%s %s: iter matched on %s", dev->id, dev->name, check->name);
+             *matched = check;
++            ret = 1;
+             break;
+         }
++
+         pciFreeDevice(check);
+     }
+     closedir(dir);
+@@ -510,10 +520,11 @@ pciBusContainsActiveDevices(pciDevice *dev,
+ 
+ /* Is @check the parent of @dev ? */
+ static int
+-pciIsParent(pciDevice *dev, pciDevice *check, void *data ATTRIBUTE_UNUSED)
++pciIsParent(pciDevice *dev, pciDevice *check, void *data)
+ {
+     uint16_t device_class;
+     uint8_t header_type, secondary, subordinate;
++    pciDevice **best = data;
+ 
+     if (dev->domain != check->domain)
+         return 0;
+@@ -533,16 +544,54 @@ pciIsParent(pciDevice *dev, pciDevice *check, void *data ATTRIBUTE_UNUSED)
+ 
+     VIR_DEBUG("%s %s: found parent device %s", dev->id, dev->name, check->name);
+ 
+-    /* No, it's superman! */
+-    return (dev->bus >= secondary && dev->bus <= subordinate);
++    /* if the secondary bus exactly equals the device's bus, then we found
++     * the direct parent.  No further work is necessary
++     */
++    if (dev->bus == secondary)
++        return 1;
++
++    /* otherwise, SRIOV allows VFs to be on different busses then their PFs.
++     * In this case, what we need to do is look for the "best" match; i.e.
++     * the most restrictive match that still satisfies all of the conditions.
++     */
++    if (dev->bus > secondary && dev->bus <= subordinate) {
++        if (*best == NULL) {
++            *best = pciGetDevice(check->domain, check->bus, check->slot,
++                                 check->function);
++            if (*best == NULL)
++                return -1;
++        }
++        else {
++            /* OK, we had already recorded a previous "best" match for the
++             * parent.  See if the current device is more restrictive than the
++             * best, and if so, make it the new best
++             */
++            if (secondary > pciRead8(*best, PCI_SECONDARY_BUS)) {
++                pciFreeDevice(*best);
++                *best = pciGetDevice(check->domain, check->bus, check->slot,
++                                     check->function);
++                if (*best == NULL)
++                    return -1;
++            }
++        }
++    }
++
++    return 0;
+ }
+ 
+-static pciDevice *
+-pciGetParentDevice(pciDevice *dev)
++static int
++pciGetParentDevice(pciDevice *dev, pciDevice **parent)
+ {
+-    pciDevice *parent = NULL;
+-    pciIterDevices(pciIsParent, dev, &parent, NULL);
+-    return parent;
++    pciDevice *best = NULL;
++    int ret;
++
++    *parent = NULL;
++    ret = pciIterDevices(pciIsParent, dev, parent, &best);
++    if (ret == 1)
++        pciFreeDevice(best);
++    else if (ret == 0)
++        *parent = best;
++    return ret;
+ }
+ 
+ /* Secondary Bus Reset is our sledgehammer - it resets all
+@@ -570,7 +619,8 @@ pciTrySecondaryBusReset(pciDevice *dev,
+     }
+ 
+     /* Find the parent bus */
+-    parent = pciGetParentDevice(dev);
++    if (pciGetParentDevice(dev, &parent) < 0)
++        return -1;
+     if (!parent) {
+         pciReportError(VIR_ERR_NO_SUPPORT,
+                        _("Failed to find parent device for %s"),
+@@ -1377,7 +1427,8 @@ pciDeviceIsBehindSwitchLackingACS(pciDevice *dev)
+ {
+     pciDevice *parent;
+ 
+-    parent = pciGetParentDevice(dev);
++    if (pciGetParentDevice(dev, &parent) < 0)
++        return -1;
+     if (!parent) {
+         /* if we have no parent, and this is the root bus, ACS doesn't come
+          * into play since devices on the root bus can't P2P without going
+@@ -1400,6 +1451,7 @@ pciDeviceIsBehindSwitchLackingACS(pciDevice *dev)
+     do {
+         pciDevice *tmp;
+         int acs;
++        int ret;
+ 
+         acs = pciDeviceDownstreamLacksACS(parent);
+ 
+@@ -1412,8 +1464,10 @@ pciDeviceIsBehindSwitchLackingACS(pciDevice *dev)
+         }
+ 
+         tmp = parent;
+-        parent = pciGetParentDevice(parent);
++        ret = pciGetParentDevice(parent, &parent);
+         pciFreeDevice(tmp);
++        if (ret < 0)
++            return -1;
+     } while (parent);
+ 
+     return 0;
+-- 
+1.7.1.1
+

@@ -1,0 +1,231 @@
+commit b7b061b0b30035d77f9000647e6179e3b72b761b
+Author: Chris Lalancette <clalance@redhat.com>
+Date:   Thu May 20 13:16:30 2010 -0400
+
+    Fix failing virGetHostname.
+    
+    We've been running into a lot of situations where
+    virGetHostname() is returning "localhost", where a plain
+    gethostname() would have returned the correct thing.  This
+    is because virGetHostname() is *always* trying to canonicalize
+    the name returned from gethostname(), even when it doesn't
+    have to.
+    
+    This patch changes virGetHostname so that if the value returned
+    from gethostname() is already FQDN or localhost, it returns
+    that string directly.  If the value returned from gethostname()
+    is a shortened hostname, then we try to canonicalize it.  If
+    that succeeds, we returned the canonicalized hostname.  If
+    that fails, and/or returns "localhost", then we just return
+    the original string we got from gethostname() and hope for
+    the best.
+    
+    Note that after this patch it is up to clients to check whether
+    "localhost" is an allowed return value.  The only place
+    where it's currently not is in qemu migration.
+    
+    Signed-off-by: Chris Lalancette <clalance@redhat.com>
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 104278f..130a2a1 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -653,7 +653,6 @@ virExecDaemonize;
+ virSetCloseExec;
+ virSetNonBlock;
+ virFormatMacAddr;
+-virGetHostnameLocalhost;
+ virGetHostname;
+ virParseMacAddr;
+ virFileDeletePid;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 0af64c7..cfa5964 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10017,7 +10017,7 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+     virDomainDefPtr def = NULL;
+     virDomainObjPtr vm = NULL;
+     int this_port;
+-    char *hostname;
++    char *hostname = NULL;
+     char migrateFrom [64];
+     const char *p;
+     virDomainEventPtr event = NULL;
+@@ -10057,9 +10057,15 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+         if (port == QEMUD_MIGRATION_NUM_PORTS) port = 0;
+ 
+         /* Get hostname */
+-        if ((hostname = virGetHostnameLocalhost(0)) == NULL)
++        if ((hostname = virGetHostname(NULL)) == NULL)
+             goto cleanup;
+ 
++        if (STRPREFIX(hostname, "localhost")) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("hostname on destination resolved to localhost, but migration requires an FQDN"));
++            goto cleanup;
++        }
++
+         /* XXX this really should have been a properly well-formed
+          * URI, but we can't add in tcp:// now without breaking
+          * compatability with old targets. We at least make the
+@@ -10067,7 +10073,6 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+          */
+         /* Caller frees */
+         internalret = virAsprintf(uri_out, "tcp:%s:%d", hostname, this_port);
+-        VIR_FREE(hostname);
+         if (internalret < 0) {
+             virReportOOMError();
+             goto cleanup;
+@@ -10171,10 +10176,10 @@ endjob:
+         vm = NULL;
+ 
+ cleanup:
++    VIR_FREE(hostname);
+     virDomainDefFree(def);
+-    if (ret != 0) {
++    if (ret != 0)
+         VIR_FREE(*uri_out);
+-    }
+     if (vm)
+         virDomainObjUnlock(vm);
+     if (event)
+diff --git a/src/util/util.c b/src/util/util.c
+index e937d39..930bfac 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -2367,11 +2367,31 @@ char *virIndexToDiskName(int idx, const char *prefix)
+ # define AI_CANONIDN 0
+ #endif
+ 
+-char *virGetHostnameLocalhost(int allow_localhost)
++/* Who knew getting a hostname could be so delicate.  In Linux (and Unices
++ * in general), many things depend on "hostname" returning a value that will
++ * resolve one way or another.  In the modern world where networks frequently
++ * come and go this is often being hard-coded to resolve to "localhost".  If
++ * it *doesn't* resolve to localhost, then we would prefer to have the FQDN.
++ * That leads us to 3 possibilities:
++ *
++ * 1)  gethostname() returns an FQDN (not localhost) - we return the string
++ *     as-is, it's all of the information we want
++ * 2)  gethostname() returns "localhost" - we return localhost; doing further
++ *     work to try to resolve it is pointless
++ * 3)  gethostname() returns a shortened hostname - in this case, we want to
++ *     try to resolve this to a fully-qualified name.  Therefore we pass it
++ *     to getaddrinfo().  There are two possible responses:
++ *     a)  getaddrinfo() resolves to a FQDN - return the FQDN
++ *     b)  getaddrinfo() resolves to localhost - in this case, the data we got
++ *         from gethostname() is actually more useful than what we got from
++ *         getaddrinfo().  Return the value from gethostname() and hope for
++ *         the best.
++ */
++char *virGetHostname(virConnectPtr conn ATTRIBUTE_UNUSED)
+ {
+     int r;
+     char hostname[HOST_NAME_MAX+1], *result;
+-    struct addrinfo hints, *info, *res;
++    struct addrinfo hints, *info;
+ 
+     r = gethostname (hostname, sizeof(hostname));
+     if (r == -1) {
+@@ -2381,6 +2401,21 @@ char *virGetHostnameLocalhost(int allow_localhost)
+     }
+     NUL_TERMINATE(hostname);
+ 
++    if (STRPREFIX(hostname, "localhost") || strchr(hostname, '.')) {
++        /* in this case, gethostname returned localhost (meaning we can't
++         * do any further canonicalization), or it returned an FQDN (and
++         * we don't need to do any further canonicalization).  Return the
++         * string as-is; it's up to callers to check whether "localhost"
++         * is allowed.
++         */
++        result = strdup(hostname);
++        goto check_and_return;
++    }
++
++    /* otherwise, it's a shortened, non-localhost, hostname.  Attempt to
++     * canonicalize the hostname by running it through getaddrinfo
++     */
++
+     memset(&hints, 0, sizeof(hints));
+     hints.ai_flags = AI_CANONNAME|AI_CANONIDN;
+     hints.ai_family = AF_UNSPEC;
+@@ -2395,54 +2430,25 @@ char *virGetHostnameLocalhost(int allow_localhost)
+     /* Tell static analyzers about getaddrinfo semantics.  */
+     sa_assert (info);
+ 
+-    /* if we aren't allowing localhost, then we iterate through the
+-     * list and make sure none of the IPv4 addresses are 127.0.0.1 and
+-     * that none of the IPv6 addresses are ::1
+-     */
+-    if (!allow_localhost) {
+-        res = info;
+-        while (res) {
+-            if (res->ai_family == AF_INET) {
+-                if (htonl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr) == INADDR_LOOPBACK) {
+-                    virUtilError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                                 _("canonical hostname pointed to localhost, but this is not allowed"));
+-                    freeaddrinfo(info);
+-                    return NULL;
+-                }
+-            }
+-            else if (res->ai_family == AF_INET6) {
+-                if (IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *)res->ai_addr)->sin6_addr)) {
+-                    virUtilError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                                 _("canonical hostname pointed to localhost, but this is not allowed"));
+-                    freeaddrinfo(info);
+-                    return NULL;
+-                }
+-            }
+-            res = res->ai_next;
+-        }
+-    }
++    if (info->ai_canonname == NULL ||
++        STRPREFIX(info->ai_canonname, "localhost"))
++        /* in this case, we tried to canonicalize and we ended up back with
++         * localhost.  Ignore the canonicalized name and just return the
++         * original hostname
++         */
++        result = strdup(hostname);
++    else
++        /* Caller frees this string. */
++        result = strdup (info->ai_canonname);
+ 
+-    if (info->ai_canonname == NULL) {
+-        virUtilError(VIR_ERR_INTERNAL_ERROR,
+-                     "%s", _("could not determine canonical host name"));
+-        freeaddrinfo(info);
+-        return NULL;
+-    }
++    freeaddrinfo(info);
+ 
+-    /* Caller frees this string. */
+-    result = strdup (info->ai_canonname);
+-    if (!result)
++check_and_return:
++    if (result == NULL)
+         virReportOOMError();
+-
+-    freeaddrinfo(info);
+     return result;
+ }
+ 
+-char *virGetHostname(virConnectPtr conn ATTRIBUTE_UNUSED)
+-{
+-    return virGetHostnameLocalhost(1);
+-}
+-
+ /* send signal to a single process */
+ int virKillProcess(pid_t pid, int sig)
+ {
+diff --git a/src/util/util.h b/src/util/util.h
+index 6bf6bcc..f8b64c2 100644
+--- a/src/util/util.h
++++ b/src/util/util.h
+@@ -252,7 +252,6 @@ static inline int getuid (void) { return 0; }
+ static inline int getgid (void) { return 0; }
+ # endif
+ 
+-char *virGetHostnameLocalhost(int allow_localhost);
+ char *virGetHostname(virConnectPtr conn);
+ 
+ int virKillProcess(pid_t pid, int sig);

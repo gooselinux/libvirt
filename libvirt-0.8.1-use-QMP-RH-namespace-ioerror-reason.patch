@@ -1,0 +1,30 @@
+For
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=586353
+
+The I/O error reason support is not yet available in QEMU, so RHEL6
+is using the redhat private namespace for it
+
+* src/qemu/qemu_monitor_json.c: Replace 'reason' with '__com.redhat_reason'
+---
+ src/qemu/qemu_monitor_json.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index a15609c..b557b70 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -593,8 +593,8 @@ static void qemuMonitorJSONHandleIOError(qemuMonitorPtr mon, virJSONValuePtr dat
+         VIR_WARN0("missing device in disk io error event");
+     }
+ 
+-    if ((reason = virJSONValueObjectGetString(data, "reason")) == NULL) {
+-        VIR_WARN0("missing reason in disk io error event");
++    if ((reason = virJSONValueObjectGetString(data, "__com.redhat_reason")) == NULL) {
++        VIR_WARN0("missing __com.redhat_reason in disk io error event");
+         reason = "";
+     }
+ 
+-- 
+1.6.6.1
+

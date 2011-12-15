@@ -1,0 +1,142 @@
+From cd5ea2c5ac650229c61d5ddd825096ab5a746934 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 5 Mar 2010 20:18:52 +0000
+Subject: [PATCH 07/16] Implement RHEL-6 KVM support for SPICE graphics
+
+This supports the -spice argument in RHEL-6's branch of KVM
+which has SPICE support. This supports the bare minimum config
+with port, TLS port & listen address. The x509 bits are added
+in a later patch.
+
+* src/qemu_conf.c, src/qemu_conf.h: Add SPICE flag. Check for
+  -spice availability. Format -spice arg for command line
+* qemuhelptest.c: Add SPICE flag
+* qemuxml2argvdata/qemuxml2argv-graphics-spice.args: Add <graphics>
+  for spice
+* qemuxml2argvdata/qemuxml2argv-graphics-spice.xml: Add -spice arg
+* qemuxml2argvtest.c: Add SPICE flag
+---
+ src/qemu/qemu_conf.c                               |   36 ++++++++++++++++++++
+ src/qemu/qemu_conf.h                               |    1 +
+ tests/qemuhelptest.c                               |    3 +-
+ .../qemuxml2argv-graphics-spice-rhel6.args         |    2 +-
+ .../qemuxml2argv-graphics-spice-rhel6.xml          |    2 +
+ tests/qemuxml2argvtest.c                           |    2 +-
+ 6 files changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 083b227..9637e20 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -1149,6 +1149,8 @@ static unsigned long long qemudComputeCmdFlags(const char *help,
+         if (strstr(help, "|qxl"))
+             flags |= QEMUD_CMD_FLAG_VGA_QXL;
+     }
++    if (strstr(help, "-spice"))
++        flags |= QEMUD_CMD_FLAG_SPICE;
+     if (strstr(help, "boot=on"))
+         flags |= QEMUD_CMD_FLAG_DRIVE_BOOT;
+     if (strstr(help, "serial=s"))
+@@ -4409,6 +4411,40 @@ int qemudBuildCommandLine(virConnectPtr conn,
+          * default, since the default changes :-( */
+         if (qemuCmdFlags & QEMUD_CMD_FLAG_SDL)
+             ADD_ARG_LIT("-sdl");
++    } else if ((def->ngraphics == 1) &&
++               def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        virBuffer opt = VIR_BUFFER_INITIALIZER;
++        char *optstr;
++
++        if (!(qemuCmdFlags & QEMUD_CMD_FLAG_SPICE)) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                            _("spice graphics are not supported with this QEMU"));
++            goto error;
++        }
++
++        virBufferVSprintf(&opt, "port=%u", def->graphics[0]->data.spice.port);
++
++        if (def->graphics[0]->data.spice.tlsPort)
++            virBufferVSprintf(&opt, ",tls-port=%u", def->graphics[0]->data.spice.tlsPort);
++
++        if (def->graphics[0]->data.spice.listenAddr)
++            virBufferVSprintf(&opt, ",addr=%s", def->graphics[0]->data.spice.listenAddr);
++
++        if (virBufferError(&opt))
++            goto no_memory;
++
++        optstr = virBufferContentAndReset(&opt);
++
++        ADD_ARG_LIT("-spice");
++        ADD_ARG(optstr);
++        if (def->graphics[0]->data.spice.keymap) {
++            ADD_ARG_LIT("-k");
++            ADD_ARG_LIT(def->graphics[0]->data.spice.keymap);
++        }
++        /* SPICE includes native support for tunnelling audio, so we
++         * set the audio backend to point at SPICE's own driver
++         */
++        ADD_ENV_LIT("QEMU_AUDIO_DRV=spice");
+     } else if (def->ngraphics) {
+         qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                         "%s", _("unsupported graphics output requested"));
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index 5321955..2d169bd 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -89,6 +89,7 @@ enum qemud_cmd_flags {
+     QEMUD_CMD_FLAG_NO_KVM_PIT    = (1LL << 34), /* -no-kvm-pit-reinjection supported */
+     QEMUD_CMD_FLAG_TDF           = (1LL << 35), /* -tdf flag (user-mode pit catchup) */
+     QEMUD_CMD_FLAG_VGA_QXL       = (1LL << 36), /* The 'qxl' arg for '-vga' */
++    QEMUD_CMD_FLAG_SPICE         = (1LL << 37), /* Is -spice avail (RHEL-6 custom) */
+ };
+ 
+ /* Main driver state */
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 8dc49f0..f57fc51 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -271,7 +271,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_SMP_TOPOLOGY |
+             QEMUD_CMD_FLAG_RTC |
+             QEMUD_CMD_FLAG_VNET_HOST |
+-            QEMUD_CMD_FLAG_VGA_QXL,
++            QEMUD_CMD_FLAG_VGA_QXL |
++            QEMUD_CMD_FLAG_SPICE,
+             12001, 1,  0);
+ 
+     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+index 94cd90e..8d195e5 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -vga qxl -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice /usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1 -vga qxl -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+index 031a622..08dfb26 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-rhel6.xml
+@@ -20,6 +20,8 @@
+       <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
+     <controller type='ide' index='0'/>
++    <input type='mouse' bus='ps2'/>
++    <graphics type='spice' port='5903' tlsPort='5904' autoport='no' listen='127.0.0.1'/>
+     <video>
+       <model type='qxl' vram='65536' heads='1'/>
+     </video>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 2e960d1..5e46dca 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -297,7 +297,7 @@ mymain(int argc, char **argv)
+     DO_TEST("nographics-vga", QEMUD_CMD_FLAG_VGA);
+     DO_TEST("graphics-spice-rhel6",
+             QEMUD_CMD_FLAG_VGA | QEMUD_CMD_FLAG_VGA_QXL |
+-            QEMUD_CMD_FLAG_DEVICE);
++            QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_SPICE);
+ 
+     DO_TEST("input-usbmouse", 0);
+     DO_TEST("input-usbtablet", 0);
+-- 
+1.6.6.1
+

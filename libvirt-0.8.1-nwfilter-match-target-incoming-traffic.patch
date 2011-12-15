@@ -1,0 +1,74 @@
+From: Stefan Berger <stefanb@us.ibm.com>
+
+The following patch enables the iptables match target to be used by
+default for incoming traffic. So far it has only be used for outgoing
+traffic.
+---
+ src/nwfilter/nwfilter_ebiptables_driver.c |   19 ++++++++++++++-----
+ 1 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/src/nwfilter/nwfilter_ebiptables_driver.c b/src/nwfilter/nwfilter_ebiptables_driver.c
+index 63bcbd7..92b8f4b 100644
+--- a/src/nwfilter/nwfilter_ebiptables_driver.c
++++ b/src/nwfilter/nwfilter_ebiptables_driver.c
+@@ -1488,18 +1488,25 @@ iptablesCreateRuleInstance(virNWFilterDefPtr nwfilter,
+     char chainPrefix[2];
+     int needState = 1;
+     bool maySkipICMP, inout = false;
++    const char *matchState;
+ 
+     if ((rule->tt == VIR_NWFILTER_RULE_DIRECTION_IN) ||
+         (rule->tt == VIR_NWFILTER_RULE_DIRECTION_INOUT)) {
+         directionIn = 1;
+-        needState = 0;
+         inout = (rule->tt == VIR_NWFILTER_RULE_DIRECTION_INOUT);
++        if (inout)
++            needState = 0;
+     }
+ 
+     chainPrefix[0] = 'F';
+ 
+     maySkipICMP = directionIn || inout;
+ 
++    if (needState)
++        matchState = directionIn ? MATCH_STATE_IN : MATCH_STATE_OUT;
++    else
++        matchState = NULL;
++
+     chainPrefix[1] = CHAINPREFIX_HOST_IN_TEMP;
+     rc = _iptablesCreateRuleInstance(directionIn,
+                                      chainPrefix,
+@@ -1508,8 +1515,7 @@ iptablesCreateRuleInstance(virNWFilterDefPtr nwfilter,
+                                      ifname,
+                                      vars,
+                                      res,
+-                                     needState ? MATCH_STATE_OUT
+-                                               : NULL,
++                                     matchState,
+                                      "RETURN",
+                                      isIPv6,
+                                      maySkipICMP);
+@@ -1518,6 +1524,10 @@ iptablesCreateRuleInstance(virNWFilterDefPtr nwfilter,
+ 
+ 
+     maySkipICMP = !directionIn || inout;
++    if (needState)
++        matchState = directionIn ? MATCH_STATE_OUT : MATCH_STATE_IN;
++    else
++        matchState = NULL;
+ 
+     chainPrefix[1] = CHAINPREFIX_HOST_OUT_TEMP;
+     rc = _iptablesCreateRuleInstance(!directionIn,
+@@ -1527,8 +1537,7 @@ iptablesCreateRuleInstance(virNWFilterDefPtr nwfilter,
+                                      ifname,
+                                      vars,
+                                      res,
+-                                     needState ? MATCH_STATE_IN
+-                                               : NULL,
++                                     matchState,
+                                      "ACCEPT",
+                                      isIPv6,
+                                      maySkipICMP);
+-- 
+1.6.6.1
+

@@ -1,0 +1,69 @@
+From: Laine Stump <laine@laine.org>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=590975
+
+virStorageFileIsSharedFS would previously only work if the entire path
+in question was stat'able by the uid of the libvirtd process. This
+patch changes it to crawl backwards up the path retrying the statfs
+call until it gets to a partial path that *can* be stat'ed.
+
+This is necessary to use the function to learn the fstype for files
+stored as a different user (and readable only by that user) on a
+root-squashed remote filesystem.
+---
+ src/util/storage_file.c |   37 ++++++++++++++++++++++++++++++++++++-
+ 1 files changed, 36 insertions(+), 1 deletions(-)
+
+diff --git a/src/util/storage_file.c b/src/util/storage_file.c
+index 9d33710..c308ffd 100644
+--- a/src/util/storage_file.c
++++ b/src/util/storage_file.c
+@@ -427,9 +427,44 @@ virStorageFileGetMetadata(const char *path,
+ 
+ int virStorageFileIsSharedFS(const char *path)
+ {
++    char *dirpath, *p;
+     struct statfs sb;
++    int statfs_ret;
+ 
+-    if (statfs(path, &sb) < 0) {
++    if ((dirpath = strdup(path)) == NULL) {
++        virReportOOMError();
++        return -1;
++    }
++
++    do {
++
++        /* Try less and less of the path until we get to a
++         * directory we can stat. Even if we don't have 'x'
++         * permission on any directory in the path on the NFS
++         * server (assuming it's NFS), we will be able to stat the
++         * mount point, and that will properly tell us if the
++         * fstype is NFS.
++         */
++
++        if ((p = strrchr(dirpath, '/')) == NULL) {
++            virReportSystemError(EINVAL,
++                         _("Invalid relative path '%s'"), path);
++            VIR_FREE(dirpath);
++            return -1;
++        }
++
++        if (p == dirpath)
++            *(p+1) = '\0';
++        else
++            *p = '\0';
++
++        statfs_ret = statfs(dirpath, &sb);
++
++    } while ((statfs_ret < 0) && (p != dirpath));
++
++    VIR_FREE(dirpath);
++
++    if (statfs_ret < 0) {
+         virReportSystemError(errno,
+                              _("cannot determine filesystem for '%s'"),
+                              path);
+-- 
+1.7.1
+

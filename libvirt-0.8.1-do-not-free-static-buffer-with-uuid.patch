@@ -1,0 +1,23 @@
+As anywhere else, uuid is defined as a fixed size array inside
+_virSecret structure; we shouldn't try to free it.
+
+Cherry-picked from upstream 72a7f8b2a924efd7df870fdcd29e2b53133a067e.
+---
+ src/datatypes.c |    1 -
+ 1 files changed, 0 insertions(+), 1 deletions(-)
+
+diff --git a/src/datatypes.c b/src/datatypes.c
+index 8750406..36a2b55 100644
+--- a/src/datatypes.c
++++ b/src/datatypes.c
+@@ -1271,7 +1271,6 @@ virGetSecret(virConnectPtr conn, const unsigned char *uuid,
+ error:
+     if (ret != NULL) {
+         VIR_FREE(ret->usageID);
+-        VIR_FREE(ret->uuid);
+         VIR_FREE(ret);
+     }
+     return NULL;
+-- 
+1.7.1
+

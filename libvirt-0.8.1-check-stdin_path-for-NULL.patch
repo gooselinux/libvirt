@@ -1,0 +1,27 @@
+An addendum to the patches for:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=590975
+
+This code was just recently added (by me) and didn't account for the
+fact that stdin_path is sometimes NULL. If it's NULL, and
+SetSecurityAllLabel fails, a segfault would result.
+---
+ src/qemu/qemu_driver.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a2cbb62..1fa30cd 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3845,7 +3845,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     if (driver->securityDriver &&
+         driver->securityDriver->domainSetSecurityAllLabel &&
+         driver->securityDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0) {
+-        if (virStorageFileIsSharedFS(stdin_path) != 1)
++        if (stdin_path && virStorageFileIsSharedFS(stdin_path) != 1)
+             goto cleanup;
+     }
+ 
+-- 
+1.7.1
+

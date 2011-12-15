@@ -1,0 +1,44 @@
+diff -urp libvirt-0.8.1.orig/include/libvirt/libvirt.h.in libvirt-0.8.1/include/libvirt/libvirt.h.in
+--- libvirt-0.8.1.orig/include/libvirt/libvirt.h.in	2010-06-28 11:53:11.154851301 -0400
++++ libvirt-0.8.1/include/libvirt/libvirt.h.in	2010-06-28 11:57:52.144473742 -0400
+@@ -2206,10 +2206,6 @@ int virConnectDomainEventRegisterAny(vir
+ int virConnectDomainEventDeregisterAny(virConnectPtr conn,
+                                        int callbackID);
+ 
+-#ifdef __cplusplus
+-}
+-#endif
+-
+ 
+ /**
+  * virNWFilter:
+@@ -2273,4 +2269,8 @@ int                     virNWFilterGetUU
+ char *                  virNWFilterGetXMLDesc    (virNWFilterPtr nwfilter,
+                                                   int flags);
+ 
++#ifdef __cplusplus
++}
++#endif
++
+ #endif /* __VIR_VIRLIB_H__ */
+diff -urp libvirt-0.8.1.orig/src/qemu/qemu_driver.c libvirt-0.8.1/src/qemu/qemu_driver.c
+--- libvirt-0.8.1.orig/src/qemu/qemu_driver.c	2010-06-28 11:53:11.301849112 -0400
++++ libvirt-0.8.1/src/qemu/qemu_driver.c	2010-06-28 11:57:52.142473671 -0400
+@@ -12722,11 +12722,15 @@ static virStateDriver qemuStateDriver = 
+ };
+ 
+ static int
+-qemudVMFilterRebuild(virConnectPtr conn,
++qemudVMFilterRebuild(virConnectPtr conn ATTRIBUTE_UNUSED,
+                      virHashIterator iter, void *data)
+ {
+-    (void)conn;
++    struct qemud_driver *driver = qemu_driver;
++
++    qemuDriverLock(driver);
+     virHashForEach(qemu_driver->domains.objs, iter, data);
++    qemuDriverUnlock(driver);
++
+     return 0;
+ }
+ 

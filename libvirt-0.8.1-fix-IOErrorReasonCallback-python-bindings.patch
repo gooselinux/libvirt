@@ -1,0 +1,28 @@
+bug 586353
+
+A copy and paste error was causing us to dispatch the incorrect
+routine. Spotted by Dan Kenigsberg.
+
+Posted upstream but not committed yet.
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ python/libvirt-override.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/python/libvirt-override.c b/python/libvirt-override.c
+index ad55940..54a84c2 100644
+--- a/python/libvirt-override.c
++++ b/python/libvirt-override.c
+@@ -3258,7 +3258,7 @@ libvirt_virConnectDomainEventIOErrorReasonCallback(virConnectPtr conn ATTRIBUTE_
+ 
+     /* Call the Callback Dispatcher */
+     pyobj_ret = PyObject_CallMethod(pyobj_conn,
+-                                    (char*)"dispatchDomainEventIOErrorCallback",
++                                    (char*)"dispatchDomainEventIOErrorReasonCallback",
+                                     (char*)"OssisO",
+                                     pyobj_dom,
+                                     srcPath, devAlias, action, reason,
+-- 
+1.6.6.1
+

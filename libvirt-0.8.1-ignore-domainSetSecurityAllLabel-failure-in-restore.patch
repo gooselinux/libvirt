@@ -1,0 +1,32 @@
+From: Laine Stump <laine@laine.org>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=590975
+
+When the saved domain image is on an NFS share, at least some part of
+domainSetSecurityAllLabel will fail (for example, selinux labels can't
+be modified). To allow domain restore to still work in this case, just
+ignore the errors.
+---
+ src/qemu/qemu_driver.c |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 22f182e..11233d0 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3844,8 +3844,10 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     DEBUG0("Generating setting domain security labels (if required)");
+     if (driver->securityDriver &&
+         driver->securityDriver->domainSetSecurityAllLabel &&
+-        driver->securityDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0)
+-        goto cleanup;
++        driver->securityDriver->domainSetSecurityAllLabel(vm, stdin_path) < 0) {
++        if (virStorageFileIsSharedFS(stdin_path) != 1)
++            goto cleanup;
++    }
+ 
+     /* Ensure no historical cgroup for this VM is lying around bogus
+      * settings */
+-- 
+1.7.1
+

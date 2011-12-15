@@ -1,0 +1,146 @@
+diff --git a/python/generator.py b/python/generator.py
+index a243c82..d876df6 100755
+--- a/python/generator.py
++++ b/python/generator.py
+@@ -331,7 +331,7 @@ skip_impl = (
+     'virNodeListDevices',
+     'virNodeDeviceListCaps',
+     'virConnectBaselineCPU',
+-    'virDomainSnapshotListNames',
++    'virDomainRevertToSnapshot',
+ )
+ 
+ 
+@@ -385,6 +385,10 @@ skip_function = (
+     "virStorageVolGetConnect",
+ )
+ 
++function_skip_index_one = (
++    "virDomainRevertToSnapshot",
++)
++
+ 
+ def print_function_wrapper(name, output, export, include):
+     global py_types
+@@ -688,9 +692,13 @@ classes_destructors = {
+ }
+ 
+ class_skip_connect_impl = {
+-    "virConnect" : True
++    "virConnect" : True,
++    "virDomainSnapshot": True,
+ }
+ 
++class_domain_impl = {
++    "virDomainSnapshot": True,
++}
+ 
+ functions_noexcept = {
+     'virDomainGetID': True,
+@@ -986,7 +994,7 @@ def buildWrappers():
+ 		info = (0, func, name, ret, args, file)
+ 		function_classes[classe].append(info)
+ 	    elif name[0:3] == "vir" and len(args) >= 2 and args[1][1] == type \
+-	        and file != "python_accessor":
++	        and file != "python_accessor" and not name in function_skip_index_one:
+ 		found = 1
+ 		func = nameFixup(name, classe, type, file)
+ 		info = (1, func, name, ret, args, file)
+@@ -1128,6 +1136,8 @@ def buildWrappers():
+                                   "virStorageVol", "virNodeDevice", "virSecret","virStream",
+                                   "virNWFilter" ]:
+                     classes.write("    def __init__(self, conn, _obj=None):\n")
++                elif classname in [ 'virDomainSnapshot' ]:
++                    classes.write("    def __init__(self, dom, _obj=None):\n")
+                 else:
+                     classes.write("    def __init__(self, _obj=None):\n")
+ 		if reference_keepers.has_key(classname):
+@@ -1142,6 +1152,8 @@ def buildWrappers():
+                     classes.write("        self._conn = conn\n" + \
+                                   "        if not isinstance(conn, virConnect):\n" + \
+                                   "            self._conn = conn._conn\n")
++                elif classname in [ "virDomainSnapshot" ]:
++                    classes.write("        self._dom = dom\n")
+ 		classes.write("        if _obj != None:self._o = _obj;return\n")
+ 		classes.write("        self._o = None\n\n");
+ 	    destruct=None
+@@ -1158,6 +1170,10 @@ def buildWrappers():
+                 classes.write("    def connect(self):\n")
+                 classes.write("        return self._conn\n\n")
+ 
++            if class_domain_impl.has_key(classname):
++                classes.write("    def domain(self):\n")
++                classes.write("        return self._dom\n\n")
++
+ 	    flist = function_classes[classname]
+ 	    flist.sort(functionCompare)
+ 	    oldfile = ""
+@@ -1252,6 +1268,10 @@ def buildWrappers():
+                                 classes.write(
+ 		     "        if ret is None:raise libvirtError('%s() failed', vol=self)\n" %
+                                               (name))
++                            elif classname == "virDomainSnapshot":
++                                classes.write(
++                     "        if ret is None:raise libvirtError('%s() failed', dom=self._dom)\n" %
++                                              (name))
+                             else:
+                                 classes.write(
+ 		     "        if ret is None:raise libvirtError('%s() failed')\n" %
+diff --git a/python/libvirt-override-api.xml b/python/libvirt-override-api.xml
+index 9ba8e4e..be28b40 100644
+--- a/python/libvirt-override-api.xml
++++ b/python/libvirt-override-api.xml
+@@ -277,5 +277,12 @@
+       <arg name='flags' type='unsigned int' info='flags, curently unused'/>
+       <return type='str *' info='the list of Names of None in case of error'/>
+     </function>
++    <function name='virDomainRevertToSnapshot' file='python'>
++      <info>revert the domain to the given snapshot</info>
++      <arg name='dom' type='virDomainPtr' info='dummy domain pointer'/>
++      <arg name='snap' type='virDomainSnapshotPtr' info='pointer to the snapshot'/>
++      <arg name='flags' type='unsigned int' info='flags, curently unused'/>
++      <return type='int' info="0 on success, -1 on error"/>
++    </function>
+   </symbols>
+ </api>
+diff --git a/python/libvirt-override.c b/python/libvirt-override.c
+index c9721f7..ad55940 100644
+--- a/python/libvirt-override.c
++++ b/python/libvirt-override.c
+@@ -988,6 +988,28 @@ libvirt_virDomainSnapshotListNames(PyObject *self ATTRIBUTE_UNUSED,
+ }
+ 
+ static PyObject *
++libvirt_virDomainRevertToSnapshot(PyObject *self ATTRIBUTE_UNUSED,
++                                  PyObject *args) {
++    int c_retval;
++    virDomainSnapshotPtr snap;
++    PyObject *pyobj_snap;
++    PyObject *pyobj_dom;
++    int flags;
++
++    if (!PyArg_ParseTuple(args, (char *)"OOi:virDomainRevertToSnapshot", &pyobj_dom, &pyobj_snap, &flags))
++        return(NULL);
++    snap = (virDomainSnapshotPtr) PyvirDomainSnapshot_Get(pyobj_snap);
++
++    LIBVIRT_BEGIN_ALLOW_THREADS;
++    c_retval = virDomainRevertToSnapshot(snap, flags);
++    LIBVIRT_END_ALLOW_THREADS;
++    if (c_retval < 0)
++        return VIR_PY_INT_FAIL;
++
++    return PyInt_FromLong(c_retval);
++}
++
++static PyObject *
+ libvirt_virDomainGetInfo(PyObject *self ATTRIBUTE_UNUSED, PyObject *args) {
+     PyObject *py_retval;
+     int c_retval;
+@@ -3527,6 +3549,7 @@ static PyMethodDef libvirtMethods[] = {
+     {(char *) "virConnectBaselineCPU", libvirt_virConnectBaselineCPU, METH_VARARGS, NULL},
+     {(char *) "virDomainGetJobInfo", libvirt_virDomainGetJobInfo, METH_VARARGS, NULL},
+     {(char *) "virDomainSnapshotListNames", libvirt_virDomainSnapshotListNames, METH_VARARGS, NULL},
++    {(char *) "virDomainRevertToSnapshot", libvirt_virDomainRevertToSnapshot, METH_VARARGS, NULL},
+     {NULL, NULL, 0, NULL}
+ };
+ 

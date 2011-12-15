@@ -1,0 +1,67 @@
+From: Jiri Denemark <jdenemar@redhat.com>
+
+We add --dhcp-lease-max=xxx argument when network->def->nranges > 0 but
+we only allocate space for in the opposite case :-) I guess we are lucky
+enough to miscount somewhere else so that we actually allocate more
+space than we need since no-one has hit this bug so far.
+(cherry picked from commit 6f42d3253a05fc6c4d94d8d389019f956158c753)
+---
+ src/network/bridge_driver.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+From: Jiri Denemark <jdenemar@redhat.com>
+
+--dhcp-no-override description from dnsmasq man page:
+
+      Disable  re-use  of  the  DHCP servername and filename fields as
+      extra option space. If it can, dnsmasq moves the boot server and
+      filename  information  (from  dhcp-boot)  out of their dedicated
+      fields into DHCP options. This make extra space available in the
+      DHCP  packet  for options but can, rarely, confuse old or broken
+      clients. This flag forces "simple and safe" behaviour  to  avoid
+      problems in such a case.
+
+It seems some virtual network card ROMs are this old/buggy so let's add
+--dhcp-no-override as a workaround for them. We don't use extra DHCP
+options so this should be safe. The option was added in dnsmasq-2.41,
+which becomes the minimum required version.
+(cherry picked from commit e26672f78661272274580e0653b21017c7c31d4e)
+---
+ libvirt.spec.in             |    4 ++--
+ src/network/bridge_driver.c |    3 +++
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index dd53517..6952a00 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -427,7 +427,7 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+         2 + /* --listen-address 10.0.0.1 */
+         (2 * network->def->nranges) + /* --dhcp-range 10.0.0.2,10.0.0.254 */
+         /* --dhcp-lease-max=xxx if needed */
+-        (network->def->nranges ? 0 : 1) +
++        (network->def->nranges ? 1 : 0) +
+         /* --dhcp-hostsfile=/var/lib/dnsmasq/$NAME.hostsfile */
+         (network->def->nhosts > 0 ? 1 : 0) +
+         /* --enable-tftp --tftp-root /srv/tftp */
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 6952a00..040ecfa 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -428,6 +428,8 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+         (2 * network->def->nranges) + /* --dhcp-range 10.0.0.2,10.0.0.254 */
+         /* --dhcp-lease-max=xxx if needed */
+         (network->def->nranges ? 1 : 0) +
++        /* --dhcp-no-override if needed */
++        (network->def->nranges ? 1 : 0) +
+         /* --dhcp-hostsfile=/var/lib/dnsmasq/$NAME.hostsfile */
+         (network->def->nhosts > 0 ? 1 : 0) +
+         /* --enable-tftp --tftp-root /srv/tftp */
+@@ -498,6 +500,7 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+     if (network->def->nranges > 0) {
+         snprintf(buf, sizeof(buf), "--dhcp-lease-max=%d", nbleases);
+         APPEND_ARG(*argv, i++, buf);
++        APPEND_ARG(*argv, i++, "--dhcp-no-override");
+     }
+ 
+     if (network->def->nhosts > 0) {

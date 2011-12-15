@@ -1,0 +1,29 @@
+A look at the QEMU source revealed the missing bits of info about
+the VPC file format, so we can enable this now
+
+* src/util/storage_file.c: Enable VPC format, providing version
+  and disk size offset fields
+---
+ src/util/storage_file.c |    6 ++----
+ 1 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/src/util/storage_file.c b/src/util/storage_file.c
+index b3ae905..6cc8d5f 100644
+--- a/src/util/storage_file.c
++++ b/src/util/storage_file.c
+@@ -135,11 +135,9 @@ static struct FileTypeInfo const fileTypeInfo[] = {
+       LV_LITTLE_ENDIAN, 4, 1,
+       4+4+4, 8, 512, -1, vmdk4GetBackingStore },
+     /* Connectix / VirtualPC */
+-    /* XXX Untested
+     { VIR_STORAGE_FILE_VPC, "conectix", NULL,
+-      LV_BIG_ENDIAN, -1, 0,
+-      -1, 0, 0, -1, NULL},
+-    */
++      LV_BIG_ENDIAN, 12, 0x10000,
++      8 + 4 + 4 + 8 + 4 + 4 + 2 + 2 + 4, 8, 1, -1, NULL},
+ };
+ 
+ static int
+-- 
+1.6.6.1

@@ -1,0 +1,71 @@
+https://bugzilla.redhat.com/show_bug.cgi?id=589465
+
+Ensure that python bindings are regenerated to pick up addition
+of new VIR_DOMAIN_START_PAUSED bit.
+
+Backport of upstream 47ae6d3d7, but includes a minor conflict
+resolution since upstream 1c589120 is not in rhel.
+
+(EXTRA_DIST): Remove redundant listing of xml files.
+(html/%-%.html, html/%-virterror.html, %-api.xml, %-refs.xml):
+Rewrite with...
+(python_generated_files): ...new macro, since make didn't see
+through the dependency chain correctly otherwise.
+---
+
+Below the git backport, I've also included the relevant diffs
+from regenerating Makefile.in, if those are needed in the RHEL
+CVS repository.  Ignore it if desired, since rpmbuild is smart
+enough to run autoreconf and automatically fix Makefile.in
+given just the Makefile.am portion of the patch.
+
+ docs/Makefile.am |   20 ++++++++++++--------
+ 1 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/docs/Makefile.am b/docs/Makefile.am
+index a18821b..383a791 100644
+--- a/docs/Makefile.am
++++ b/docs/Makefile.am
+@@ -70,8 +70,8 @@ fig = \
+   libvirt-object-model.fig
+
+ EXTRA_DIST=					\
+-  libvirt-api.xml libvirt-refs.xml apibuild.py	\
+-  site.xsl newapi.xsl news.xsl page.xsl	ChangeLog.xsl	\
++  apibuild.py \
++  site.xsl newapi.xsl news.xsl page.xsl ChangeLog.xsl \
+   $(dot_html) $(dot_html_in) $(gif) $(apihtml) $(apipng) \
+   $(devhelphtml) $(devhelppng) $(devhelpcss) $(devhelpxsl) \
+   $(xml) $(fig) $(png) \
+@@ -124,19 +124,23 @@ html/index.html: libvirt-api.xml newapi.xsl page.xsl sitemap.html.in
+ 	  $(XMLLINT) --nonet --valid --noout html/*.html ; \
+ 	  else echo "missing XHTML1 DTD" ; fi ; fi );
+
+-$(devhelphtml): libvirt-api.xml $(devhelpxsl)
++$(addprefix $(srcdir)/,$(devhelphtml)): $(srcdir)/libvirt-api.xml $(devhelpxsl)
+ 	-@(echo Rebuilding devhelp files)
+ 	-@(if [ -x $(XSLTPROC) ] ; then \
+ 	  $(XSLTPROC) --nonet -o devhelp/libvirt.devhelp \
+           $(top_srcdir)/docs/devhelp/devhelp.xsl libvirt-api.xml ; fi );
+
+-html/%-%.html html/%-virterror.html %-api.xml %-refs.xml: $(srcdir)/apibuild.py
+-	-srcdir=$(srcdir) $(srcdir)/apibuild.py
++python_generated_files = \
++		$(srcdir)/html/libvirt-libvirt.html \
++		$(srcdir)/html/libvirt-virterror.html \
++		$(srcdir)/libvirt-api.xml \
++		$(srcdir)/libvirt-refs.xml
+
+-html/%-%.html html/%-virterror.html %-api.xml %-refs.xml: \
+-		$(srcdir)/../include/%/*.h \
+-		$(srcdir)/../src/%.c \
++$(python_generated_files): $(srcdir)/apibuild.py \
++		$(srcdir)/../include/libvirt/*.h \
++		$(srcdir)/../src/libvirt.c \
+ 		$(srcdir)/../src/util/virterror.c
++	-srcdir=$(srcdir) $(srcdir)/apibuild.py
+
+ clean-local:
+ 	rm -f *~ *.bak *.hierarchy *.signals *-unused.txt
+-- 
+1.7.0.1

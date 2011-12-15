@@ -1,0 +1,26 @@
+From: "Daniel P. Berrange" <berrange@redhat.com>
+Subject: [PATCH 1/2 RHEL-6] libvirt: Fix typo in handling JSON graphics events
+
+A typo in handling graphics events allowed for a potential
+NULL pointer crash if a parameter was not defined
+
+* src/qemu/qemu_monitor_json.c: s/remoteService/localService/
+---
+ src/qemu/qemu_monitor_json.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 4a25e98..6d8f328 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -646,8 +646,8 @@ static void qemuMonitorJSONHandleGraphics(qemuMonitorPtr mon, virJSONValuePtr da
+         return;
+     }
+     localService = virJSONValueObjectGetString(server, "service");
+-    if (!remoteService)
+-        remoteService = ""; /* Spice has multiple ports, so this isn't provided */
++    if (!localService)
++        localService = ""; /* Spice has multiple ports, so this isn't provided */
+ 
+     remoteFamily = virJSONValueObjectGetString(client, "family");
+     if (!authScheme) {

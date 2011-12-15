@@ -1,0 +1,138 @@
+From a34871d9a5af6d1b20df8057103ad00c33fa6f92 Mon Sep 17 00:00:00 2001
+From: Stefan Berger <stefanb@us.ibm.com>
+Date: Tue, 25 May 2010 15:31:38 -0400
+Subject: [PATCH] vepa+vsi: Introduce dependency on libnl
+
+This patch introduces a dependency on libnl, which subsequent patches
+will then use.
+
+Changes from V1 to V2:
+- added diffstats
+- following changes in tree
+---
+ configure.ac    |   24 ++++++++++++++++++++++++
+ libvirt.spec.in |   14 ++++++++++++++
+ src/Makefile.am |    4 ++--
+ 3 files changed, 40 insertions(+), 2 deletions(-)
+
+diff -rupN a/configure.ac b/configure.ac
+--- a/configure.ac	2010-04-30 12:16:43.000000000 -0400
++++ b/configure.ac	2010-05-25 16:31:34.599439659 -0400
+@@ -42,6 +42,7 @@ HAL_REQUIRED=0.5.0
+ DEVMAPPER_REQUIRED=1.0.0
+ LIBCURL_REQUIRED="7.18.0"
+ LIBPCAP_REQUIRED="1.0.0"
++LIBNL_REQUIRED="1.1"
+ 
+ dnl Checks for C compiler.
+ AC_PROG_CC
+@@ -2021,6 +2022,24 @@ fi
+ AM_CONDITIONAL([WITH_MACVTAP], [test "$with_macvtap" = "yes"])
+ 
+ 
++dnl netlink library
++
++LIBNL_CFLAGS=""
++LIBNL_LIBS=""
++
++if test "$with_macvtap" = "yes"; then
++    PKG_CHECK_MODULES([LIBNL], [libnl-1 >= $LIBNL_REQUIRED], [
++    ], [
++        AC_MSG_ERROR([libnl >= $LIBNL_REQUIRED is required for macvtap support])
++    ])
++fi
++
++AC_SUBST([LIBNL_CFLAGS])
++AC_SUBST([LIBNL_LIBS])
++
++
++
++
+ # Only COPYING.LIB is under version control, yet COPYING
+ # is included as part of the distribution tarball.
+ # Copy one to the other, but only if this is a srcdir-build.
+@@ -2199,6 +2218,11 @@ AC_MSG_NOTICE([    pcap: $LIBPCAP_CFLAGS
+ else
+ AC_MSG_NOTICE([    pcap: no])
+ fi
++if test "$with_macvtap" = "yes" ; then
++AC_MSG_NOTICE([      nl: $LIBNL_CFLAGS $LIBNL_LIBS])
++else
++AC_MSG_NOTICE([      nl: no])
++fi
+ AC_MSG_NOTICE([])
+ AC_MSG_NOTICE([Test suite])
+ AC_MSG_NOTICE([])
+diff -rupN a/libvirt.spec.in b/libvirt.spec.in
+--- a/libvirt.spec.in	2010-05-25 16:22:50.980440965 -0400
++++ b/libvirt.spec.in	2010-05-25 16:32:41.737440843 -0400
+@@ -62,6 +62,7 @@
+ %define with_hal           0%{!?_without_hal:0}
+ %define with_yajl          0%{!?_without_yajl:0}
+ %define with_libpcap       0%{!?_without_libpcap:0}
++%define with_macvtap       0%{!?_without_macvtap:0}
+ 
+ # Non-server/HV driver defaults which are always enabled
+ %define with_python        0%{!?_without_python:1}
+@@ -151,6 +152,11 @@
+ # Enable libpcap library
+ %if %{with_qemu}
+ %define with_libpcap  0%{!?_without_libpcap:%{server_drivers}}
++%define with_macvtap  0%{!?_without_macvtap:%{server_drivers}}
++%endif
++
++%if %{with_macvtap}
++%define with_libnl 1
+ %endif
+ 
+ # Force QEMU to run as non-root
+@@ -275,6 +281,9 @@ BuildRequires: yajl-devel
+ %if %{with_libpcap}
+ BuildRequires: libpcap-devel
+ %endif
++%if %{with_libnl}
++BuildRequires: libnl-devel
++%endif
+ %if %{with_avahi}
+ BuildRequires: avahi-devel
+ %endif
+@@ -517,6 +526,10 @@ of recent versions of Linux (and other O
+ %define _without_yajl --without-yajl
+ %endif
+ 
++%if ! %{with_macvtap}
++%define _without_macvtap --without-macvtap
++%endif
++
+ %configure %{?_without_xen} \
+            %{?_without_qemu} \
+            %{?_without_openvz} \
+@@ -545,6 +558,7 @@ of recent versions of Linux (and other O
+            %{?_without_hal} \
+            %{?_without_udev} \
+            %{?_without_yajl} \
++           %{?_without_macvtap} \
+            --with-qemu-user=%{qemu_user} \
+            --with-qemu-group=%{qemu_group} \
+            --with-init-script=redhat \
+diff -rupN a/src/Makefile.am b/src/Makefile.am
+--- a/src/Makefile.am	2010-04-30 08:46:09.000000000 -0400
++++ b/src/Makefile.am	2010-05-25 16:34:15.129437298 -0400
+@@ -927,6 +927,7 @@ libvirt.def: libvirt.syms
+ # Empty source list - it merely links a bunch of convenience libs together
+ libvirt_la_SOURCES =
+ libvirt_la_LIBADD += \
++		    $(LIBNL_LIBS) \
+ 		    $(CYGWIN_EXTRA_LIBADD) ../gnulib/lib/libgnu.la
+ libvirt_la_LDFLAGS = $(VERSION_SCRIPT_FLAGS)$(LIBVIRT_SYMBOL_FILE) \
+                      -version-info $(LIBVIRT_VERSION_INFO) \
+@@ -984,7 +985,8 @@ libvirt_lxc_SOURCES =						\
+ 		$(CPU_CONF_SOURCES)				\
+ 		$(NWFILTER_PARAM_CONF_SOURCES)
+ libvirt_lxc_LDFLAGS = $(WARN_CFLAGS) $(COVERAGE_LDCFLAGS) $(CAPNG_LIBS) $(YAJL_LIBS)
+-libvirt_lxc_LDADD = $(LIBXML_LIBS) $(NUMACTL_LIBS) ../gnulib/lib/libgnu.la
++libvirt_lxc_LDADD = $(LIBXML_LIBS) $(NUMACTL_LIBS) \
++		$(LIBNL_LIBS) ../gnulib/lib/libgnu.la
+ libvirt_lxc_CFLAGS =				\
+ 		$(LIBPARTED_CFLAGS)		\
+ 		$(NUMACTL_CFLAGS)		\

@@ -1,0 +1,96 @@
+The domain parsing code would auto-add a virtio serial controller
+if it saw any virtio serial channel defined. Unfortunately it
+always added a controller with index=0, even if the channel address
+specified an index != 0. It only added one controller, even if
+multiple controllers were referenced by channels. Finally, it let
+the ports+vectors parameters initialize to zero instead of -1, which
+prevented the controllers accepting any ports.
+
+* src/conf/domain_conf.c: Initialize ports+vectors when adding
+  virtio serial controllers. Add all neccessary virtio serial
+  controllers, instead of hardcoding controller 0
+* qemuxml2argvdata/qemuxml2argv-channel-virtio.args,
+  qemuxml2argvdata/qemuxml2argv-channel-virtio.xml: Expand to
+  test controller auto-add behaviour
+---
+ src/conf/domain_conf.c                             |   19 ++++++++++++++++---
+ .../qemuxml2argv-channel-virtio.args               |    2 +-
+ .../qemuxml2argv-channel-virtio.xml                |    4 ++++
+ 3 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 047507c..d9d0261 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -4557,6 +4557,10 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+ 
+         def->channels[def->nchannels++] = chr;
+ 
++        if (chr->targetType == VIR_DOMAIN_CHR_TARGET_TYPE_VIRTIO &&
++            chr->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE)
++            chr->info.type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL;
++
+         if (chr->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
+             chr->info.addr.vioserial.port == 0) {
+             int maxport = -1;
+@@ -4969,6 +4973,12 @@ static int virDomainDefMaybeAddController(virDomainDefPtr def,
+     cont->type = type;
+     cont->idx = idx;
+ 
++    if (cont->type == VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL) {
++        cont->opts.vioserial.ports = -1;
++        cont->opts.vioserial.vectors = -1;
++    }
++
++
+     if (VIR_REALLOC_N(def->controllers, def->ncontrollers+1) < 0) {
+         VIR_FREE(cont);
+         virReportOOMError();
+@@ -5011,15 +5021,18 @@ static int virDomainDefMaybeAddVirtioSerialController(virDomainDefPtr def)
+ {
+     /* Look for any virtio serial device */
+     int i;
++
+     for (i = 0 ; i < def->nchannels ; i++) {
+         virDomainChrDefPtr channel = def->channels[i];
+ 
+         if (channel->targetType == VIR_DOMAIN_CHR_TARGET_TYPE_VIRTIO) {
+-            /* Try to add a virtio serial controller with index 0 */
++            int idx = 0;
++            if (channel->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL)
++                idx = channel->info.addr.vioserial.controller;
++
+             if (virDomainDefMaybeAddController(def,
+-                    VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL, 0) < 0)
++                VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL, idx) < 0)
+                 return -1;
+-            break;
+         }
+     }
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+index 8e5fbe2..e59d944 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x4 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x5 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=0,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+index 04a3e1c..6e3458f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.xml
+@@ -43,5 +43,9 @@
+       <target type='virtio' name='org.linux-kvm.port.ooh'/>
+       <address type='virtio-serial' controller='1' bus='0'/>
+     </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.lla'/>
++      <address type='virtio-serial' controller='2' bus='0'/>
++    </channel>
+   </devices>
+ </domain>
+-- 
+1.6.6.1
+
+
+-- 

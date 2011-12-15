@@ -1,0 +1,72 @@
+>From ca1b7cc8e4592de2ebd15f03eed83213115f811b Mon Sep 17 00:00:00 2001
+From: Stefan Berger <stefanb@us.ibm.com>
+Date: Fri, 28 May 2010 13:00:58 -0400
+Subject: [PATCH] macvtap: cannot support target device name
+
+Since the macvtap device needs active tear-down and the teardown logic
+is based on the interface name, it can happen that if for example 1 out
+of 3 interfaces was successfully created, that during the failure path
+the macvtap's target device name is used to tear down an interface that
+is doesn't own (owned by another VM).
+
+So, in this patch, the target interface name is reset so that there is
+no target interface name and the interface name is always cleared after
+a tear down.
+---
+ src/conf/domain_conf.c |    2 ++
+ src/qemu/qemu_conf.c   |    1 +
+ src/qemu/qemu_driver.c |    8 ++++++--
+ 3 files changed, 9 insertions(+), 2 deletions(-)
+
+diff -rupN b/src/conf/domain_conf.c c/src/conf/domain_conf.c
+--- b/src/conf/domain_conf.c	2010-06-03 12:21:21.992264664 -0400
++++ c/src/conf/domain_conf.c	2010-06-03 12:32:49.877266852 -0400
+@@ -2292,6 +2292,8 @@ virDomainNetDefParseXML(virCapsPtr caps,
+         def->data.direct.linkdev = dev;
+         dev = NULL;
+ 
++        VIR_FREE(ifname);
++
+         break;
+ 
+     case VIR_DOMAIN_NET_TYPE_USER:
+diff -rupN b/src/qemu/qemu_conf.c c/src/qemu/qemu_conf.c
+--- b/src/qemu/qemu_conf.c	2010-06-03 12:21:22.003264501 -0400
++++ c/src/qemu/qemu_conf.c	2010-06-03 12:32:49.887519519 -0400
+@@ -1611,6 +1611,7 @@ qemudPhysIfaceConnect(virConnectPtr conn
+                 rc = -1;
+                 delMacvtap(net->ifname,
+                            &net->data.direct.virtPortProfile);
++                VIR_FREE(net->ifname);
+             }
+         }
+     }
+diff -rupN b/src/qemu/qemu_driver.c c/src/qemu/qemu_driver.c
+--- b/src/qemu/qemu_driver.c	2010-06-03 12:21:22.015264415 -0400
++++ c/src/qemu/qemu_driver.c	2010-06-03 12:32:49.897524032 -0400
+@@ -4183,9 +4183,11 @@ static void qemudShutdownVMDaemon(struct
+     def = vm->def;
+     for (i = 0; i < def->nnets; i++) {
+         virDomainNetDefPtr net = def->nets[i];
+-        if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT)
++        if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+             delMacvtap(net->ifname,
+                        &net->data.direct.virtPortProfile);
++            VIR_FREE(net->ifname);
++        }
+     }
+ #endif
+ 
+@@ -8958,9 +8960,11 @@ qemudDomainDetachNetDevice(struct qemud_
+     virNWFilterTearNWFilter(detach);
+ 
+ #if WITH_MACVTAP
+-    if (detach->type == VIR_DOMAIN_NET_TYPE_DIRECT)
++    if (detach->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+         delMacvtap(detach->ifname,
+                    &detach->data.direct.virtPortProfile);
++        VIR_FREE(detach->ifname);
++    }
+ #endif
+ 
+     if ((driver->macFilter) && (detach->ifname != NULL)) {

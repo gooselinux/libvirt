@@ -1,0 +1,911 @@
+From: Stefan Berger <stefanb@linux.vnet.ibm.com>
+To: libvir-list <libvir-list@redhat.com>
+Date: Tue, 25 May 2010 07:18:53 -0400
+Subject: [libvirt] [PATCH v10] vepa: parsing for 802.1Qb{g|h} XML
+
+Below is David Allan's original patch with lots of changes. 
+
+In particular, it now parses the following two XML descriptions, one
+for 802.1Qbg and 802.1Qbh and stored the data internally. The actual
+triggering of the switch setup protocol has not been implemented
+here but the relevant code to do that should go into the functions 
+associatePortProfileId() and disassociatePortProfileId().
+
+   <interface type='direct'>
+      <source dev='eth0.100' mode='vepa'/>
+      <model type='virtio'/>
+      <virtualport type='802.1Qbg'>
+        <parameters managerid='12' typeid='0x123456' typeidversion='1'
+         instanceid='fa9b7fff-b0a0-4893-8e0e-beef4ff18f8f'/>
+      </virtualport>
+      <filterref filter='clean-traffic'/>
+    </interface>
+
+    <interface type='direct'>
+      <source dev='eth0.100' mode='vepa'/>
+      <model type='virtio'/>
+      <virtualport type='802.1Qbh'>
+        <parameters profileid='my_profile'/>
+      </virtualport>
+    </interface>
+
+I'd suggest to use this patch as a base for triggering the setup
+protocol with the 802.1Qb{g|h} switch.
+
+V10:
+- Renamed structure virVirtualPortProfileDef to virVirtualPortProfileParams
+  as per Daniel Berrange's request
+
+V9:
+-Addressing Daniel Berrange's comments:
+ - removing macvtap.h's dependency on domain_conf.h by 
+   moving the virVirtualPortProfileDef structure into macvtap.h
+   and not passing virtDomainNetDefPtr to any functions in
+   macvtap.c
+
+Changes from V7 to V8:
+- Addressed most of Chris Wright's comments:
+  - indicating error in case virtualport XML node cannot be parsed
+    properly
+  - parsing hex and decimal numbers using virStrToLong_ui() with 
+    parameter '0' for base
+  - tgifname (target interface name) variable wasn't necessary
+    to pass to openMacvtapTap function anymore
+- assigning the virtual port data structure to the virDomainNetDef
+  only if it was previously parsed
+
+-> still leaving possibility to start a domain with macvtap but no profile
+
+Changes from V6 to V7:
+- make sure that the error code returned by openMacvtapTap() is a negative number
+  in case the associatePortProfileId() function failed.
+
+Changes from V5 to V6:
+- renaming vsi in the XML to virtualport
+- replace all occurrences of vsi in the source as well
+
+Changes from V4 to V5:
+- removing mode and MAC address parameters from the functions that
+  will communicate with the hareware diretctly or indirectly
+
+Changes from V3 to V4:
+- moving the associate and disassociate functions to the end of the
+  file for subsequent patches to easier make them generally available
+  for export
+- passing the macvtap interface name rather than the link device since
+  this otherwise gives funny side effects when using netlink messages
+  where IFLA_IFNAME and IFLA_ADDRESS are specified and the link dev
+  all of a sudden gets the MAC address of the macvtap interface.
+- Removing rc = -1 error indications in the case of 802.1Qbg|h setup in case
+  we wanted to use hook scripts for the setup and so the setup doesn't fail
+  here.
+
+Changes from V2 to V3:
+- if instance ID UUID is not supplied it will automatically be generated
+  - adapted schema to make instance ID UUID optional
+  - added test case
+
+Some of the changes from V1 to V2:
+- parser and XML generator have been separated into their own
+  functions so they can be re-used elsewhere (passthrough case
+  for example)
+- Adapted XML parser and generator support the above shown type
+  (802.1Qbg, 802.1Qbh).
+- Adapted schema to above XML
+- Adapted test XML to above XML
+- Passing through the VM's UUID which seems to be necessary for
+  802.1Qbh -- sorry no host UUID
+- adding virtual function ID to association function, in case it's
+  necessary to use (for SR-IOV)
+
+Signed-off-by: Stefan Berger <stefanb@us.ibm.com>
+
+>From a945107f047c7cd71f9c1b74fd74c47d8cdc3670 Mon Sep 17 00:00:00 2001
+From: David Allan <dallan@redhat.com>
+Date: Fri, 12 Mar 2010 13:25:04 -0500
+Subject: [PATCH 1/1] POC of port profile id support
+
+* Modified schema per DanPB's feedback
+* Added test for modified schema
+---
+ docs/schemas/domain.rng                |   69 +++++++++++
+ src/conf/domain_conf.c                 |  202 +++++++++++++++++++++++++++++++++
+ src/conf/domain_conf.h                 |    2 
+ src/qemu/qemu_conf.c                   |   21 +--
+ src/qemu/qemu_conf.h                   |    5 
+ src/qemu/qemu_driver.c                 |   19 +--
+ src/util/macvtap.c                     |  137 ++++++++++++++++++++--
+ src/util/macvtap.h                     |   45 ++++++-
+ tests/domainschemadata/portprofile.xml |   36 +++++
+ 9 files changed, 498 insertions(+), 38 deletions(-)
+ create mode 100644 tests/domainschemadata/portprofile.xml
+
+diff -rupN c/docs/schemas/domain.rng d/docs/schemas/domain.rng
+--- c/docs/schemas/domain.rng	2010-05-25 16:22:50.495439502 -0400
++++ d/docs/schemas/domain.rng	2010-05-25 16:37:23.427437324 -0400
+@@ -817,6 +817,9 @@
+               </optional>
+               <empty/>
+             </element>
++            <optional>
++              <ref name="virtualPortProfile"/>
++            </optional>
+             <ref name="interface-options"/>
+           </interleave>
+         </group>
+@@ -902,6 +905,45 @@
+       </optional>
+     </interleave>
+   </define>
++  <define name="virtualPortProfile">
++    <choice>
++      <group>
++        <element name="virtualport">
++          <attribute name="type">
++            <value>802.1Qbg</value>
++          </attribute>
++          <element name="parameters">
++            <attribute name="managerid">
++              <ref name="uint8range"/>
++            </attribute>
++            <attribute name="typeid">
++              <ref name="uint24range"/>
++            </attribute>
++            <attribute name="typeidversion">
++              <ref name="uint8range"/>
++            </attribute>
++            <optional>
++              <attribute name="instanceid">
++                <ref name="UUID"/>
++              </attribute>
++            </optional>
++          </element>
++        </element>
++      </group>
++      <group>
++        <element name="virtualport">
++          <attribute name="type">
++            <value>802.1Qbh</value>
++          </attribute>
++          <element name="parameters">
++            <attribute name="profileid">
++              <ref name="virtualPortProfileID"/>
++            </attribute>
++          </element>
++        </element>
++      </group>
++    </choice>
++  </define>
+   <!--
+       An emulator description is just a path to the binary used for the task
+     -->
+@@ -1827,4 +1869,31 @@
+       <param name="pattern">[a-zA-Z0-9_\.:]+</param>
+     </data>
+   </define>
++  <define name="uint8range">
++    <choice>
++      <data type="string">
++        <param name="pattern">0x[0-9a-fA-F]{1,2}</param>
++      </data>
++      <data type="int">
++        <param name="minInclusive">0</param>
++        <param name="maxInclusive">255</param>
++      </data>
++    </choice>
++  </define>
++  <define name="uint24range">
++    <choice>
++      <data type="string">
++        <param name="pattern">0x[0-9a-fA-F]{1,6}</param>
++      </data>
++      <data type="int">
++        <param name="minInclusive">0</param>
++        <param name="maxInclusive">16777215</param>
++      </data>
++    </choice>
++  </define>
++  <define name="virtualPortProfileID">
++    <data type="string">
++      <param name="maxLength">39</param>
++    </data>
++  </define>
+ </grammar>
+diff -rupN c/src/conf/domain_conf.c d/src/conf/domain_conf.c
+--- c/src/conf/domain_conf.c	2010-05-25 16:22:50.916438274 -0400
++++ d/src/conf/domain_conf.c	2010-05-25 16:37:23.437437873 -0400
+@@ -259,6 +259,11 @@ VIR_ENUM_IMPL(virDomainNetdevMacvtap, VI
+               "private",
+               "bridge")
+ 
++VIR_ENUM_IMPL(virVirtualPort, VIR_VIRTUALPORT_TYPE_LAST,
++              "none",
++              "802.1Qbg",
++              "802.1Qbh")
++
+ VIR_ENUM_IMPL(virDomainClockOffset, VIR_DOMAIN_CLOCK_OFFSET_LAST,
+               "utc",
+               "localtime",
+@@ -1847,6 +1852,190 @@ isValidIfname(const char *ifname) {
+ }
+ 
+ 
++static int
++virVirtualPortProfileParamsParseXML(xmlNodePtr node,
++                                    virVirtualPortProfileParamsPtr virtPort)
++{
++    int ret = -1;
++    char *virtPortType;
++    char *virtPortManagerID = NULL;
++    char *virtPortTypeID = NULL;
++    char *virtPortTypeIDVersion = NULL;
++    char *virtPortInstanceID = NULL;
++    char *virtPortProfileID = NULL;
++    xmlNodePtr cur = node->children;
++    const char *msg = NULL;
++
++    virtPortType = virXMLPropString(node, "type");
++    if (!virtPortType)
++        return -1;
++
++    while (cur != NULL) {
++        if (xmlStrEqual(cur->name, BAD_CAST "parameters")) {
++
++            virtPortManagerID = virXMLPropString(cur, "managerid");
++            virtPortTypeID = virXMLPropString(cur, "typeid");
++            virtPortTypeIDVersion = virXMLPropString(cur, "typeidversion");
++            virtPortInstanceID = virXMLPropString(cur, "instanceid");
++            virtPortProfileID = virXMLPropString(cur, "profileid");
++
++            break;
++        }
++
++        cur = cur->next;
++    }
++
++    virtPort->virtPortType = VIR_VIRTUALPORT_NONE;
++
++    switch (virVirtualPortTypeFromString(virtPortType)) {
++
++    case VIR_VIRTUALPORT_8021QBG:
++        if (virtPortManagerID     != NULL && virtPortTypeID     != NULL &&
++            virtPortTypeIDVersion != NULL) {
++            unsigned int val;
++
++            if (virStrToLong_ui(virtPortManagerID, NULL, 0, &val)) {
++                msg = _("cannot parse value of managerid parameter");
++                goto err_exit;
++            }
++
++            if (val > 0xff) {
++                msg = _("value of managerid out of range");
++                goto err_exit;
++            }
++
++            virtPort->u.virtPort8021Qbg.managerID = (uint8_t)val;
++
++            if (virStrToLong_ui(virtPortTypeID, NULL, 0, &val)) {
++                msg = _("cannot parse value of typeid parameter");
++                goto err_exit;
++            }
++
++            if (val > 0xffffff) {
++                msg = _("value for typeid out of range");
++                goto err_exit;
++            }
++
++            virtPort->u.virtPort8021Qbg.typeID = (uint32_t)val;
++
++            if (virStrToLong_ui(virtPortTypeIDVersion, NULL, 0, &val)) {
++                msg = _("cannot parse value of typeidversion parameter");
++                goto err_exit;
++            }
++
++            if (val > 0xff) {
++                msg = _("value of typeidversion out of range");
++                goto err_exit;
++            }
++
++            virtPort->u.virtPort8021Qbg.typeIDVersion = (uint8_t)val;
++
++            if (virtPortInstanceID != NULL) {
++                if (virUUIDParse(virtPortInstanceID,
++                                 virtPort->u.virtPort8021Qbg.instanceID)) {
++                    msg = _("cannot parse instanceid parameter as a uuid");
++                    goto err_exit;
++                }
++            } else {
++                if (virUUIDGenerate(virtPort->u.virtPort8021Qbg.instanceID)) {
++                    msg = _("cannot generate a random uuid for instanceid");
++                    goto err_exit;
++                }
++            }
++
++            virtPort->virtPortType = VIR_VIRTUALPORT_8021QBG;
++            ret = 0;
++        } else {
++            msg = _("a parameter is missing for 802.1Qbg description");
++            goto err_exit;
++        }
++    break;
++
++    case VIR_VIRTUALPORT_8021QBH:
++        if (virtPortProfileID != NULL) {
++            if (virStrcpyStatic(virtPort->u.virtPort8021Qbh.profileID,
++                                virtPortProfileID) != NULL) {
++                virtPort->virtPortType = VIR_VIRTUALPORT_8021QBH;
++                ret = 0;
++            } else {
++                msg = _("profileid parameter too long");
++                goto err_exit;
++            }
++        } else {
++            msg = _("profileid parameter is missing for 802.1Qbh descripion");
++            goto err_exit;
++        }
++    break;
++
++
++    default:
++    case VIR_VIRTUALPORT_NONE:
++    case VIR_VIRTUALPORT_TYPE_LAST:
++        msg = _("unknown virtualport type");
++        goto err_exit;
++    break;
++    }
++
++err_exit:
++
++    if (msg)
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s", msg);
++
++    VIR_FREE(virtPortManagerID);
++    VIR_FREE(virtPortTypeID);
++    VIR_FREE(virtPortTypeIDVersion);
++    VIR_FREE(virtPortInstanceID);
++    VIR_FREE(virtPortProfileID);
++    VIR_FREE(virtPortType);
++
++    return ret;
++}
++
++
++static void
++virVirtualPortProfileFormat(virBufferPtr buf,
++                            virVirtualPortProfileParamsPtr virtPort,
++                            const char *indent)
++{
++    char uuidstr[VIR_UUID_STRING_BUFLEN];
++
++    if (virtPort->virtPortType == VIR_VIRTUALPORT_NONE)
++        return;
++
++    virBufferVSprintf(buf, "%s<virtualport type='%s'>\n",
++                      indent,
++                      virVirtualPortTypeToString(virtPort->virtPortType));
++
++    switch (virtPort->virtPortType) {
++    case VIR_VIRTUALPORT_NONE:
++    case VIR_VIRTUALPORT_TYPE_LAST:
++        break;
++
++    case VIR_VIRTUALPORT_8021QBG:
++        virUUIDFormat(virtPort->u.virtPort8021Qbg.instanceID,
++                      uuidstr);
++        virBufferVSprintf(buf,
++                          "%s  <parameters managerid='%d' typeid='%d' "
++                          "typeidversion='%d' instanceid='%s'/>\n",
++                          indent,
++                          virtPort->u.virtPort8021Qbg.managerID,
++                          virtPort->u.virtPort8021Qbg.typeID,
++                          virtPort->u.virtPort8021Qbg.typeIDVersion,
++                          uuidstr);
++        break;
++
++    case VIR_VIRTUALPORT_8021QBH:
++        virBufferVSprintf(buf,
++                          "%s  <parameters profileid='%s'/>\n",
++                          indent,
++                          virtPort->u.virtPort8021Qbh.profileID);
++        break;
++    }
++
++    virBufferVSprintf(buf, "%s</virtualport>\n", indent);
++}
++
++
+ /* Parse the XML definition for a network interface
+  * @param node XML nodeset to parse for net definition
+  * @return 0 on success, -1 on failure
+@@ -1872,6 +2061,8 @@ virDomainNetDefParseXML(virCapsPtr caps,
+     char *devaddr = NULL;
+     char *mode = NULL;
+     virNWFilterHashTablePtr filterparams = NULL;
++    virVirtualPortProfileParams virtPort;
++    bool virtPortParsed = false;
+ 
+     if (VIR_ALLOC(def) < 0) {
+         virReportOOMError();
+@@ -1913,6 +2104,12 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                        xmlStrEqual(cur->name, BAD_CAST "source")) {
+                 dev  = virXMLPropString(cur, "dev");
+                 mode = virXMLPropString(cur, "mode");
++            } else if ((virtPortParsed == false) &&
++                       (def->type == VIR_DOMAIN_NET_TYPE_DIRECT) &&
++                       xmlStrEqual(cur->name, BAD_CAST "virtualport")) {
++                if (virVirtualPortProfileParamsParseXML(cur, &virtPort))
++                    goto error;
++                virtPortParsed = true;
+             } else if ((network == NULL) &&
+                        ((def->type == VIR_DOMAIN_NET_TYPE_SERVER) ||
+                         (def->type == VIR_DOMAIN_NET_TYPE_CLIENT) ||
+@@ -2089,6 +2286,9 @@ virDomainNetDefParseXML(virCapsPtr caps,
+         } else
+             def->data.direct.mode = VIR_DOMAIN_NETDEV_MACVTAP_MODE_VEPA;
+ 
++        if (virtPortParsed)
++            def->data.direct.virtPortProfile = virtPort;
++
+         def->data.direct.linkdev = dev;
+         dev = NULL;
+ 
+@@ -5313,6 +5513,8 @@ virDomainNetDefFormat(virBufferPtr buf,
+         virBufferVSprintf(buf, " mode='%s'",
+                    virDomainNetdevMacvtapTypeToString(def->data.direct.mode));
+         virBufferAddLit(buf, "/>\n");
++        virVirtualPortProfileFormat(buf, &def->data.direct.virtPortProfile,
++                                    "      ");
+         break;
+ 
+     case VIR_DOMAIN_NET_TYPE_USER:
+diff -rupN c/src/conf/domain_conf.h d/src/conf/domain_conf.h
+--- c/src/conf/domain_conf.h	2010-05-25 16:22:50.921437955 -0400
++++ d/src/conf/domain_conf.h	2010-05-25 16:37:23.439437605 -0400
+@@ -38,6 +38,7 @@
+ # include "network.h"
+ # include "nwfilter_params.h"
+ # include "nwfilter_conf.h"
++# include "macvtap.h"
+ 
+ /* Private component of virDomainXMLFlags */
+ typedef enum {
+@@ -290,6 +291,7 @@ struct _virDomainNetDef {
+         struct {
+             char *linkdev;
+             int mode;
++            virVirtualPortProfileParams virtPortProfile;
+         } direct;
+     } data;
+     char *ifname;
+diff -rupN c/src/qemu/qemu_conf.c d/src/qemu/qemu_conf.c
+--- c/src/qemu/qemu_conf.c	2010-05-25 16:22:51.087437350 -0400
++++ d/src/qemu/qemu_conf.c	2010-05-25 16:37:23.471687973 -0400
+@@ -1574,9 +1574,8 @@ int
+ qemudPhysIfaceConnect(virConnectPtr conn,
+                       struct qemud_driver *driver,
+                       virDomainNetDefPtr net,
+-                      char *linkdev,
+-                      int brmode,
+-                      unsigned long long qemuCmdFlags)
++                      unsigned long long qemuCmdFlags,
++                      const unsigned char *vmuuid)
+ {
+     int rc;
+ #if WITH_MACVTAP
+@@ -1588,8 +1587,9 @@ qemudPhysIfaceConnect(virConnectPtr conn
+         net->model && STREQ(net->model, "virtio"))
+         vnet_hdr = 1;
+ 
+-    rc = openMacvtapTap(net->ifname, net->mac, linkdev, brmode,
+-                        &res_ifname, vnet_hdr);
++    rc = openMacvtapTap(net->ifname, net->mac, net->data.direct.linkdev,
++                        net->data.direct.mode, vnet_hdr, vmuuid,
++                        &net->data.direct.virtPortProfile, &res_ifname);
+     if (rc >= 0) {
+         VIR_FREE(net->ifname);
+         net->ifname = res_ifname;
+@@ -1609,17 +1609,17 @@ qemudPhysIfaceConnect(virConnectPtr conn
+             if (err) {
+                 close(rc);
+                 rc = -1;
+-                delMacvtap(net->ifname);
++                delMacvtap(net->ifname,
++                           &net->data.direct.virtPortProfile);
+             }
+         }
+     }
+ #else
+     (void)conn;
+     (void)net;
+-    (void)linkdev;
+-    (void)brmode;
+     (void)qemuCmdFlags;
+     (void)driver;
++    (void)vmuuid;
+     qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                     "%s", _("No support for macvtap device"));
+     rc = -1;
+@@ -4296,9 +4296,8 @@ int qemudBuildCommandLine(virConnectPtr 
+                     goto no_memory;
+             } else if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+                 int tapfd = qemudPhysIfaceConnect(conn, driver, net,
+-                                                  net->data.direct.linkdev,
+-                                                  net->data.direct.mode,
+-                                                  qemuCmdFlags);
++                                                  qemuCmdFlags,
++                                                  def->uuid);
+                 if (tapfd < 0)
+                     goto error;
+ 
+diff -rupN c/src/qemu/qemu_conf.h d/src/qemu/qemu_conf.h
+--- c/src/qemu/qemu_conf.h	2010-05-25 16:22:51.090437508 -0400
++++ d/src/qemu/qemu_conf.h	2010-05-25 16:37:23.444437984 -0400
+@@ -281,9 +281,8 @@ qemudOpenVhostNet(virDomainNetDefPtr net
+ int qemudPhysIfaceConnect(virConnectPtr conn,
+                           struct qemud_driver *driver,
+                           virDomainNetDefPtr net,
+-                          char *linkdev,
+-                          int brmode,
+-                          unsigned long long qemuCmdFlags);
++                          unsigned long long qemuCmdFlags,
++                          const unsigned char *vmuuid);
+ 
+ int         qemudProbeMachineTypes      (const char *binary,
+                                          virCapsGuestMachinePtr **machines,
+diff -rupN c/src/qemu/qemu_driver.c d/src/qemu/qemu_driver.c
+--- c/src/qemu/qemu_driver.c	2010-05-25 16:36:03.671437928 -0400
++++ d/src/qemu/qemu_driver.c	2010-05-25 16:37:23.460443109 -0400
+@@ -4183,10 +4183,9 @@ static void qemudShutdownVMDaemon(struct
+     def = vm->def;
+     for (i = 0; i < def->nnets; i++) {
+         virDomainNetDefPtr net = def->nets[i];
+-        if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+-            if (net->ifname)
+-                delMacvtap(net->ifname);
+-        }
++        if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT)
++            delMacvtap(net->ifname,
++                       &net->data.direct.virtPortProfile);
+     }
+ #endif
+ 
+@@ -7916,9 +7915,8 @@ static int qemudDomainAttachNetDevice(vi
+         }
+ 
+         if ((tapfd = qemudPhysIfaceConnect(conn, driver, net,
+-                                           net->data.direct.linkdev,
+-                                           net->data.direct.mode,
+-                                           qemuCmdFlags)) < 0)
++                                           qemuCmdFlags,
++                                           vm->def->uuid)) < 0)
+             return -1;
+     }
+ 
+@@ -8960,10 +8958,9 @@ qemudDomainDetachNetDevice(struct qemud_
+     virNWFilterTearNWFilter(detach);
+ 
+ #if WITH_MACVTAP
+-    if (detach->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+-        if (detach->ifname)
+-            delMacvtap(detach->ifname);
+-    }
++    if (detach->type == VIR_DOMAIN_NET_TYPE_DIRECT)
++        delMacvtap(detach->ifname,
++                   &detach->data.direct.virtPortProfile);
+ #endif
+ 
+     if ((driver->macFilter) && (detach->ifname != NULL)) {
+diff -rupN c/src/util/macvtap.c d/src/util/macvtap.c
+--- c/src/util/macvtap.c	2010-04-23 11:52:47.000000000 -0400
++++ d/src/util/macvtap.c	2010-05-25 16:37:23.441436989 -0400
+@@ -43,6 +43,7 @@
+ 
+ # include "util.h"
+ # include "memory.h"
++# include "logging.h"
+ # include "macvtap.h"
+ # include "interface.h"
+ # include "conf/domain_conf.h"
+@@ -57,6 +58,16 @@
+ # define MACVTAP_NAME_PREFIX	"macvtap"
+ # define MACVTAP_NAME_PATTERN	"macvtap%d"
+ 
++
++static int associatePortProfileId(const char *macvtap_ifname,
++                                  const virVirtualPortProfileParamsPtr virtPort,
++                                  int vf,
++                                  const unsigned char *vmuuid);
++
++static int disassociatePortProfileId(const char *macvtap_ifname,
++                                     const virVirtualPortProfileParamsPtr virtPort);
++
++
+ static int nlOpen(void)
+ {
+     int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+@@ -577,8 +588,10 @@ configMacvtapTap(int tapfd, int vnet_hdr
+  *    be NULL if this function is supposed to choose a name
+  * @macaddress: The MAC address for the macvtap device
+  * @linkdev: The interface name of the NIC to connect to the external bridge
+- * @mode_str: String describing the mode. Valid are 'bridge', 'vepa' and
+- *     'private'.
++ * @mode: int describing the mode for 'bridge', 'vepa' or 'private'.
++ * @vnet_hdr: 1 to enable IFF_VNET_HDR, 0 to disable it
++ * @vmuuid: The UUID of the VM the macvtap belongs to
++ * @virtPortProfile: pointer to object holding the virtual port profile data
+  * @res_ifname: Pointer to a string pointer where the actual name of the
+  *     interface will be stored into if everything succeeded. It is up
+  *     to the caller to free the string.
+@@ -592,8 +605,10 @@ openMacvtapTap(const char *tgifname,
+                const unsigned char *macaddress,
+                const char *linkdev,
+                int mode,
+-               char **res_ifname,
+-               int vnet_hdr)
++               int vnet_hdr,
++               const unsigned char *vmuuid,
++               virVirtualPortProfileParamsPtr virtPortProfile,
++               char **res_ifname)
+ {
+     const char *type = "macvtap";
+     int c, rc;
+@@ -639,6 +654,14 @@ create_name:
+         cr_ifname = ifname;
+     }
+ 
++    if (associatePortProfileId(cr_ifname,
++                               virtPortProfile,
++                               -1,
++                               vmuuid) != 0) {
++        rc = -1;
++        goto link_del_exit;
++    }
++
+     rc = ifaceUp(cr_ifname);
+     if (rc != 0) {
+         virReportSystemError(errno,
+@@ -647,7 +670,7 @@ create_name:
+                              "MAC address"),
+                              cr_ifname);
+         rc = -1;
+-        goto link_del_exit;
++        goto disassociate_exit;
+     }
+ 
+     rc = openTap(cr_ifname, 10);
+@@ -656,14 +679,18 @@ create_name:
+         if (configMacvtapTap(rc, vnet_hdr) < 0) {
+             close(rc);
+             rc = -1;
+-            goto link_del_exit;
++            goto disassociate_exit;
+         }
+         *res_ifname = strdup(cr_ifname);
+     } else
+-        goto link_del_exit;
++        goto disassociate_exit;
+ 
+     return rc;
+ 
++disassociate_exit:
++    disassociatePortProfileId(cr_ifname,
++                              virtPortProfile);
++
+ link_del_exit:
+     link_del(cr_ifname);
+ 
+@@ -674,13 +701,103 @@ link_del_exit:
+ /**
+  * delMacvtapByName:
+  * @ifname : The name of the macvtap interface
++ * @virtPortProfile: pointer to object holding the virtual port profile data
+  *
+- * Delete an interface given its name.
++ * Delete an interface given its name. Disassociate
++ * it with the switch if port profile parameters
++ * were provided.
+  */
+ void
+-delMacvtap(const char *ifname)
++delMacvtap(const char *ifname,
++           virVirtualPortProfileParamsPtr virtPortProfile)
+ {
+-    link_del(ifname);
++    if (ifname) {
++        disassociatePortProfileId(ifname,
++                                  virtPortProfile);
++        link_del(ifname);
++    }
+ }
+ 
+ #endif
++
++
++/**
++ * associatePortProfile
++ *
++ * @macvtap_ifname: The name of the macvtap device
++ * @virtPort: pointer to the object holding port profile parameters
++ * @vf: virtual function number, -1 if to be ignored
++ * @vmuuid : the UUID of the virtual machine
++ *
++ * Associate a port on a swtich with a profile. This function
++ * may notify a kernel driver or an external daemon to run
++ * the setup protocol. If profile parameters were not supplied
++ * by the user, then this function returns without doing
++ * anything.
++ *
++ * Returns 0 in case of success, != 0 otherwise with error
++ * having been reported.
++ */
++static int
++associatePortProfileId(const char *macvtap_ifname,
++                       const virVirtualPortProfileParamsPtr virtPort,
++                       int vf,
++                       const unsigned char *vmuuid)
++{
++    int rc = 0;
++    VIR_DEBUG("Associating port profile '%p' on link device '%s'",
++              virtPort, macvtap_ifname);
++    (void)vf;
++    (void)vmuuid;
++
++    switch (virtPort->virtPortType) {
++    case VIR_VIRTUALPORT_NONE:
++    case VIR_VIRTUALPORT_TYPE_LAST:
++        break;
++
++    case VIR_VIRTUALPORT_8021QBG:
++
++        break;
++
++    case VIR_VIRTUALPORT_8021QBH:
++
++        break;
++    }
++
++    return rc;
++}
++
++
++/**
++ * disassociatePortProfile
++ *
++ * @macvtap_ifname: The name of the macvtap device
++ * @virtPort: point to object holding port profile parameters
++ *
++ * Returns 0 in case of success, != 0 otherwise with error
++ * having been reported.
++ */
++static int
++disassociatePortProfileId(const char *macvtap_ifname,
++                          const virVirtualPortProfileParamsPtr virtPort)
++{
++    int rc = 0;
++    VIR_DEBUG("Disassociating port profile id '%p' on link device '%s' ",
++              virtPort, macvtap_ifname);
++
++    switch (virtPort->virtPortType) {
++    case VIR_VIRTUALPORT_NONE:
++    case VIR_VIRTUALPORT_TYPE_LAST:
++        break;
++
++    case VIR_VIRTUALPORT_8021QBG:
++
++        break;
++
++    case VIR_VIRTUALPORT_8021QBH:
++
++        break;
++    }
++
++    return rc;
++}
+diff -rupN c/src/util/macvtap.h d/src/util/macvtap.h
+--- c/src/util/macvtap.h	2010-04-06 17:01:23.000000000 -0400
++++ d/src/util/macvtap.h	2010-05-25 16:37:23.441436989 -0400
+@@ -24,6 +24,40 @@
+ 
+ # include <config.h>
+ 
++
++enum virVirtualPortType {
++    VIR_VIRTUALPORT_NONE,
++    VIR_VIRTUALPORT_8021QBG,
++    VIR_VIRTUALPORT_8021QBH,
++
++    VIR_VIRTUALPORT_TYPE_LAST,
++};
++
++# ifdef IFLA_VF_PORT_PROFILE_MAX
++#  define LIBVIRT_IFLA_VF_PORT_PROFILE_MAX IFLA_VF_PORT_PROFILE_MAX
++# else
++#  define LIBVIRT_IFLA_VF_PORT_PROFILE_MAX 40
++# endif
++
++/* profile data for macvtap (VEPA) */
++typedef struct _virVirtualPortProfileParams virVirtualPortProfileParams;
++typedef virVirtualPortProfileParams *virVirtualPortProfileParamsPtr;
++struct _virVirtualPortProfileParams {
++    enum virVirtualPortType   virtPortType;
++    union {
++        struct {
++            uint8_t       managerID;
++            uint32_t      typeID; // 24 bit valid
++            uint8_t       typeIDVersion;
++            unsigned char instanceID[VIR_UUID_BUFLEN];
++        } virtPort8021Qbg;
++        struct {
++            char          profileID[LIBVIRT_IFLA_VF_PORT_PROFILE_MAX];
++        } virtPort8021Qbh;
++    } u;
++};
++
++
+ # if defined(WITH_MACVTAP)
+ 
+ #  include "internal.h"
+@@ -32,10 +66,13 @@ int openMacvtapTap(const char *ifname,
+                    const unsigned char *macaddress,
+                    const char *linkdev,
+                    int mode,
+-                   char **res_ifname,
+-                   int vnet_hdr);
++                   int vnet_hdr,
++                   const unsigned char *vmuuid,
++                   virVirtualPortProfileParamsPtr virtPortProfile,
++                   char **res_ifname);
+ 
+-void delMacvtap(const char *ifname);
++void delMacvtap(const char *ifname,
++                virVirtualPortProfileParamsPtr virtPortProfile);
+ 
+ # endif /* WITH_MACVTAP */
+ 
+@@ -44,4 +81,6 @@ void delMacvtap(const char *ifname);
+ # define MACVTAP_MODE_BRIDGE_STR   "bridge"
+ 
+ 
++VIR_ENUM_DECL(virVirtualPort)
++
+ #endif /* __UTIL_MACVTAP_H__ */
+diff -rupN c/tests/domainschemadata/portprofile.xml d/tests/domainschemadata/portprofile.xml
+--- c/tests/domainschemadata/portprofile.xml	1969-12-31 19:00:00.000000000 -0500
++++ d/tests/domainschemadata/portprofile.xml	2010-05-25 16:37:23.442448519 -0400
+@@ -0,0 +1,36 @@
++<domain type='lxc'>
++  <name>portprofile</name>
++  <uuid>00000000-0000-0000-0000-000000000000</uuid>
++  <memory>1048576</memory>
++    <os>
++        <type>exe</type>
++        <init>/sh</init>
++    </os>
++  <devices>
++    <interface type='direct'>
++      <source dev='eth0' mode='vepa'/>
++      <virtualport type='802.1Qbg'>
++        <parameters managerid='12' typeid='1193046' typeidversion='1'
++                    instanceid='fa9b7fff-b0a0-4893-8e0e-beef4ff18f8f'/>
++      </virtualport>
++    </interface>
++    <interface type='direct'>
++      <source dev='eth0' mode='vepa'/>
++      <virtualport type='802.1Qbg'>
++        <parameters managerid='12' typeid='1193046' typeidversion='1'/>
++      </virtualport>
++    </interface>
++    <interface type='direct'>
++      <source dev='eth0' mode='vepa'/>
++      <virtualport type='802.1Qbh'>
++        <parameters profileid='my_profile'/>
++      </virtualport>
++    </interface>
++    <interface type='direct'>
++      <source dev='eth0' mode='vepa'/>
++    </interface>
++    <interface type='direct'>
++      <source dev='eth0' mode='vepa'/>
++    </interface>
++  </devices>
++</domain>

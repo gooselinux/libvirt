@@ -1,0 +1,136 @@
+For bug
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=573946
+
+The existing drive_add command can hotplug SCSI and VirtIO
+disks, but this isn't ported to JSON mode. RHEL6 introduces
+a custom __com.redhat_drive_add that only supports VirtIO
+disks. Switch the VirtIO hotplug to this command, but leave
+the SCSI hotplug using old command so SCSI gets an explicit
+error about being unsupported.
+
+* src/libvirt_private.syms: Export virJSONValueObjectRemoveKey
+* src/util/json.c, src/util/json.h: Add virJSONValueObjectRemoveKey
+  to allow a key to be deleted from an object
+* src/qemu/qemu_monitor_json.c: Switch from drive_add to
+  __com.redhat_drive_add for VirtIO disk hotplug.
+---
+ src/libvirt_private.syms     |    1 +
+ src/qemu/qemu_monitor_json.c |   21 +++++++++++++++++----
+ src/util/json.c              |   31 +++++++++++++++++++++++++++++++
+ src/util/json.h              |    1 +
+ 4 files changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 0303a2e..980ecc8 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -385,6 +385,7 @@ virJSONValueObjectAppendNull;
+ virJSONValueArrayAppend;
+ virJSONValueObjectHasKey;
+ virJSONValueObjectGet;
++virJSONValueObjectRemoveKey;
+ virJSONValueArraySize;
+ virJSONValueArrayGet;
+ virJSONValueGetString;
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 14a5c58..53120c4 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2334,22 +2334,35 @@ cleanup:
+ int qemuMonitorJSONAddDrive(qemuMonitorPtr mon,
+                             const char *drivestr)
+ {
+-    int ret;
++    int ret = -1;
+     virJSONValuePtr cmd;
+     virJSONValuePtr reply = NULL;
++    virJSONValuePtr args;
+ 
+-    cmd = qemuMonitorJSONMakeCommand("drive_add",
+-                                     "s:pci_addr", "dummy",
+-                                     "s:opts", drivestr,
++    cmd = qemuMonitorJSONMakeCommand("__com.redhat_drive_add",
+                                      NULL);
+     if (!cmd)
+         return -1;
+ 
++    args = qemuMonitorJSONKeywordStringToJSON(drivestr, "type");
++    if (!args)
++        goto cleanup;
++
++    /* __com.redhat_drive_add rejects the 'if' key */
++    virJSONValueObjectRemoveKey(args, "if");
++
++    if (virJSONValueObjectAppend(cmd, "arguments", args) < 0) {
++        virReportOOMError();
++        goto cleanup;
++    }
++    args = NULL; /* obj owns reference to args now */
++
+     ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+     if (ret == 0)
+         ret = qemuMonitorJSONCheckError(cmd, reply);
+ 
++cleanup:
+     virJSONValueFree(cmd);
+     virJSONValueFree(reply);
+     return ret;
+diff --git a/src/util/json.c b/src/util/json.c
+index f90594c..b700734 100644
+--- a/src/util/json.c
++++ b/src/util/json.c
+@@ -421,6 +421,37 @@ virJSONValuePtr virJSONValueObjectGet(virJSONValuePtr object, const char *key)
+     return NULL;
+ }
+ 
++
++int virJSONValueObjectRemoveKey(virJSONValuePtr object, const char *key)
++{
++    int i;
++
++    if (object->type != VIR_JSON_TYPE_OBJECT)
++        return -1;
++
++    for (i = 0 ; i < object->data.object.npairs ; i++) {
++        if (STREQ(object->data.object.pairs[i].key, key)) {
++            VIR_FREE(object->data.object.pairs[i].key);
++            virJSONValueFree(object->data.object.pairs[i].value);
++
++            if (i < (object->data.object.npairs-1)) {
++                memmove(object->data.object.pairs + i,
++                        object->data.object.pairs + i + 1,
++                        sizeof(*object->data.object.pairs)*
++                        (object->data.object.npairs - (i + 1)));
++            }
++            if (VIR_REALLOC_N(object->data.object.pairs,
++                              object->data.object.npairs-1) < 0)
++            {}
++            object->data.object.npairs--;
++            return 0;
++        }
++    }
++
++    return -1;
++}
++
++
+ int virJSONValueArraySize(virJSONValuePtr array)
+ {
+     if (array->type != VIR_JSON_TYPE_ARRAY)
+diff --git a/src/util/json.h b/src/util/json.h
+index ea28de6..005518a 100644
+--- a/src/util/json.h
++++ b/src/util/json.h
+@@ -95,6 +95,7 @@ int virJSONValueArrayAppend(virJSONValuePtr object, virJSONValuePtr value);
+ 
+ int virJSONValueObjectHasKey(virJSONValuePtr object, const char *key);
+ virJSONValuePtr virJSONValueObjectGet(virJSONValuePtr object, const char *key);
++int virJSONValueObjectRemoveKey(virJSONValuePtr object, const char *key);
+ 
+ int virJSONValueArraySize(virJSONValuePtr object);
+ virJSONValuePtr virJSONValueArrayGet(virJSONValuePtr object, unsigned int element);
+-- 
+1.6.6.1
+

@@ -1,0 +1,50 @@
+From: Laine Stump <laine@laine.org>
+
+The pointer to the xml describing the domain is saved into an object
+prior to calling VIR_REALLOC_N() to make the size of the memory it
+points to a multiple of QEMU_MONITOR_MIGRATE_TO_FILE_BS. If that
+operation needs to allocate new memory, the pointer that was saved is
+no longer valid.
+
+To avoid this situation, adjust the size *before* saving the pointer.
+
+(This showed up when experimenting with very large values of
+QEMU_MONITOR_MIGRATE_TO_FILE_BS).
+(cherry picked from commit 1d45e1b6225c2068359e90b48559b54d0e019aee)
+---
+ src/qemu/qemu_driver.c |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 819a018..da10914 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5443,12 +5443,6 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+         is_reg = S_ISREG(sb.st_mode);
+     }
+
+-
+-    /* Setup hook data needed by virFileOperation hook function */
+-    hdata.dom = dom;
+-    hdata.path = path;
+-    hdata.xml = xml;
+-    hdata.header = &header;
+     offset = sizeof(header) + header.xml_len;
+
+     /* Due to way we append QEMU state on our header with dd,
+@@ -5469,6 +5463,12 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+         header.xml_len += pad;
+     }
+
++    /* Setup hook data needed by virFileOperation hook function */
++    hdata.dom = dom;
++    hdata.path = path;
++    hdata.xml = xml;
++    hdata.header = &header;
++
+     /* Write header to file, followed by XML */
+
+     /* First try creating the file as root */
+-- 
+1.7.0.1
+

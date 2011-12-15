@@ -1,0 +1,36 @@
+This patch fixes a problem found while testing the fix for:
+
+ https://bugzilla.redhat.com/show_bug.cgi?id=547543
+
+and should be considered a part of the fix for that bz.
+
+We were previously checking for a return < 0 from virFileOperation(),
+but that function returns a standard errno, which is 0 on success, or
+some small positive number on failure. The result was that we wouldn't
+report failures to create storage volume files; instead they would
+appear to be created, but then would vanish as soon as a pool-refresh
+was done (or cause some later error as soon as someone tried to access
+the volume).
+
+The other uses of virFileOperation() were already properly checking
+for != 0.
+---
+ src/storage/storage_backend.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/storage/storage_backend.c b/src/storage/storage_backend.c
+index 5003b8c..1929f54 100644
+--- a/src/storage/storage_backend.c
++++ b/src/storage/storage_backend.c
+@@ -364,7 +364,7 @@ virStorageBackendCreateRaw(virConnectPtr conn ATTRIBUTE_UNUSED,
+                                        createRawFileOpHook, &hdata,
+                                        VIR_FILE_OP_FORCE_PERMS |
+                                        (pool->def->type == VIR_STORAGE_POOL_NETFS
+-                                        ? VIR_FILE_OP_AS_UID : 0))) < 0) {
++                                        ? VIR_FILE_OP_AS_UID : 0))) != 0) {
+     virReportSystemError(createstat,
+                          _("cannot create path '%s'"),
+                          vol->target.path);
+-- 
+1.7.1
+

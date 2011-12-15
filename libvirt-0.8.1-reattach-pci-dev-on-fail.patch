@@ -1,0 +1,50 @@
+When an attempt to hotplug a PCI device to a guest fails,
+the device was left attached to pci-stub. It is neccessary
+to reset the device and then attach it to the host driver
+again.
+
+* src/qemu/qemu_driver.c: Reattach PCI device to host if
+  hotadd fails
+---
+ src/qemu/qemu_driver.c |   17 ++++++++++++++++-
+ 1 files changed, 16 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 06a4df0..fec03e6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8134,6 +8134,7 @@ static int qemudDomainAttachHostPciDevice(struct qemud_driver *driver,
+         pciFreeDevice(pci);
+         return -1;
+     }
++    pci = NULL; /* activePciHostdevs owns the 'pci' reference now */
+ 
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (qemuAssignDeviceHostdevAlias(vm->def, hostdev, -1) < 0)
+@@ -8201,8 +8202,22 @@ error:
+         qemuDomainPCIAddressReleaseAddr(priv->pciaddrs, &hostdev->info) < 0)
+         VIR_WARN0("Unable to release PCI address on host device");
+ 
+-    VIR_FREE(devstr);
++    pci = pciGetDevice(hostdev->source.subsys.u.pci.domain,
++                       hostdev->source.subsys.u.pci.bus,
++                       hostdev->source.subsys.u.pci.slot,
++                       hostdev->source.subsys.u.pci.function);
++
+     pciDeviceListDel(driver->activePciHostdevs, pci);
++
++    if (pciResetDevice(pci, driver->activePciHostdevs) < 0)
++        VIR_WARN0("Unable to reset PCI device after assign failure");
++    else if (hostdev->managed &&
++             pciReAttachDevice(pci) < 0)
++        VIR_WARN0("Unable to re-attach PCI device after assign failure");
++    pciFreeDevice(pci);
++
++
++    VIR_FREE(devstr);
+     VIR_FREE(configfd_name);
+     if (configfd >= 0)
+         close(configfd);
+-- 
+1.6.6.1
+

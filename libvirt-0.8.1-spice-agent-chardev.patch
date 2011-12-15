@@ -1,0 +1,209 @@
+For 
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=615757
+
+Adds a new character device backend for virtio serial channels
+that activates the QEMU internal spice agent. This is configured
+a little strangely using '-device spicevmc' even though the guest
+device is still really just a 'virtioserialport'. A more natural
+approach would have been '-chardev spicevmc'. Thus libvirt
+represents it in this manner
+
+     <channel type='spicevmc'>
+       <target type='virtio' name='com.redhat.spice.0'/>
+       <address type='virtio-serial' controller='1' bus='0' port='3'/>
+     </channel>
+
+Currently name must always be 'com.redhat.spice.0' but it is
+possible/probable future spice will allow alternative names
+
+* src/conf/domain_conf.c, src/conf/domain_conf.h: Add spicevmc
+  as a character device backend
+* src/qemu/qemu_conf.c: Support -device spicevmc
+* tests/qemuxml2argvtest.c,
+  tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args,
+  tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml:
+  Test spicevmc ARGV generator
+* docs/schemas/domain.rng: add spcievmc char device backend
+---
+ docs/schemas/domain.rng                            |    1 +
+ src/conf/domain_conf.c                             |   10 +++++-
+ src/conf/domain_conf.h                             |    1 +
+ src/qemu/qemu_conf.c                               |   32 +++++++++++++++-----
+ .../qemuxml2argv-channel-spicevmc.args             |    1 +
+ .../qemuxml2argv-channel-spicevmc.xml              |   32 ++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |    2 +
+ 7 files changed, 70 insertions(+), 9 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 21136a5..1b19009 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1268,6 +1268,7 @@
+         <value>stdio</value>
+         <value>vc</value>
+         <value>pty</value>
++        <value>spicevmc</value>
+       </choice>
+     </attribute>
+   </define>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index fa2bae5..dfd6606 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -176,7 +176,8 @@ VIR_ENUM_IMPL(virDomainChr, VIR_DOMAIN_CHR_TYPE_LAST,
+               "stdio",
+               "udp",
+               "tcp",
+-              "unix")
++              "unix",
++              "spicevmc")
+ 
+ VIR_ENUM_IMPL(virDomainSoundModel, VIR_DOMAIN_SOUND_MODEL_LAST,
+               "sb16",
+@@ -2624,6 +2625,13 @@ virDomainChrDefParseXML(xmlNodePtr node,
+         cur = cur->next;
+     }
+ 
++    if (def->type == VIR_DOMAIN_CHR_TYPE_SPICEVMC &&
++        def->targetType != VIR_DOMAIN_CHR_TARGET_TYPE_VIRTIO) {
++        virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                             _("spicevmc device type is only valid for virtio serial channels"));
++        goto error;
++    }
++
+     switch (def->type) {
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+         /* Nada */
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 99ae533..f9ad2e4 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -324,6 +324,7 @@ enum virDomainChrType {
+     VIR_DOMAIN_CHR_TYPE_UDP,
+     VIR_DOMAIN_CHR_TYPE_TCP,
+     VIR_DOMAIN_CHR_TYPE_UNIX,
++    VIR_DOMAIN_CHR_TYPE_SPICEVMC,
+ 
+     VIR_DOMAIN_CHR_TYPE_LAST,
+ };
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index ade998a..d80959b 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -3411,7 +3411,10 @@ char *
+ qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+-    virBufferAddLit(&buf, "virtserialport");
++    if (dev->type == VIR_DOMAIN_CHR_TYPE_SPICEVMC)
++        virBufferAddLit(&buf, "spicevmc");
++    else
++        virBufferAddLit(&buf, "virtserialport");
+ 
+     if (dev->info.type != VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE) {
+         /* Check it's a virtio-serial address */
+@@ -3432,9 +3435,19 @@ qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev)
+                           dev->info.addr.vioserial.port);
+     }
+ 
+-    virBufferVSprintf(&buf, ",chardev=%s", dev->info.alias);
+-    if (dev->target.name) {
+-        virBufferVSprintf(&buf, ",name=%s", dev->target.name);
++    if (dev->type == VIR_DOMAIN_CHR_TYPE_SPICEVMC) {
++        if (dev->target.name &&
++            STRNEQ(dev->target.name, "com.redhat.spice.0")) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            _("Unsupported spicevmc target name '%s'"),
++                            dev->target.name);
++            goto error;
++        }
++    } else {
++        virBufferVSprintf(&buf, ",chardev=%s", dev->info.alias);
++        if (dev->target.name) {
++            virBufferVSprintf(&buf, ",name=%s", dev->target.name);
++        }
+     }
+     if (virBufferError(&buf)) {
+         virReportOOMError();
+@@ -4590,10 +4603,13 @@ int qemudBuildCommandLine(virConnectPtr conn,
+                 goto error;
+             }
+ 
+-            ADD_ARG_LIT("-chardev");
+-            if (!(devstr = qemuBuildChrChardevStr(channel)))
+-                goto error;
+-            ADD_ARG(devstr);
++            /* With spicevmc, the device backend is internal to QEMU */
++            if (channel->type != VIR_DOMAIN_CHR_TYPE_SPICEVMC) {
++                ADD_ARG_LIT("-chardev");
++                if (!(devstr = qemuBuildChrChardevStr(channel)))
++                    goto error;
++                ADD_ARG(devstr);
++            }
+ 
+             ADD_ARG_LIT("-device");
+             if (!(devstr = qemuBuildVirtioSerialPortDevStr(channel)))
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+new file mode 100644
+index 0000000..d522ad1
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -device spicevmc,bus=virtio-serial1.0,nr=3 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+new file mode 100644
+index 0000000..1876236
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+@@ -0,0 +1,32 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <channel type='spicevmc'>
++      <target type='virtio' name='com.redhat.spice.0'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index eaa6749..7f399a3 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -364,6 +364,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NODEFCONFIG);
+     DO_TEST("channel-virtio-auto", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG);
++    DO_TEST("channel-spicevmc", QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG);
+ 
+     DO_TEST("watchdog", 0);
+     DO_TEST("watchdog-device", QEMUD_CMD_FLAG_DEVICE |
+-- 
+1.7.1.1
+

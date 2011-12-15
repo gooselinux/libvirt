@@ -1,0 +1,30 @@
+Fixes:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=587700
+
+* Use virBufferEscapeString() per Dan B.
+---
+ src/conf/storage_conf.c |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 91aa26c..3a6c39a 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -815,6 +815,13 @@ virStoragePoolSourceFormat(virBufferPtr buf,
+         src->name)
+         virBufferVSprintf(buf,"    <name>%s</name>\n", src->name);
+
++    if ((options->flags & VIR_STORAGE_POOL_SOURCE_INITIATOR_IQN) &&
++        src->initiator.iqn) {
++        virBufferAddLit(buf,"    <initiator>\n");
++        virBufferEscapeString(buf,"      <iqn name='%s'/>\n", src->initiator.iqn);
++        virBufferAddLit(buf,"    </initiator>\n");
++    }
++
+     if (options->formatToString) {
+         const char *format = (options->formatToString)(src->format);
+         if (!format) {
+-- 
+1.6.6.1
+

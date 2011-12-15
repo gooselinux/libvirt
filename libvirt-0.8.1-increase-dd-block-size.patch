@@ -1,0 +1,54 @@
+From: Laine Stump <laine@laine.org>
+
+See https://bugzilla.redhat.com/show_bug.cgi?id=599091
+
+Saving a paused 512MB domain took 3m47s with the old block size of 512
+bytes. Changing the block size to 1024*1024 decreased the time to 56
+seconds. (Doubling again to 2048*1024 yielded 0 improvement; lowering
+to 512k increased the save time to 1m10s, about 20%)
+(cherry picked from commit 20206a4bc9f1293c69eca79290a55a5fa19976d5)
+---
+ src/qemu/qemu_driver.c  |   10 +++++++++-
+ src/qemu/qemu_monitor.h |    5 ++++-
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index da10914..b732ebe 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5448,7 +5448,15 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+     /* Due to way we append QEMU state on our header with dd,
+      * we need to ensure there's a 512 byte boundary. Unfortunately
+      * we don't have an explicit offset in the header, so we fake
+-     * it by padding the XML string with NULLs */
++     * it by padding the XML string with NULLs.
++     *
++     * XXX: This means there will be (QEMU_MONITOR_MIGRATE_TO_FILE_BS
++     *      - strlen(xml)) bytes of wastage in each file.
++     *      Unfortunately, a large BS is needed for reasonable
++     *      performance. It would be nice to find a replacement for dd
++     *      that could specify the start offset in bytes rather than
++     *      blocks, to eliminate this waste.
++     */
+     if (offset % QEMU_MONITOR_MIGRATE_TO_FILE_BS) {
+         unsigned long long pad =
+             QEMU_MONITOR_MIGRATE_TO_FILE_BS -
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index adfb3bc..763f664 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -259,7 +259,10 @@ int qemuMonitorMigrateToCommand(qemuMonitorPtr mon,
+                                 int background,
+                                 const char * const *argv);
+
+-# define QEMU_MONITOR_MIGRATE_TO_FILE_BS 512llu
++/* In general, a larger BS means better domain save performance,
++ * at the expense of a larger resulting file - see qemu_driver.c
++ */
++# define QEMU_MONITOR_MIGRATE_TO_FILE_BS (1024llu * 1024)
+
+ int qemuMonitorMigrateToFile(qemuMonitorPtr mon,
+                              int background,
+-- 
+1.7.0.1
+

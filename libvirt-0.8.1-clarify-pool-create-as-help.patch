@@ -1,0 +1,54 @@
+https://bugzilla.redhat.com/show_bug.cgi?id=609044 complained
+that 'virsh help pool-create-as' didn't document the shortcut
+that you can do 'virsh pool-create-as $name $type --target $target'
+rather than having to supply the four optional source- arguments
+in order to fill out the necessary positional arguments.
+
+This one-liner changes the help output to hopefully make this more obvious:
+
+  NAME
+    pool-create-as - create a pool from a set of args
+
+  SYNOPSIS
+    pool-create-as <name> [--print-xml] <type> [<source-host>] [<source-path>] [<source-dev>] [<source-name>] [<target>] [--source-format <string>]
+
+  DESCRIPTION
+    Create a pool.
+
+  OPTIONS
+    [--name] <string>  name of the pool
+    --print-xml      print XML document, but don't define/create
+    [--type] <string>  type of the pool
+    [--source-host] <string>  source-host for underlying storage
+    [--source-path] <string>  source path for underlying storage
+    [--source-dev] <string>  source device for underlying storage
+    [--source-name] <string>  source name for underlying storage
+    [--target] <string>  target for underlying storage
+    --source-format <string>  format for underlying storage
+
+* tools/virsh.c (vshCmddefHelp): Make it more obvious that data
+arguments may, but not must, be specified by option leaders.
+---
+
+Changed in v2 - mark "string" for translation.
+
+ tools/virsh.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 7ad18f7..5c3af11 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -9086,7 +9086,8 @@ vshCmddefHelp(vshControl *ctl, const char *cmdname)
+                 else if (opt->type == VSH_OT_STRING)
+                     snprintf(buf, sizeof(buf), _("--%s <string>"), opt->name);
+                 else if (opt->type == VSH_OT_DATA)
+-                    snprintf(buf, sizeof(buf), "<%s>", opt->name);
++                    snprintf(buf, sizeof(buf), _("[--%s] <string>"),
++                             opt->name);
+
+                 fprintf(stdout, "    %-15s  %s\n", buf, _(opt->help));
+             }
+-- 
+1.7.0.1
+

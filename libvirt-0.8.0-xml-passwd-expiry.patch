@@ -1,0 +1,444 @@
+From 88350b58d8294ed1b5eda4c207a16f127ef3f112 Mon Sep 17 00:00:00 2001
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 8 Apr 2010 13:43:23 +0100
+Subject: [PATCH 10/16] Define XML syntax for password expiry
+
+This extends the XML syntax for <graphics> to allow a password
+expiry time to be set
+
+eg
+
+  <graphics type='vnc' port='5900' autoport='yes' keymap='en-us' passwd='12345' passwdValidTo='2010-04-09T15:51:00'/>
+
+The timestamp is in UTC.
+
+* src/conf/domain_conf.h: Pull passwd out into separate struct
+  virDomainGraphicsAuthDef to allow sharing between VNC & SPICE
+* src/conf/domain_conf.c: Add parsing/formatting of new passwdValidTo
+  argument
+* src/opennebula/one_conf.c, src/qemu/qemu_conf.c, src/qemu/qemu_driver.c,
+  src/xen/xend_internal.c, src/xen/xm_internal.c: Update for changed
+  struct containing VNC password
+---
+ src/conf/domain_conf.c    |  102 +++++++++++++++++++++++++++++++++++++++-----
+ src/conf/domain_conf.h    |   13 +++++-
+ src/esx/esx_vmx.c         |    6 +-
+ src/opennebula/one_conf.c |    4 +-
+ src/qemu/qemu_conf.c      |    4 +-
+ src/qemu/qemu_driver.c    |   20 ++++----
+ src/xen/xend_internal.c   |   12 +++---
+ src/xen/xm_internal.c     |   12 +++---
+ 8 files changed, 130 insertions(+), 43 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 3a4ec5a..67e395b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -373,6 +373,17 @@ virDomainObjPtr virDomainFindByName(const virDomainObjListPtr doms,
+ 
+ #endif /* !PROXY */
+ 
++static void
++virDomainGraphicsAuthDefClear(virDomainGraphicsAuthDefPtr def)
++{
++    if (!def)
++        return;
++
++    VIR_FREE(def->passwd);
++
++    /* Don't free def */
++}
++
+ void virDomainGraphicsDefFree(virDomainGraphicsDefPtr def)
+ {
+     if (!def)
+@@ -382,7 +393,7 @@ void virDomainGraphicsDefFree(virDomainGraphicsDefPtr def)
+     case VIR_DOMAIN_GRAPHICS_TYPE_VNC:
+         VIR_FREE(def->data.vnc.listenAddr);
+         VIR_FREE(def->data.vnc.keymap);
+-        VIR_FREE(def->data.vnc.passwd);
++        virDomainGraphicsAuthDefClear(&def->data.vnc.auth);
+         break;
+ 
+     case VIR_DOMAIN_GRAPHICS_TYPE_SDL:
+@@ -401,7 +412,7 @@ void virDomainGraphicsDefFree(virDomainGraphicsDefPtr def)
+     case VIR_DOMAIN_GRAPHICS_TYPE_SPICE:
+         VIR_FREE(def->data.spice.listenAddr);
+         VIR_FREE(def->data.spice.keymap);
+-        VIR_FREE(def->data.spice.passwd);
++        virDomainGraphicsAuthDefClear(&def->data.spice.auth);
+         break;
+     }
+ 
+@@ -2714,6 +2725,56 @@ error:
+     goto cleanup;
+ }
+ 
++
++static int
++virDomainGraphicsAuthDefParseXML(xmlNodePtr node, virDomainGraphicsAuthDefPtr def)
++{
++    char *validTo = NULL;
++
++    def->passwd = virXMLPropString(node, "passwd");
++
++    if (!def->passwd)
++        return 0;
++
++    validTo = virXMLPropString(node, "passwdValidTo");
++    if (validTo) {
++        char *tmp;
++        struct tm tm;
++        memset(&tm, 0, sizeof(tm));
++        /* Expect: YYYY-MM-DDTHH:MM:SS (%d-%d-%dT%d:%d:%d)  eg 2010-11-28T14:29:01 */
++        if (/* year */
++            virStrToLong_i(validTo, &tmp, 10, &tm.tm_year) < 0 || *tmp != '-' ||
++            /* month */
++            virStrToLong_i(tmp+1, &tmp, 10, &tm.tm_mon) < 0 || *tmp != '-' ||
++            /* day */
++            virStrToLong_i(tmp+1, &tmp, 10, &tm.tm_mday) < 0 || *tmp != 'T' ||
++            /* hour */
++            virStrToLong_i(tmp+1, &tmp, 10, &tm.tm_hour) < 0 || *tmp != ':' ||
++            /* minute */
++            virStrToLong_i(tmp+1, &tmp, 10, &tm.tm_min) < 0 || *tmp != ':' ||
++            /* second */
++            virStrToLong_i(tmp+1, &tmp, 10, &tm.tm_sec) < 0 || *tmp != '\0') {
++            virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                 _("cannot parse password validity time '%s', expect YYYY-MM-DDTHH:MM:SS"),
++                                 validTo);
++            VIR_FREE(validTo);
++            VIR_FREE(def->passwd);
++            return -1;
++        }
++        VIR_FREE(validTo);
++
++        tm.tm_year -= 1900; /* Human epoch starts at 0 BC, not 1900BC */
++        tm.tm_mon--; /* Humans start months at 1, computers at 0 */
++
++        /* XXX this is broken it needs to be UTC not localtime */
++        def->validTo = timegm(&tm);
++        def->expires = 1;
++    }
++
++    return 0;
++}
++
++
+ /* Parse the XML definition for a graphics device */
+ static virDomainGraphicsDefPtr
+ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+@@ -2772,8 +2833,10 @@ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+         }
+ 
+         def->data.vnc.listenAddr = virXMLPropString(node, "listen");
+-        def->data.vnc.passwd = virXMLPropString(node, "passwd");
+         def->data.vnc.keymap = virXMLPropString(node, "keymap");
++
++        if (virDomainGraphicsAuthDefParseXML(node, &def->data.vnc.auth) < 0)
++            goto error;
+     } else if (def->type == VIR_DOMAIN_GRAPHICS_TYPE_SDL) {
+         char *fullscreen = virXMLPropString(node, "fullscreen");
+ 
+@@ -2897,8 +2960,9 @@ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+         }
+ 
+         def->data.spice.listenAddr = virXMLPropString(node, "listen");
+-        def->data.spice.passwd = virXMLPropString(node, "passwd");
+         def->data.spice.keymap = virXMLPropString(node, "keymap");
++        if (virDomainGraphicsAuthDefParseXML(node, &def->data.vnc.auth) < 0)
++            goto error;
+     }
+ 
+ cleanup:
+@@ -5617,6 +5681,24 @@ virDomainTimerDefFormat(virBufferPtr buf,
+     return 0;
+ }
+ 
++static void
++virDomainGraphicsAuthDefFormatAttr(virBufferPtr buf,
++                                   virDomainGraphicsAuthDefPtr def)
++{
++    if (!def->passwd)
++        return;
++
++    virBufferEscapeString(buf, " passwd='%s'",
++                          def->passwd);
++    if (def->expires) {
++        char strbuf[100];
++        struct tm tmbuf, *tm;
++        tm = gmtime_r(&def->validTo, &tmbuf);
++        strftime(strbuf, sizeof(strbuf), "%Y-%m-%dT%H:%M:%S", tm);
++        virBufferVSprintf(buf, " passwdValidTo='%s'", strbuf);
++    }
++}
++
+ static int
+ virDomainGraphicsDefFormat(virBufferPtr buf,
+                            virDomainGraphicsDefPtr def,
+@@ -5652,10 +5734,8 @@ virDomainGraphicsDefFormat(virBufferPtr buf,
+             virBufferEscapeString(buf, " keymap='%s'",
+                                   def->data.vnc.keymap);
+ 
+-        if (def->data.vnc.passwd &&
+-            (flags & VIR_DOMAIN_XML_SECURE))
+-            virBufferEscapeString(buf, " passwd='%s'",
+-                                  def->data.vnc.passwd);
++        if (flags & VIR_DOMAIN_XML_SECURE)
++            virDomainGraphicsAuthDefFormatAttr(buf, &def->data.vnc.auth);
+ 
+         break;
+ 
+@@ -5723,10 +5803,8 @@ virDomainGraphicsDefFormat(virBufferPtr buf,
+             virBufferEscapeString(buf, " keymap='%s'",
+                                   def->data.spice.keymap);
+ 
+-        if (def->data.spice.passwd &&
+-            (flags & VIR_DOMAIN_XML_SECURE))
+-            virBufferEscapeString(buf, " passwd='%s'",
+-                                  def->data.spice.passwd);
++        if (flags & VIR_DOMAIN_XML_SECURE)
++            virDomainGraphicsAuthDefFormatAttr(buf, &def->data.spice.auth);
+ 
+         break;
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index a318f9e..600c799 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -476,6 +476,15 @@ enum virDomainGraphicsType {
+     VIR_DOMAIN_GRAPHICS_TYPE_LAST,
+ };
+ 
++typedef struct _virDomainGraphicsAuthDef virDomainGraphicsAuthDef;
++typedef virDomainGraphicsAuthDef *virDomainGraphicsAuthDefPtr;
++struct _virDomainGraphicsAuthDef {
++    char *passwd;
++    unsigned int expires: 1; /* Whether there is an expiry time set */
++    time_t validTo;  /* seconds since epoch */
++};
++
++
+ typedef struct _virDomainGraphicsDef virDomainGraphicsDef;
+ typedef virDomainGraphicsDef *virDomainGraphicsDefPtr;
+ struct _virDomainGraphicsDef {
+@@ -486,7 +495,7 @@ struct _virDomainGraphicsDef {
+             unsigned int autoport :1;
+             char *listenAddr;
+             char *keymap;
+-            char *passwd;
++            virDomainGraphicsAuthDef auth;
+         } vnc;
+         struct {
+             char *display;
+@@ -509,7 +518,7 @@ struct _virDomainGraphicsDef {
+             int tlsPort;
+             char *listenAddr;
+             char *keymap;
+-            char *passwd;
++            virDomainGraphicsAuthDef auth;
+             unsigned int autoport :1;
+         } spice;
+     } data;
+diff --git a/src/esx/esx_vmx.c b/src/esx/esx_vmx.c
+index 647e720..4c29a10 100644
+--- a/src/esx/esx_vmx.c
++++ b/src/esx/esx_vmx.c
+@@ -1200,7 +1200,7 @@ esxVMX_ParseVNC(virConfPtr conf, virDomainGraphicsDefPtr *def)
+         esxUtil_GetConfigString(conf, "RemoteDisplay.vnc.keymap",
+                                 &(*def)->data.vnc.keymap, 1) < 0 ||
+         esxUtil_GetConfigString(conf, "RemoteDisplay.vnc.password",
+-                                &(*def)->data.vnc.passwd, 1) < 0) {
++                                &(*def)->data.vnc.auth.passwd, 1) < 0) {
+         goto failure;
+     }
+ 
+@@ -2468,9 +2468,9 @@ esxVMX_FormatVNC(virDomainGraphicsDefPtr def, virBufferPtr buffer)
+                           def->data.vnc.keymap);
+     }
+ 
+-    if (def->data.vnc.passwd != NULL) {
++    if (def->data.vnc.auth.passwd != NULL) {
+         virBufferVSprintf(buffer, "RemoteDisplay.vnc.password = \"%s\"\n",
+-                          def->data.vnc.passwd);
++                          def->data.vnc.auth.passwd);
+     }
+ 
+     return 0;
+diff --git a/src/opennebula/one_conf.c b/src/opennebula/one_conf.c
+index 029d475..b76a1ac 100644
+--- a/src/opennebula/one_conf.c
++++ b/src/opennebula/one_conf.c
+@@ -259,9 +259,9 @@ char* xmlOneTemplate(virDomainDefPtr def)
+                 virBufferVSprintf(&buf,",\n  port = \"%d\"",
+                     def->graphics[i]->data.vnc.port);
+ 
+-            if (def->graphics[i]->data.vnc.passwd != NULL)
++            if (def->graphics[i]->data.vnc.auth.passwd != NULL)
+                 virBufferVSprintf(&buf,",\n  passwd = \"%s\"",
+-                    def->graphics[i]->data.vnc.passwd);
++                    def->graphics[i]->data.vnc.auth.passwd);
+ 
+             virBufferAddLit(&buf," ]\n");
+ 
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 6af355e..b924142 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -4375,7 +4375,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+             virBufferVSprintf(&opt, ":%d",
+                               def->graphics[0]->data.vnc.port - 5900);
+ 
+-            if (def->graphics[0]->data.vnc.passwd ||
++            if (def->graphics[0]->data.vnc.auth.passwd ||
+                 driver->vncPassword)
+                 virBufferAddLit(&opt, ",password");
+ 
+@@ -4481,7 +4481,7 @@ int qemudBuildCommandLine(virConnectPtr conn,
+         /* In the password case we set it via monitor command, to avoid
+          * making it visible on CLI, so there's no use of password=XXX
+          * in this bit of the code */
+-        if (!def->graphics[0]->data.spice.passwd &&
++        if (!def->graphics[0]->data.spice.auth.passwd &&
+             !driver->spicePassword)
+             virBufferAddLit(&opt, ",disable-ticketing");
+ 
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index f290172..013d85d 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -2191,12 +2191,12 @@ qemuInitPasswords(virConnectPtr conn,
+ 
+     if ((vm->def->ngraphics == 1) &&
+         vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
+-        (vm->def->graphics[0]->data.vnc.passwd || driver->vncPassword)) {
++        (vm->def->graphics[0]->data.vnc.auth.passwd || driver->vncPassword)) {
+ 
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+         ret = qemuMonitorSetVNCPassword(priv->mon,
+-                                        vm->def->graphics[0]->data.vnc.passwd ?
+-                                        vm->def->graphics[0]->data.vnc.passwd :
++                                        vm->def->graphics[0]->data.vnc.auth.passwd ?
++                                        vm->def->graphics[0]->data.vnc.auth.passwd :
+                                         driver->vncPassword);
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
+     }
+@@ -7611,19 +7611,19 @@ qemuDomainChangeGraphics(struct qemud_driver *driver,
+             return -1;
+         }
+ 
+-        if (STRNEQ_NULLABLE(olddev->data.vnc.passwd, dev->data.vnc.passwd)) {
+-            VIR_DEBUG("Updating password on VNC server %p %p", dev->data.vnc.passwd, driver->vncPassword);
++        if (STRNEQ_NULLABLE(olddev->data.vnc.auth.passwd, dev->data.vnc.auth.passwd)) {
++            VIR_DEBUG("Updating password on VNC server %p %p", dev->data.vnc.auth.passwd, driver->vncPassword);
+             qemuDomainObjEnterMonitorWithDriver(driver, vm);
+             ret = qemuMonitorSetVNCPassword(priv->mon,
+-                                            dev->data.vnc.passwd ?
+-                                            dev->data.vnc.passwd :
++                                            dev->data.vnc.auth.passwd ?
++                                            dev->data.vnc.auth.passwd :
+                                             driver->vncPassword);
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+             /* Steal the new dev's  char * reference */
+-            VIR_FREE(olddev->data.vnc.passwd);
+-            olddev->data.vnc.passwd = dev->data.vnc.passwd;
+-            dev->data.vnc.passwd = NULL;
++            VIR_FREE(olddev->data.vnc.auth.passwd);
++            olddev->data.vnc.auth.passwd = dev->data.vnc.auth.passwd;
++            dev->data.vnc.auth.passwd = NULL;
+         } else {
+             ret = 0;
+         }
+diff --git a/src/xen/xend_internal.c b/src/xen/xend_internal.c
+index c4e73b7..b7138fe 100644
+--- a/src/xen/xend_internal.c
++++ b/src/xen/xend_internal.c
+@@ -2007,7 +2007,7 @@ xenDaemonParseSxprGraphicsOld(virConnectPtr conn,
+             goto no_memory;
+ 
+         if (vncPasswd &&
+-            !(graphics->data.vnc.passwd = strdup(vncPasswd)))
++            !(graphics->data.vnc.auth.passwd = strdup(vncPasswd)))
+             goto no_memory;
+ 
+         if (keymap &&
+@@ -2129,7 +2129,7 @@ xenDaemonParseSxprGraphicsNew(virConnectPtr conn,
+                     goto no_memory;
+ 
+                 if (vncPasswd &&
+-                    !(graphics->data.vnc.passwd = strdup(vncPasswd)))
++                    !(graphics->data.vnc.auth.passwd = strdup(vncPasswd)))
+                     goto no_memory;
+ 
+                 if (keymap &&
+@@ -5336,8 +5336,8 @@ xenDaemonFormatSxprGraphicsNew(virDomainGraphicsDefPtr def,
+ 
+         if (def->data.vnc.listenAddr)
+             virBufferVSprintf(buf, "(vnclisten '%s')", def->data.vnc.listenAddr);
+-        if (def->data.vnc.passwd)
+-            virBufferVSprintf(buf, "(vncpasswd '%s')", def->data.vnc.passwd);
++        if (def->data.vnc.auth.passwd)
++            virBufferVSprintf(buf, "(vncpasswd '%s')", def->data.vnc.auth.passwd);
+         if (def->data.vnc.keymap)
+             virBufferVSprintf(buf, "(keymap '%s')", def->data.vnc.keymap);
+     }
+@@ -5379,8 +5379,8 @@ xenDaemonFormatSxprGraphicsOld(virDomainGraphicsDefPtr def,
+ 
+             if (def->data.vnc.listenAddr)
+                 virBufferVSprintf(buf, "(vnclisten '%s')", def->data.vnc.listenAddr);
+-            if (def->data.vnc.passwd)
+-                virBufferVSprintf(buf, "(vncpasswd '%s')", def->data.vnc.passwd);
++            if (def->data.vnc.auth.passwd)
++                virBufferVSprintf(buf, "(vncpasswd '%s')", def->data.vnc.auth.passwd);
+             if (def->data.vnc.keymap)
+                 virBufferVSprintf(buf, "(keymap '%s')", def->data.vnc.keymap);
+ 
+diff --git a/src/xen/xm_internal.c b/src/xen/xm_internal.c
+index a7a09a0..554fe40 100644
+--- a/src/xen/xm_internal.c
++++ b/src/xen/xm_internal.c
+@@ -1298,7 +1298,7 @@ xenXMDomainConfigParse(virConnectPtr conn, virConfPtr conf) {
+             }
+             if (xenXMConfigCopyStringOpt(conf, "vnclisten", &graphics->data.vnc.listenAddr) < 0)
+                 goto cleanup;
+-            if (xenXMConfigCopyStringOpt(conf, "vncpasswd", &graphics->data.vnc.passwd) < 0)
++            if (xenXMConfigCopyStringOpt(conf, "vncpasswd", &graphics->data.vnc.auth.passwd) < 0)
+                 goto cleanup;
+             if (xenXMConfigCopyStringOpt(conf, "keymap", &graphics->data.vnc.keymap) < 0)
+                 goto cleanup;
+@@ -1370,7 +1370,7 @@ xenXMDomainConfigParse(virConnectPtr conn, virConfPtr conf) {
+                         if (!(graphics->data.vnc.listenAddr = strdup(key + 10)))
+                             goto no_memory;
+                     } else if (STRPREFIX(key, "vncpasswd=")) {
+-                        if (!(graphics->data.vnc.passwd = strdup(key + 10)))
++                        if (!(graphics->data.vnc.auth.passwd = strdup(key + 10)))
+                             goto no_memory;
+                     } else if (STRPREFIX(key, "keymap=")) {
+                         if (!(graphics->data.vnc.keymap = strdup(key + 7)))
+@@ -2436,9 +2436,9 @@ virConfPtr xenXMDomainConfigFormat(virConnectPtr conn,
+                     xenXMConfigSetString(conf, "vnclisten",
+                                     def->graphics[0]->data.vnc.listenAddr) < 0)
+                     goto no_memory;
+-                if (def->graphics[0]->data.vnc.passwd &&
++                if (def->graphics[0]->data.vnc.auth.passwd &&
+                     xenXMConfigSetString(conf, "vncpasswd",
+-                                        def->graphics[0]->data.vnc.passwd) < 0)
++                                        def->graphics[0]->data.vnc.auth.passwd) < 0)
+                     goto no_memory;
+                 if (def->graphics[0]->data.vnc.keymap &&
+                     xenXMConfigSetString(conf, "keymap",
+@@ -2467,9 +2467,9 @@ virConfPtr xenXMDomainConfigFormat(virConnectPtr conn,
+                 if (def->graphics[0]->data.vnc.listenAddr)
+                     virBufferVSprintf(&buf, ",vnclisten=%s",
+                                       def->graphics[0]->data.vnc.listenAddr);
+-                if (def->graphics[0]->data.vnc.passwd)
++                if (def->graphics[0]->data.vnc.auth.passwd)
+                     virBufferVSprintf(&buf, ",vncpasswd=%s",
+-                                      def->graphics[0]->data.vnc.passwd);
++                                      def->graphics[0]->data.vnc.auth.passwd);
+                 if (def->graphics[0]->data.vnc.keymap)
+                     virBufferVSprintf(&buf, ",keymap=%s",
+                                       def->graphics[0]->data.vnc.keymap);
+-- 
+1.6.6.1
+

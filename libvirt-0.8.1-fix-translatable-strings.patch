@@ -1,0 +1,99 @@
+https://bugzilla.redhat.com/show_bug.cgi?id=608917
+
+Having these translatable strings in a place where they will be sent
+as the format argument to printf, but with no formatting characters in
+the string, can allow a hostile translator to enter extra format
+characters in the translated string, thus opening a security hole.
+
+The solution is to put "%s" (not marked for translation) as the format
+string, and send the original string as an argument.
+---
+ src/qemu/qemu_driver.c |   18 +++++++++---------
+ 1 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 11233d0..a2cbb62 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -565,7 +565,7 @@ qemuDomainObjMigrationGraphicsXMLParse(xmlXPathContextPtr ctxt)
+ 
+     if (!(tmp = virXPathString("string(./graphics/@type)", ctxt))) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing type attribute in migration data"));
++                        "%s", _("missing type attribute in migration data"));
+         goto error;
+     }
+     if ((grap->type = virDomainGraphicsTypeFromString(tmp)) < 0) {
+@@ -576,21 +576,21 @@ qemuDomainObjMigrationGraphicsXMLParse(xmlXPathContextPtr ctxt)
+     }
+     if (virXPathLong("string(./graphics/@port)", ctxt, &port) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing port attribute in migration data"));
++                        "%s", _("missing port attribute in migration data"));
+         goto error;
+     }
+     grap->port = (int)port;
+     if (grap->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
+         if (virXPathLong("string(./graphics/@tlsPort)", ctxt, &port) < 0) {
+             qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                            _("missing port attribute in migration data"));
++                            "%s", _("missing port attribute in migration data"));
+             goto error;
+         }
+         grap->tlsPort = (int)port;
+     }
+     if (!(grap->listen = virXPathString("string(./graphics/@listen)", ctxt))) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing listen attribute in migration data"));
++                        "%s", _("missing listen attribute in migration data"));
+         goto error;
+     }
+     /* Optional */
+@@ -619,7 +619,7 @@ qemuDomainObjMigrationXMLParse(xmlXPathContextPtr ctxt)
+ 
+     if ((virXPathLong("string(./@id)", ctxt, &id)) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing ID attribute in migration data"));
++                        "%s", _("missing ID attribute in migration data"));
+         goto error;
+     }
+     mig->id = (int)id;
+@@ -627,7 +627,7 @@ qemuDomainObjMigrationXMLParse(xmlXPathContextPtr ctxt)
+     /* Extract domain name */
+     if (!(mig->name = virXPathString("string(./name[1])", ctxt))) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing name element in migration data"));
++                        "%s", _("missing name element in migration data"));
+         goto error;
+     }
+ 
+@@ -635,7 +635,7 @@ qemuDomainObjMigrationXMLParse(xmlXPathContextPtr ctxt)
+     tmp = virXPathString("string(./uuid[1])", ctxt);
+     if (!tmp) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing uuid element in migration data"));
++                        "%s", _("missing uuid element in migration data"));
+         goto error;
+     }
+     if (virUUIDParse(tmp, mig->uuid) < 0) {
+@@ -649,7 +649,7 @@ qemuDomainObjMigrationXMLParse(xmlXPathContextPtr ctxt)
+     /* Extract domain name */
+     if (!(mig->hostname = virXPathString("string(./hostname[1])", ctxt))) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("missing hostname element in migration data"));
++                        "%s", _("missing hostname element in migration data"));
+         goto error;
+     }
+ 
+@@ -10970,7 +10970,7 @@ static int doNativeMigrate(struct qemud_driver *driver,
+     if (cookie && cookielen &&
+         cookie[cookielen-1] != '\0') {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                        _("cookie is not NULL terminated"));
++                        "%s", _("cookie is not NULL terminated"));
+         return -1;
+     }
+ 
+-- 
+1.7.1
+
