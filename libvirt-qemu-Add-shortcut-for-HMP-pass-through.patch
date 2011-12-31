@@ -1,0 +1,267 @@
+From 7af1d6efab402c0da0822b369dc8d5829e6189e8 Mon Sep 17 00:00:00 2001
+Message-Id: <7af1d6efab402c0da0822b369dc8d5829e6189e8.1296819816.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 2 Feb 2011 16:37:10 +0100
+Subject: [PATCH] qemu: Add shortcut for HMP pass through
+
+https://bugzilla.redhat.com/show_bug.cgi?id=628940
+
+Currently users who want to use virDomainQemuMonitorCommand() API or
+it's virsh equivalent has to use the same protocol as libvirt uses for
+communication to qemu. Since the protocol is QMP with current qemu and
+HMP much more usable for humans, one ends up typing something like the
+following:
+
+    virsh qemu-monitor-command DOM \
+'{"execute":"human-monitor-command","arguments":{"command-line":"info kvm"}}'
+
+which is not a very convenient way of debugging qemu.
+
+This patch introduces --hmp option to qemu-monitor-command, which says
+that the provided command is in HMP. If libvirt uses QMP to talk with
+qemu, the command will automatically be converted into QMP. So the
+example above is simplified to just
+
+    virsh qemu-monitor-command --hmp DOM "info kvm"
+
+Also the result is converted from
+
+    {"return":"kvm support: enabled\r\n"}
+
+to just plain HMP:
+
+    kvm support: enabled
+
+If libvirt talks to qemu in HMP, --hmp flag is obviously a noop.
+(cherry picked from commit 2169472ab6cac3bdb1f32578de2b608a61a1d703)
+---
+ include/libvirt/libvirt-qemu.h |    5 +++++
+ src/internal.h                 |    1 +
+ src/qemu/qemu_driver.c         |    7 +++++--
+ src/qemu/qemu_monitor.c        |    9 ++++++---
+ src/qemu/qemu_monitor.h        |    5 ++++-
+ src/qemu/qemu_monitor_json.c   |   30 ++++++++++++++++++++++++++----
+ src/qemu/qemu_monitor_json.h   |    3 ++-
+ tools/virsh.c                  |    7 ++++++-
+ tools/virsh.pod                |    7 +++++--
+ 9 files changed, 60 insertions(+), 14 deletions(-)
+
+diff --git a/include/libvirt/libvirt-qemu.h b/include/libvirt/libvirt-qemu.h
+index 9c191c7..9257c2f 100644
+--- a/include/libvirt/libvirt-qemu.h
++++ b/include/libvirt/libvirt-qemu.h
+@@ -20,6 +20,11 @@
+ extern "C" {
+ # endif
+ 
++enum {
++    VIR_DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT = 0,
++    VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP     = (1 << 0), /* cmd is in HMP */
++} virDomainQemuMonitorCommandFlags;
++
+ int virDomainQemuMonitorCommand(virDomainPtr domain, const char *cmd,
+                                 char **result, unsigned int flags);
+ 
+diff --git a/src/internal.h b/src/internal.h
+index 038b862..dc1d9cb 100644
+--- a/src/internal.h
++++ b/src/internal.h
+@@ -38,6 +38,7 @@
+ # define N_(str) str
+ 
+ # include "libvirt/libvirt.h"
++# include "libvirt/libvirt-qemu.h"
+ # include "libvirt/virterror.h"
+ 
+ # include "libvirt_internal.h"
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e59990a..ecf4c4b 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10778,8 +10778,9 @@ static int qemuDomainMonitorCommand(virDomainPtr domain, const char *cmd,
+     virDomainObjPtr vm = NULL;
+     int ret = -1;
+     qemuDomainObjPrivatePtr priv;
++    bool hmp;
+ 
+-    virCheckFlags(0, -1);
++    virCheckFlags(VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP, -1);
+ 
+     qemuDriverLock(driver);
+     vm = virDomainFindByUUID(&driver->domains, domain->uuid);
+@@ -10805,10 +10806,12 @@ static int qemuDomainMonitorCommand(virDomainPtr domain, const char *cmd,
+         priv->monitor_warned = 1;
+     }
+ 
++    hmp = !!(flags & VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP);
++
+     if (qemuDomainObjBeginJobWithDriver(driver, vm) < 0)
+         goto cleanup;
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-    ret = qemuMonitorArbitraryCommand(priv->mon, cmd, result);
++    ret = qemuMonitorArbitraryCommand(priv->mon, cmd, result, hmp);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+     if (qemuDomainObjEndJob(vm) == 0) {
+         vm = NULL;
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 5758e87..9600c55 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1983,14 +1983,17 @@ int qemuMonitorDeleteSnapshot(qemuMonitorPtr mon, const char *name)
+     return ret;
+ }
+ 
+-int qemuMonitorArbitraryCommand(qemuMonitorPtr mon, const char *cmd, char **reply)
++int qemuMonitorArbitraryCommand(qemuMonitorPtr mon,
++                                const char *cmd,
++                                char **reply,
++                                bool hmp)
+ {
+     int ret;
+ 
+-    DEBUG("mon=%p, cmd=%s, reply=%p", mon, cmd, reply);
++    DEBUG("mon=%p, cmd=%s, reply=%p, hmp=%d", mon, cmd, reply, hmp);
+ 
+     if (mon->json)
+-        ret = qemuMonitorJSONArbitraryCommand(mon, cmd, reply);
++        ret = qemuMonitorJSONArbitraryCommand(mon, cmd, reply, hmp);
+     else
+         ret = qemuMonitorTextArbitraryCommand(mon, cmd, reply);
+     return ret;
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 204a04e..87d7c05 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -401,7 +401,10 @@ int qemuMonitorCreateSnapshot(qemuMonitorPtr mon, const char *name);
+ int qemuMonitorLoadSnapshot(qemuMonitorPtr mon, const char *name);
+ int qemuMonitorDeleteSnapshot(qemuMonitorPtr mon, const char *name);
+ 
+-int qemuMonitorArbitraryCommand(qemuMonitorPtr mon, const char *cmd, char **reply);
++int qemuMonitorArbitraryCommand(qemuMonitorPtr mon,
++                                const char *cmd,
++                                char **reply,
++                                bool hmp);
+ 
+ /**
+  * When running two dd process and using <> redirection, we need a
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 86cc7e0..108707e 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2515,22 +2515,44 @@ int qemuMonitorJSONDeleteSnapshot(qemuMonitorPtr mon, const char *name)
+ 
+ int qemuMonitorJSONArbitraryCommand(qemuMonitorPtr mon,
+                                     const char *cmd_str,
+-                                    char **reply_str)
++                                    char **reply_str,
++                                    bool hmp)
+ {
+     virJSONValuePtr cmd = NULL;
+     virJSONValuePtr reply = NULL;
+     int ret = -1;
+ 
+-    cmd = virJSONValueFromString(cmd_str);
++    if (!hmp) {
++        cmd = virJSONValueFromString(cmd_str);
++    } else {
++        cmd = qemuMonitorJSONMakeCommand("human-monitor-command",
++                                         "s:command-line", cmd_str,
++                                         NULL);
++    }
++
+     if (!cmd)
+         return -1;
+ 
+     if (qemuMonitorJSONCommand(mon, cmd, &reply) < 0)
+         goto cleanup;
+ 
+-    *reply_str = virJSONValueToString(reply);
+-    if (!(*reply_str))
++    if (!hmp) {
++        if (!(*reply_str = virJSONValueToString(reply)))
++            goto cleanup;
++    } else if (qemuMonitorJSONCheckError(cmd, reply)) {
+         goto cleanup;
++    } else {
++        const char *data;
++        if (!(data = virJSONValueObjectGetString(reply, "return"))) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                            _("human monitor command was missing return data"));
++            goto cleanup;
++        }
++        if (!(*reply_str = strdup(data))) {
++            virReportOOMError();
++            goto cleanup;
++        }
++    }
+ 
+     ret = 0;
+ 
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index dc725cb..cc90555 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -213,6 +213,7 @@ int qemuMonitorJSONDeleteSnapshot(qemuMonitorPtr mon, const char *name);
+ 
+ int qemuMonitorJSONArbitraryCommand(qemuMonitorPtr mon,
+                                     const char *cmd_str,
+-                                    char **reply_str);
++                                    char **reply_str,
++                                    bool hmp);
+ 
+ #endif /* QEMU_MONITOR_JSON_H */
+diff --git a/tools/virsh.c b/tools/virsh.c
+index b0f10c4..0772ff0 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -10094,6 +10094,7 @@ static const vshCmdInfo info_qemu_monitor_command[] = {
+ static const vshCmdOptDef opts_qemu_monitor_command[] = {
+     {"domain", VSH_OT_DATA, VSH_OFLAG_REQ, N_("domain name, id or uuid")},
+     {"cmd", VSH_OT_DATA, VSH_OFLAG_REQ, N_("command")},
++    {"hmp", VSH_OT_BOOL, 0, N_("command is in human monitor protocol")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -10104,6 +10105,7 @@ cmdQemuMonitorCommand(vshControl *ctl, const vshCmd *cmd)
+     int ret = FALSE;
+     char *monitor_cmd;
+     char *result = NULL;
++    unsigned int flags = 0;
+ 
+     if (!vshConnectionUsability(ctl, ctl->conn))
+         goto cleanup;
+@@ -10118,7 +10120,10 @@ cmdQemuMonitorCommand(vshControl *ctl, const vshCmd *cmd)
+         goto cleanup;
+     }
+ 
+-    if (virDomainQemuMonitorCommand(dom, monitor_cmd, &result, 0) < 0)
++    if (vshCommandOptBool(cmd, "hmp"))
++        flags |= VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP;
++
++    if (virDomainQemuMonitorCommand(dom, monitor_cmd, &result, flags) < 0)
+         goto cleanup;
+ 
+     printf("%s\n", result);
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 34a1c3d..22f4fc5 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -1253,10 +1253,13 @@ problems to the libvirt developers; the reports will be ignored.
+ 
+ =over 4
+ 
+-=item B<qemu-monitor-command> I<domain> I<command>
++=item B<qemu-monitor-command> I<domain> I<command> optional I<--hmp>
+ 
+ Send an arbitrary monitor command I<command> to domain I<domain> through the
+-qemu monitor.  The results of the command will be printed on stdout.
++qemu monitor.  The results of the command will be printed on stdout.  If
++I<--hmp> is passed, the command is considered to be a human monitor command
++and libvirt will automatically convert it into QMP if needed.  In that case
++the result will also be converted back from QMP.
+ 
+ =back
+ 
+-- 
+1.7.4
+

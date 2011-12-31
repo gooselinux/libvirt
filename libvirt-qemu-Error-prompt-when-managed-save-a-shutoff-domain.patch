@@ -1,0 +1,42 @@
+From d8d9f299859931cfeab39264265cc87635138440 Mon Sep 17 00:00:00 2001
+Message-Id: <d8d9f299859931cfeab39264265cc87635138440.1296166858.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 27 Jan 2011 17:14:20 +0800
+Subject: [PATCH] qemu: Error prompt when managed save a shutoff domain
+
+The problem was introduced by commit 4303c91, which removed the checking
+of domain state, this patch is to fix it.
+
+Otherwise, improper error will be thrown, e.g.
+
+error: Failed to save domain rhel6 state
+error: cannot resolve symlink /var/lib/libvirt/qemu/save/rhel6.save: No such
+file or directory
+(cherry picked from commit dbd63c4d63af26580acd213648eb5b5b961d70dc)
+
+BZ# 672449
+https://bugzilla.redhat.com/show_bug.cgi?id=672449
+---
+ src/qemu/qemu_driver.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 4072171..3f409a6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5077,6 +5077,12 @@ qemuDomainManagedSave(virDomainPtr dom, unsigned int flags)
+         goto cleanup;
+     }
+ 
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_OPERATION_INVALID,
++                        "%s", _("domain is not running"));
++        goto cleanup;
++    }
++
+     name = qemuDomainManagedSavePath(driver, vm);
+     if (name == NULL)
+         goto cleanup;
+-- 
+1.7.4.rc3
+

@@ -1,0 +1,263 @@
+From 0f5f63b852da00d1ce4f0e95c6bfc5f6f971264e Mon Sep 17 00:00:00 2001
+Message-Id: <0f5f63b852da00d1ce4f0e95c6bfc5f6f971264e.1296849485.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:51:18 -0700
+Subject: [PATCH] qemu: use separate alias for chardev and associated device
+
+https://bugzilla.redhat.com/show_bug.cgi?id=641834
+Prerequisite patch to minimize merge conflicts.
+
+* src/qemu/qemu_command.c (qemuBuildChrChardevStr): Alter the
+chardev alias.
+(qemuBuildCommandLine): Output an id for the chardev counterpart.
+* tests/qemuxml2argvdata/*: Update tests to match.
+Reported by Daniel P. Berrange.
+(cherry picked from commit 3fdc7895ec7917822179fe03e34dfb99c67e1650)
+---
+ src/qemu/qemu_command.c                            |   36 +++++++++++---------
+ .../qemuxml2argv-channel-guestfwd.args             |    2 +-
+ .../qemuxml2argv-channel-virtio-auto.args          |    2 +-
+ .../qemuxml2argv-channel-virtio.args               |    2 +-
+ .../qemuxml2argv-console-compat-chardev.args       |    2 +-
+ .../qemuxml2argv-console-virtio.args               |    2 +-
+ .../qemuxml2argv-parallel-tcp-chardev.args         |    2 +-
+ .../qemuxml2argv-serial-dev-chardev.args           |    2 +-
+ .../qemuxml2argv-serial-file-chardev.args          |    2 +-
+ .../qemuxml2argv-serial-many-chardev.args          |    2 +-
+ .../qemuxml2argv-serial-pty-chardev.args           |    2 +-
+ .../qemuxml2argv-serial-tcp-chardev.args           |    2 +-
+ .../qemuxml2argv-serial-tcp-telnet-chardev.args    |    2 +-
+ .../qemuxml2argv-serial-udp-chardev.args           |    2 +-
+ .../qemuxml2argv-serial-unix-chardev.args          |    2 +-
+ .../qemuxml2argv-serial-vc-chardev.args            |    2 +-
+ 16 files changed, 35 insertions(+), 31 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index ad5ed0a..dc7cf28 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2004,39 +2004,40 @@ qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
+ 
+     switch(dev->type) {
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+-        virBufferVSprintf(&buf, "null,id=%s", alias);
++        virBufferVSprintf(&buf, "null,id=char%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_VC:
+-        virBufferVSprintf(&buf, "vc,id=%s", alias);
++        virBufferVSprintf(&buf, "vc,id=char%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+-        virBufferVSprintf(&buf, "pty,id=%s", alias);
++        virBufferVSprintf(&buf, "pty,id=char%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_DEV:
+-        virBufferVSprintf(&buf, "tty,id=%s,path=%s", alias,
++        virBufferVSprintf(&buf, "tty,id=char%s,path=%s", alias,
+                           dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_FILE:
+-        virBufferVSprintf(&buf, "file,id=%s,path=%s", alias,
++        virBufferVSprintf(&buf, "file,id=char%s,path=%s", alias,
+                           dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_PIPE:
+-        virBufferVSprintf(&buf, "pipe,id=%s,path=%s", alias,
++        virBufferVSprintf(&buf, "pipe,id=char%s,path=%s", alias,
+                           dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
+-        virBufferVSprintf(&buf, "stdio,id=%s", alias);
++        virBufferVSprintf(&buf, "stdio,id=char%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_UDP:
+         virBufferVSprintf(&buf,
+-                          "udp,id=%s,host=%s,port=%s,localaddr=%s,localport=%s",
++                          "udp,id=char%s,host=%s,port=%s,localaddr=%s,"
++                          "localport=%s",
+                           alias,
+                           dev->data.udp.connectHost,
+                           dev->data.udp.connectService,
+@@ -2047,7 +2048,7 @@ qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
+     case VIR_DOMAIN_CHR_TYPE_TCP:
+         telnet = dev->data.tcp.protocol == VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
+         virBufferVSprintf(&buf,
+-                          "socket,id=%s,host=%s,port=%s%s%s",
++                          "socket,id=char%s,host=%s,port=%s%s%s",
+                           alias,
+                           dev->data.tcp.host,
+                           dev->data.tcp.service,
+@@ -2057,7 +2058,7 @@ qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
+ 
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+         virBufferVSprintf(&buf,
+-                          "socket,id=%s,path=%s%s",
++                          "socket,id=char%s,path=%s%s",
+                           alias,
+                           dev->data.nix.path,
+                           dev->data.nix.listen ? ",server,nowait" : "");
+@@ -2184,7 +2185,8 @@ qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev)
+                           dev->info.addr.vioserial.port);
+     }
+ 
+-    virBufferVSprintf(&buf, ",chardev=%s", dev->info.alias);
++    virBufferVSprintf(&buf, ",chardev=char%s,id=%s",
++                      dev->info.alias, dev->info.alias);
+     if (dev->target.name) {
+         virBufferVSprintf(&buf, ",name=%s", dev->target.name);
+     }
+@@ -2820,7 +2822,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             VIR_FREE(chrdev);
+ 
+             virCommandAddArg(cmd, "-mon");
+-            virCommandAddArgFormat(cmd, "chardev=monitor,mode=%s",
++            virCommandAddArgFormat(cmd,
++                                   "chardev=charmonitor,id=monitor,mode=%s",
+                                    monitor_json ? "control" : "readline");
+         } else {
+             const char *prefix = NULL;
+@@ -3451,8 +3454,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 VIR_FREE(devstr);
+ 
+                 virCommandAddArg(cmd, "-device");
+-                virCommandAddArgFormat(cmd, "isa-serial,chardev=%s",
+-                                       serial->info.alias);
++                virCommandAddArgFormat(cmd, "isa-serial,chardev=char%s,id=%s",
++                                       serial->info.alias, serial->info.alias);
+             } else {
+                 virCommandAddArg(cmd, "-serial");
+                 if (!(devstr = qemuBuildChrArgStr(&serial->source, NULL)))
+@@ -3483,7 +3486,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 VIR_FREE(devstr);
+ 
+                 virCommandAddArg(cmd, "-device");
+-                virCommandAddArgFormat(cmd, "isa-parallel,chardev=%s",
++                virCommandAddArgFormat(cmd, "isa-parallel,chardev=char%s,id=%s",
++                                       parallel->info.alias,
+                                        parallel->info.alias);
+             } else {
+                 virCommandAddArg(cmd, "-parallel");
+@@ -3522,7 +3526,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+             virCommandAddArg(cmd, "-netdev");
+             virCommandAddArgFormat(cmd,
+-                                   "user,guestfwd=tcp:%s:%i,chardev=%s,id=user-%s",
++                                   "user,guestfwd=tcp:%s:%i,chardev=char%s,id=user-%s",
+                                    addr, port, channel->info.alias,
+                                    channel->info.alias);
+             VIR_FREE(addr);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.args
+index 705fa2d..3939b7b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-guestfwd.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pipe,id=channel0,path=/tmp/guestfwd -netdev user,guestfwd=tcp:10.0.2.1:4600,chardev=channel0,id=user-channel0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pipe,id=charchannel0,path=/tmp/guestfwd -netdev user,guestfwd=tcp:10.0.2.1:4600,chardev=charchannel0,id=user-channel0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+index 0893432..0e8af11 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x2 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x3 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=1,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=2,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=1,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x2 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x3 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charchannel0 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=charchannel0,id=channel0,name=org.linux-kvm.port.0 -chardev pty,id=charchannel1 -device virtserialport,bus=virtio-serial1.0,nr=1,chardev=charchannel1,id=channel1,name=org.linux-kvm.port.foo -chardev pty,id=charchannel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=charchannel2,id=channel2,name=org.linux-kvm.port.bar -chardev pty,id=charchannel3 -device virtserialport,bus=virtio-serial0.0,nr=2,chardev=charchannel3,id=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=charchannel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=charchannel4,id=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=charchannel5 -device virtserialport,bus=virtio-serial2.0,nr=1,chardev=charchannel5,id=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+index 493df2e..b81bf03 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel0,name=org.linux-kvm.port.foo -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charchannel0 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=charchannel0,id=channel0,name=org.linux-kvm.port.foo -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.args
+index 9ab4a04..9240fb1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=serial0 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charserial0 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-console-virtio.args b/tests/qemuxml2argvdata/qemuxml2argv-console-virtio.args
+index a55000f..7e0a8d2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-console-virtio.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-console-virtio.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,bus=pci.0,addr=0x2 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=console0 -device virtconsole,chardev=console0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,bus=pci.0,addr=0x2 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charconsole0 -device virtconsole,chardev=charconsole0,id=console0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.args
+index eeb22d7..6e0baa4 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-parallel-tcp-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=parallel0,host=127.0.0.1,port=9999,server,nowait -device isa-parallel,chardev=parallel0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=charparallel0,host=127.0.0.1,port=9999,server,nowait -device isa-parallel,chardev=charparallel0,id=parallel0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.args
+index a14710b..d96362d 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-dev-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev tty,id=serial0,path=/dev/ttyS2 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev tty,id=charserial0,path=/dev/ttyS2 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.args
+index 989efa1..27b9a96 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-file-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev file,id=serial0,path=/tmp/serial.log -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev file,id=charserial0,path=/tmp/serial.log -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.args
+index cd29095..b84287d 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-many-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=serial0 -device isa-serial,chardev=serial0 -chardev file,id=serial1,path=/tmp/serial.log -device isa-serial,chardev=serial1 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charserial0 -device isa-serial,chardev=charserial0,id=serial0 -chardev file,id=charserial1,path=/tmp/serial.log -device isa-serial,chardev=charserial1,id=serial1 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.args
+index 9ab4a04..9240fb1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-pty-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=serial0 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=charserial0 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.args
+index a0b1dac..aa069e2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=serial0,host=127.0.0.1,port=9999 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=charserial0,host=127.0.0.1,port=9999 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.args
+index 0bd234d..315015a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-tcp-telnet-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=serial0,host=127.0.0.1,port=9999,telnet,server,nowait -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=charserial0,host=127.0.0.1,port=9999,telnet,server,nowait -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.args
+index 1a40233..97b375a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-udp-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev udp,id=serial0,host=127.0.0.1,port=9998,localaddr=127.0.0.1,localport=9999 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev udp,id=charserial0,host=127.0.0.1,port=9998,localaddr=127.0.0.1,localport=9999 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.args
+index 593525e..a2b4319 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-unix-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=serial0,path=/tmp/serial.sock -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev socket,id=charserial0,path=/tmp/serial.sock -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.args
+index 409d2e2..4748d5e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-vc-chardev.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=monitor,path=/tmp/test-monitor,server,nowait -mon chardev=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev vc,id=serial0 -device isa-serial,chardev=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -chardev vc,id=charserial0 -device isa-serial,chardev=charserial0,id=serial0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+-- 
+1.7.4
+

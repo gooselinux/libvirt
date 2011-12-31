@@ -1,0 +1,62 @@
+From 638fe2c7a3a5023728d676513fe69c39ed17fa7e Mon Sep 17 00:00:00 2001
+Message-Id: <638fe2c7a3a5023728d676513fe69c39ed17fa7e.1302097026.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Thu, 31 Mar 2011 17:25:01 -0600
+Subject: [PATCH] do not send monitor command after monitor meet error
+
+https://bugzilla.redhat.com/show_bug.cgi?id=688774
+
+If the monitor met a error, and we will call qemuProcessHandleMonitorEOF().
+But we may try to send monitor command after qemuProcessHandleMonitorEOF()
+returned. Then libvirtd will be blocked in qemuMonitorSend().
+
+Steps to reproduce this bug:
+1. use gdb to attach libvirtd, and set a breakpoint in the function
+   qemuConnectMonitor()
+2. start a vm
+3. let the libvirtd to run until qemuMonitorOpen() returns.
+4. kill the qemu process
+5. continue running libvirtd
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit cc2424fc65a6b4b307f0d7a314d595cd3f15589e)
+---
+ src/qemu/qemu_monitor.c |   15 +++++++++++++++
+ 1 files changed, 15 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index a20fa06..7dbab94 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -585,6 +585,15 @@ qemuMonitorIO(int watch, int fd, int events, void *opaque) {
+         void (*eofNotify)(qemuMonitorPtr, virDomainObjPtr, int)
+             = mon->cb->eofNotify;
+         virDomainObjPtr vm = mon->vm;
++
++        /* If qemu quited unexpectedly, and we may try to send monitor
++         * command later. But we have no chance to wake up it. So set
++         * mon->lastErrno to EIO, and check it before sending monitor
++         * command.
++         */
++        if (!mon->lastErrno)
++            mon->lastErrno = EIO;
++
+         /* Make sure anyone waiting wakes up now */
+         virCondSignal(&mon->notify);
+         if (qemuMonitorUnref(mon) > 0)
+@@ -723,6 +732,12 @@ int qemuMonitorSend(qemuMonitorPtr mon,
+ {
+     int ret = -1;
+ 
++    /* Check whether qemu quited unexpectedly */
++    if (mon->lastErrno) {
++        msg->lastErrno = mon->lastErrno;
++        return -1;
++    }
++
+     mon->msg = msg;
+     qemuMonitorUpdateWatch(mon);
+ 
+-- 
+1.7.4.1
+

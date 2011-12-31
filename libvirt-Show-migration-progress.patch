@@ -1,0 +1,171 @@
+From f38d9e97366c8c1eedc3856a1c9697499da98c1b Mon Sep 17 00:00:00 2001
+Message-Id: <f38d9e97366c8c1eedc3856a1c9697499da98c1b.1296819815.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Thu, 27 Jan 2011 17:24:06 -0700
+Subject: [PATCH] Show migration progress.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=619039
+
+Show migration progress if `migrate --verbose'.
+(cherry picked from commit d183e9d1e8d34a2cc89fbba305117665c0737dd4)
+
+Not strictly related to the bugzilla, but necessary to avoid
+merge conflict and a useful feature.
+---
+ tools/virsh.c   |   86 ++++++++++++++++++++++++++++++++++++++++++------------
+ tools/virsh.pod |    4 ++-
+ 2 files changed, 70 insertions(+), 20 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 64de898..2aba4ba 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -3385,6 +3385,7 @@ static const vshCmdOptDef opts_migrate[] = {
+     {"suspend", VSH_OT_BOOL, 0, N_("do not restart the domain on the destination host")},
+     {"copy-storage-all", VSH_OT_BOOL, 0, N_("migration with non-shared storage with full disk copy")},
+     {"copy-storage-inc", VSH_OT_BOOL, 0, N_("migration with non-shared storage with incremental copy (same base image shared between source and destination)")},
++    {"verbose", VSH_OT_BOOL, 0, N_("display the progress of migration")},
+     {"domain", VSH_OT_DATA, VSH_OFLAG_REQ, N_("domain name, id or uuid")},
+     {"desturi", VSH_OT_DATA, VSH_OFLAG_REQ, N_("connection URI of the destination host as seen from the client(normal migration) or source(p2p migration)")},
+     {"migrateuri", VSH_OT_DATA, 0, N_("migration URI, usually can be omitted")},
+@@ -3487,6 +3488,30 @@ out_sig:
+     ignore_value(safewrite(data->writefd, &ret, sizeof(ret)));
+ }
+ 
++static void
++print_job_progress(unsigned long long remaining, unsigned long long total)
++{
++    int progress;
++
++    if (total == 0)
++        /* migration has not been started */
++        return;
++
++    if (remaining == 0) {
++        /* migration has completed */
++        progress = 100;
++    } else {
++        /* use float to avoid overflow */
++        progress = (int)(100.0 - remaining * 100.0 / total);
++        if (progress >= 100) {
++            /* migration has not completed, do not print [100 %] */
++            progress = 99;
++        }
++    }
++
++    fprintf(stderr, "\rMigration: [%3d %%]", progress);
++}
++
+ static int
+ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+ {
+@@ -3498,12 +3523,18 @@ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+     char retchar;
+     struct sigaction sig_action;
+     struct sigaction old_sig_action;
++    virDomainJobInfo jobinfo;
++    bool verbose = false;
++    sigset_t sigmask, oldsigmask;
+ 
+     vshCtrlData data;
+ 
+     if (!(dom = vshCommandOptDomain(ctl, cmd, NULL)))
+         return FALSE;
+ 
++    if (vshCommandOptBool (cmd, "verbose"))
++        verbose = true;
++
+     if (pipe(p) < 0)
+         goto cleanup;
+ 
+@@ -3526,29 +3557,46 @@ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+     pollfd.fd = p[0];
+     pollfd.events = POLLIN;
+     pollfd.revents = 0;
++    sigemptyset(&sigmask);
++    sigaddset(&sigmask, SIGINT);
+ 
++    while (1) {
+ repoll:
+-    ret = poll(&pollfd, 1, -1);
+-    if (ret > 0) {
+-        if (saferead(p[0], &retchar, sizeof(retchar)) > 0) {
+-            if (retchar == '0')
+-                ret = TRUE;
+-            else
+-                ret = FALSE;
+-        } else
+-            ret = FALSE;
+-    } else if (ret < 0) {
+-        if (errno == EINTR) {
+-            if (intCaught) {
+-                virDomainAbortJob(dom);
+-                ret = FALSE;
+-                intCaught = 0;
++        ret = poll(&pollfd, 1, 500);
++        if (ret > 0) {
++            if (saferead(p[0], &retchar, sizeof(retchar)) > 0) {
++                if (retchar == '0') {
++                    ret = TRUE;
++                    if (verbose) {
++                        /* print [100 %] */
++                        print_job_progress(0, 1);
++                    }
++                } else
++                    ret = FALSE;
+             } else
+-                goto repoll;
++                ret = FALSE;
++            break;
++        }
++
++        if (ret < 0) {
++            if (errno == EINTR) {
++                if (intCaught) {
++                    virDomainAbortJob(dom);
++                    ret = FALSE;
++                    intCaught = 0;
++                } else
++                    goto repoll;
++            }
++            break;
++        }
++
++        if (verbose) {
++            pthread_sigmask(SIG_BLOCK, &sigmask, &oldsigmask);
++            ret = virDomainGetJobInfo(dom, &jobinfo);
++            pthread_sigmask(SIG_SETMASK, &oldsigmask, NULL);
++            if (ret == 0)
++                print_job_progress(jobinfo.dataRemaining, jobinfo.dataTotal);
+         }
+-    } else {
+-        /* timed out */
+-        ret = FALSE;
+     }
+ 
+     sigaction(SIGINT, &old_sig_action, NULL);
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index a510406..17152d9 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -489,7 +489,8 @@ type attribute for the <domain> element of XML.
+ 
+ =item B<migrate> optional I<--live> I<--p2p> I<--direct> I<--tunnelled>
+ I<--persistent> I<--undefinesource> I<--suspend> I<--copy-storage-all>
+-I<--copy-storage-inc> I<domain-id> I<desturi> I<migrateuri> I<dname>
++I<--copy-storage-inc> I<--verbose> I<domain-id> I<desturi> I<migrateuri>
++I<dname>
+ 
+ Migrate domain to another host.  Add I<--live> for live migration; I<--p2p>
+ for peer-2-peer migration; I<--direct> for direct migration; or I<--tunnelled>
+@@ -499,6 +500,7 @@ and I<--suspend> leaves the domain paused on the destination host.
+ I<--copy-storage-all> indicates migration with non-shared storage with full
+ disk copy, I<--copy-storage-inc> indicates migration with non-shared storage
+ with incremental copy (same base image shared between source and destination).
++I<--verbose> displays the progress of migration.
+ 
+ The I<desturi> is the connection URI of the destination host, and
+ I<migrateuri> is the migration URI, which usually can be omitted.
+-- 
+1.7.4
+

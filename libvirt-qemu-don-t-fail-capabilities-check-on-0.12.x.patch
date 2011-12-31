@@ -1,0 +1,66 @@
+From 5487ba701dd27b6e59b84b8770476a8bcd391779 Mon Sep 17 00:00:00 2001
+Message-Id: <5487ba701dd27b6e59b84b8770476a8bcd391779.1295522811.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 19 Jan 2011 08:04:10 -0700
+Subject: [PATCH] qemu: don't fail capabilities check on 0.12.x
+
+Fixes regression introduced in commit 2211518, where all qemu 0.12.x
+fails to start, as does qemu 0.13.x lacking the pci-assign device.
+Prior to 2211518, the code was just ignoring a non-zero exit status
+from the qemu child, but the virCommand code checked this to avoid
+masking any other issues, which means the real bug of provoking
+non-zero exit status has been latent for a longer time.
+
+Fixes patch that https://bugzilla.redhat.com/show_bug.cgi?id=646895
+depends on.
+
+* src/qemu/qemu_capabilities.c (qemuCapsExtractVersionInfo): Check
+for -device driver,? support.
+(qemuCapsExtractDeviceStr): Avoid failure if all probed devices
+are unsupported.
+Reported by Wen Congyang.
+(cherry picked from commit 93681a3683badadd9003226142a729ec5733d2fb)
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c
+---
+ src/qemu/qemu_capabilities.c |   13 ++++++++++---
+ 1 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index d6e205a..34bdf3c 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1048,10 +1048,14 @@ qemuCapsExtractDeviceStr(const char *qemu,
+ 
+     /* Cram together all device-related queries into one invocation;
+      * the output format makes it possible to distinguish what we
+-     * need.  Unrecognized '-device bogus,?' cause an error in
+-     * isolation, but are silently ignored in combination with
+-     * '-device ?'.  */
++     * need.  With qemu 0.13.0 and later, unrecognized '-device
++     * bogus,?' cause an error in isolation, but are silently ignored
++     * in combination with '-device ?'.  Qemu 0.12.x doesn't
++     * understand '-device name,?', and always exits with status 1 for
++     * the simpler '-device ?', so this function is really only useful
++     * for parsing out features added in 0.13.0 or later.  */
+     cmd = virCommandNewArgList(qemu,
++                               "-device", "?",
+                                "-device", "pci-assign,?",
+                                "-device", "virtio-blk-pci,?",
+                                NULL);
+@@ -1130,7 +1134,10 @@ int qemuCapsExtractVersionInfo(const char *qemu,
+         flags |= QEMUD_CMD_FLAG_NETDEV;
+     }
+ 
++    /* Only call qemuCapsExtractDeviceStr for qemu 0.13.0+, since it
++     * won't set any additional flags for qemu 0.12.x.  */
+     if ((flags & QEMUD_CMD_FLAG_DEVICE) &&
++        strstr(help, "-device driver,?") &&
+         qemuCapsExtractDeviceStr(qemu, &flags) < 0)
+         goto cleanup;
+ 
+-- 
+1.7.4.rc2
+

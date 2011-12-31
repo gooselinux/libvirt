@@ -1,0 +1,256 @@
+From 3ff394c24a98abf5762e59308454ed5bf7297f7b Mon Sep 17 00:00:00 2001
+Message-Id: <3ff394c24a98abf5762e59308454ed5bf7297f7b.1296166858.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 24 Jan 2011 15:12:00 -0700
+Subject: [PATCH] event: fix event-handling allocation crash
+
+6.1: https://bugzilla.redhat.com/show_bug.cgi?id=671564
+6.0.z: immune (this was introduced by the rebase to 0.8.7)
+
+Regression introduced in commit e6b68d7 (Nov 2010).
+
+Prior to that point, handlesAlloc was always a multiple of
+EVENT_ALLOC_EXTENT (10), and was an int (so even if the subtraction
+had been able to wrap, a negative value would be less than the count
+not try to free the handles array).  But after that point,
+VIR_RESIZE_N made handlesAlloc grow geometrically (with a pattern of
+10, 20, 30, 45 for the handles array) but still freed in multiples of
+EVENT_ALLOC_EXTENT; and the count changed to size_t.  Which means that
+after 31 handles have been created, then 30 handles destroyed,
+handlesAlloc is 5 while handlesCount is 1, and since (size_t)(1 - 5)
+is indeed greater than 1, this then tried to free 10 elements, which
+had the awful effect of nuking the handles array while there were
+still live handles.
+
+Nuking live handles puts libvirtd in an inconsistent state, and was
+easily reproducible by starting and then stopping 60 faqemu guests.
+
+* daemon/event.c (virEventCleanupTimeouts, virEventCleanupHandles):
+Avoid integer wrap-around causing us to delete the entire array
+while entries are still active.
+* tests/eventtest.c (mymain): Expose the bug.
+(cherry picked from commit a7483a5631e2f5106c0f57ced13e5689dd8c3347)
+---
+ daemon/event.c    |   33 +++++++++++++++++++------------
+ tests/eventtest.c |   54 +++++++++++++++++++++++++++++++++++++++-------------
+ 2 files changed, 60 insertions(+), 27 deletions(-)
+
+diff --git a/daemon/event.c b/daemon/event.c
+index 4198b37..4c97fb9 100644
+--- a/daemon/event.c
++++ b/daemon/event.c
+@@ -479,6 +479,7 @@ static int virEventDispatchHandles(int nfds, struct pollfd *fds) {
+  */
+ static int virEventCleanupTimeouts(void) {
+     int i;
++    size_t gap;
+     DEBUG("Cleanup %zu", eventLoop.timeoutsCount);
+ 
+     /* Remove deleted entries, shuffling down remaining
+@@ -490,24 +491,27 @@ static int virEventCleanupTimeouts(void) {
+             continue;
+         }
+ 
+-        EVENT_DEBUG("Purging timeout %d with id %d", i, eventLoop.timeouts[i].timer);
++        EVENT_DEBUG("Purging timeout %d with id %d", i,
++                    eventLoop.timeouts[i].timer);
+         if (eventLoop.timeouts[i].ff)
+             (eventLoop.timeouts[i].ff)(eventLoop.timeouts[i].opaque);
+ 
+         if ((i+1) < eventLoop.timeoutsCount) {
+             memmove(eventLoop.timeouts+i,
+                     eventLoop.timeouts+i+1,
+-                    sizeof(struct virEventTimeout)*(eventLoop.timeoutsCount-(i+1)));
++                    sizeof(struct virEventTimeout)*(eventLoop.timeoutsCount
++                                                    -(i+1)));
+         }
+         eventLoop.timeoutsCount--;
+     }
+ 
+     /* Release some memory if we've got a big chunk free */
+-    if ((eventLoop.timeoutsAlloc - EVENT_ALLOC_EXTENT) > eventLoop.timeoutsCount) {
+-        EVENT_DEBUG("Releasing %zu out of %zu timeout slots used, releasing %d",
+-                   eventLoop.timeoutsCount, eventLoop.timeoutsAlloc, EVENT_ALLOC_EXTENT);
+-        VIR_SHRINK_N(eventLoop.timeouts, eventLoop.timeoutsAlloc,
+-                     EVENT_ALLOC_EXTENT);
++    gap = eventLoop.timeoutsAlloc - eventLoop.timeoutsCount;
++    if (eventLoop.timeoutsCount == 0 ||
++        (gap > eventLoop.timeoutsCount && gap > EVENT_ALLOC_EXTENT)) {
++        EVENT_DEBUG("Found %zu out of %zu timeout slots used, releasing %zu",
++                    eventLoop.timeoutsCount, eventLoop.timeoutsAlloc, gap);
++        VIR_SHRINK_N(eventLoop.timeouts, eventLoop.timeoutsAlloc, gap);
+     }
+     return 0;
+ }
+@@ -518,6 +522,7 @@ static int virEventCleanupTimeouts(void) {
+  */
+ static int virEventCleanupHandles(void) {
+     int i;
++    size_t gap;
+     DEBUG("Cleanup %zu", eventLoop.handlesCount);
+ 
+     /* Remove deleted entries, shuffling down remaining
+@@ -535,17 +540,19 @@ static int virEventCleanupHandles(void) {
+         if ((i+1) < eventLoop.handlesCount) {
+             memmove(eventLoop.handles+i,
+                     eventLoop.handles+i+1,
+-                    sizeof(struct virEventHandle)*(eventLoop.handlesCount-(i+1)));
++                    sizeof(struct virEventHandle)*(eventLoop.handlesCount
++                                                   -(i+1)));
+         }
+         eventLoop.handlesCount--;
+     }
+ 
+     /* Release some memory if we've got a big chunk free */
+-    if ((eventLoop.handlesAlloc - EVENT_ALLOC_EXTENT) > eventLoop.handlesCount) {
+-        EVENT_DEBUG("Releasing %zu out of %zu handles slots used, releasing %d",
+-                   eventLoop.handlesCount, eventLoop.handlesAlloc, EVENT_ALLOC_EXTENT);
+-        VIR_SHRINK_N(eventLoop.handles, eventLoop.handlesAlloc,
+-                     EVENT_ALLOC_EXTENT);
++    gap = eventLoop.handlesAlloc - eventLoop.handlesCount;
++    if (eventLoop.handlesCount == 0 ||
++        (gap > eventLoop.handlesCount && gap > EVENT_ALLOC_EXTENT)) {
++        EVENT_DEBUG("Found %zu out of %zu handles slots used, releasing %zu",
++                    eventLoop.handlesCount, eventLoop.handlesAlloc, gap);
++        VIR_SHRINK_N(eventLoop.handles, eventLoop.handlesAlloc, gap);
+     }
+     return 0;
+ }
+diff --git a/tests/eventtest.c b/tests/eventtest.c
+index 067e365..93317be 100644
+--- a/tests/eventtest.c
++++ b/tests/eventtest.c
+@@ -1,7 +1,7 @@
+ /*
+  * eventtest.c: Test the libvirtd event loop impl
+  *
+- * Copyright (C) 2009 Red Hat, Inc.
++ * Copyright (C) 2009, 2011 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -33,8 +33,8 @@
+ #include "util.h"
+ #include "../daemon/event.h"
+ 
+-#define NUM_FDS 5
+-#define NUM_TIME 5
++#define NUM_FDS 31
++#define NUM_TIME 31
+ 
+ static struct handleInfo {
+     int pipeFD[2];
+@@ -147,11 +147,14 @@ verifyFired(const char *name, int handle, int timer)
+     for (i = 0 ; i < NUM_FDS ; i++) {
+         if (handles[i].fired) {
+             if (i != handle) {
+-                virtTestResult(name, 1, "Handle %d fired, but expected %d\n", i, handle);
++                virtTestResult(name, 1,
++                               "Handle %d fired, but expected %d\n", i,
++                               handle);
+                 return EXIT_FAILURE;
+             } else {
+                 if (handles[i].error != EV_ERROR_NONE) {
+-                    virtTestResult(name, 1, "Handle %d fired, but had error %d\n", i,
++                    virtTestResult(name, 1,
++                                   "Handle %d fired, but had error %d\n", i,
+                                    handles[i].error);
+                     return EXIT_FAILURE;
+                 }
+@@ -159,13 +162,17 @@ verifyFired(const char *name, int handle, int timer)
+             }
+         } else {
+             if (i == handle) {
+-                virtTestResult(name, 1, "Handle %d should have fired, but didn't\n", handle);
++                virtTestResult(name, 1,
++                               "Handle %d should have fired, but didn't\n",
++                               handle);
+                 return EXIT_FAILURE;
+             }
+         }
+     }
+     if (handleFired != 1 && handle != -1) {
+-        virtTestResult(name, 1, "Something wierd happened, expecting handle %d\n", handle);
++        virtTestResult(name, 1,
++                       "Something weird happened, expecting handle %d\n",
++                       handle);
+         return EXIT_FAILURE;
+     }
+ 
+@@ -173,11 +180,13 @@ verifyFired(const char *name, int handle, int timer)
+     for (i = 0 ; i < NUM_TIME ; i++) {
+         if (timers[i].fired) {
+             if (i != timer) {
+-                virtTestResult(name, 1, "Timer %d fired, but expected %d\n", i, timer);
++                virtTestResult(name, 1,
++                               "Timer %d fired, but expected %d\n", i, timer);
+                 return EXIT_FAILURE;
+             } else {
+                 if (timers[i].error != EV_ERROR_NONE) {
+-                    virtTestResult(name, 1, "Timer %d fired, but had error %d\n", i,
++                    virtTestResult(name, 1,
++                                   "Timer %d fired, but had error %d\n", i,
+                                    timers[i].error);
+                     return EXIT_FAILURE;
+                 }
+@@ -185,13 +194,17 @@ verifyFired(const char *name, int handle, int timer)
+             }
+         } else {
+             if (i == timer) {
+-                virtTestResult(name, 1, "Timer %d should have fired, but didn't\n", timer);
++                virtTestResult(name, 1,
++                               "Timer %d should have fired, but didn't\n",
++                               timer);
+                 return EXIT_FAILURE;
+             }
+         }
+     }
+     if (timerFired != 1 && timer != -1) {
+-        virtTestResult(name, 1, "Something wierd happened, expecting timer %d\n", timer);
++        virtTestResult(name, 1,
++                       "Something weird happened, expecting timer %d\n",
++                       timer);
+         return EXIT_FAILURE;
+     }
+     return EXIT_SUCCESS;
+@@ -217,7 +230,8 @@ finishJob(const char *name, int handle, int timer)
+     waitTime.tv_sec += 5;
+     rc = 0;
+     while (!eventThreadJobDone && rc == 0)
+-        rc = pthread_cond_timedwait(&eventThreadJobCond, &eventThreadMutex, &waitTime);
++        rc = pthread_cond_timedwait(&eventThreadJobCond, &eventThreadMutex,
++                                    &waitTime);
+     if (rc != 0) {
+         virtTestResult(name, 1, "Timed out waiting for pipe event\n");
+         return EXIT_FAILURE;
+@@ -426,13 +440,25 @@ mymain(int argc, char **argv)
+     if (finishJob("Deleted during dispatch", -1, 2) != EXIT_SUCCESS)
+         return EXIT_FAILURE;
+ 
+-    for (i = 0 ; i < NUM_FDS ; i++)
++    for (i = 0 ; i < NUM_FDS - 1 ; i++)
+         virEventRemoveHandleImpl(handles[i].watch);
+-    for (i = 0 ; i < NUM_TIME ; i++)
++    for (i = 0 ; i < NUM_TIME - 1 ; i++)
+         virEventRemoveTimeoutImpl(timers[i].timer);
+ 
+     resetAll();
+ 
++    /* Make sure the last handle still works several times in a row.  */
++    for (i = 0; i < 4; i++) {
++        startJob();
++        if (safewrite(handles[NUM_FDS - 1].pipeFD[1], &one, 1) != 1)
++            return EXIT_FAILURE;
++        if (finishJob("Simple write", NUM_FDS - 1, -1) != EXIT_SUCCESS)
++            return EXIT_FAILURE;
++
++        resetAll();
++    }
++
++
+     /* Final test, register same FD twice, once with no
+      * events, and make sure the right callback runs */
+     handles[0].pipeFD[0] = handles[1].pipeFD[0];
+-- 
+1.7.4.rc3
+

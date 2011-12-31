@@ -1,0 +1,80 @@
+From 4d365de3251d30ea674c789525c891a11f21503a Mon Sep 17 00:00:00 2001
+Message-Id: <4d365de3251d30ea674c789525c891a11f21503a.1299776671.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:49 -0700
+Subject: [PATCH] cgroup: preserve correct errno on failure
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+* src/util/cgroup.c (virCgroupSetValueStr, virCgroupGetValueStr)
+(virCgroupRemoveRecursively): VIR_DEBUG can clobber errno.
+(virCgroupRemove): Use VIR_DEBUG rather than DEBUG.
+(cherry picked from commit 76c57a7c1d2fd02de67500b607a1b5af6bc669c3)
+---
+ src/util/cgroup.c |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index de1fd8e..ed6efda 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -290,8 +290,8 @@ static int virCgroupSetValueStr(virCgroupPtr group,
+     VIR_DEBUG("Set value '%s' to '%s'", keypath, value);
+     rc = virFileWriteStr(keypath, value, 0);
+     if (rc < 0) {
+-        DEBUG("Failed to write value '%s': %m", value);
+         rc = -errno;
++        VIR_DEBUG("Failed to write value '%s': %m", value);
+     } else {
+         rc = 0;
+     }
+@@ -313,7 +313,7 @@ static int virCgroupGetValueStr(virCgroupPtr group,
+ 
+     rc = virCgroupPathOfController(group, controller, key, &keypath);
+     if (rc != 0) {
+-        DEBUG("No path of %s, %s", group->path, key);
++        VIR_DEBUG("No path of %s, %s", group->path, key);
+         return rc;
+     }
+ 
+@@ -321,8 +321,8 @@ static int virCgroupGetValueStr(virCgroupPtr group,
+ 
+     rc = virFileReadAll(keypath, 1024, value);
+     if (rc < 0) {
+-        DEBUG("Failed to read %s: %m\n", keypath);
+         rc = -errno;
++        VIR_DEBUG("Failed to read %s: %m\n", keypath);
+     } else {
+         /* Terminated with '\n' has sometimes harmful effects to the caller */
+         char *p = strchr(*value, '\n');
+@@ -632,8 +632,8 @@ static int virCgroupRemoveRecursively(char *grppath)
+     if (grpdir == NULL) {
+         if (errno == ENOENT)
+             return 0;
+-        VIR_ERROR(_("Unable to open %s (%d)"), grppath, errno);
+         rc = -errno;
++        VIR_ERROR(_("Unable to open %s (%d)"), grppath, errno);
+         return rc;
+     }
+ 
+@@ -662,7 +662,7 @@ static int virCgroupRemoveRecursively(char *grppath)
+     }
+     closedir(grpdir);
+ 
+-    DEBUG("Removing cgroup %s", grppath);
++    VIR_DEBUG("Removing cgroup %s", grppath);
+     if (rmdir(grppath) != 0 && errno != ENOENT) {
+         rc = -errno;
+         VIR_ERROR(_("Unable to remove %s (%d)"), grppath, errno);
+@@ -707,7 +707,7 @@ int virCgroupRemove(virCgroupPtr group)
+                                       &grppath) != 0)
+             continue;
+ 
+-        DEBUG("Removing cgroup %s and all child cgroups", grppath);
++        VIR_DEBUG("Removing cgroup %s and all child cgroups", grppath);
+         rc = virCgroupRemoveRecursively(grppath);
+         VIR_FREE(grppath);
+     }
+-- 
+1.7.4.1
+

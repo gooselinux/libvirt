@@ -1,0 +1,47 @@
+From 40f38160f67b05a401f70ae2b4a8c4c9827a6e36 Mon Sep 17 00:00:00 2001
+Message-Id: <40f38160f67b05a401f70ae2b4a8c4c9827a6e36.1300223309.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 14 Mar 2011 13:20:36 -0400
+Subject: [PATCH] audit: eliminate potential null pointer deref when auditing macvtap devices
+
+This patch fixes a bug in the initial commits for:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+It is already commited upstream:
+
+   commit 7cc101ce0e8e1929f6573c3bee3ec2e287304513
+   Author: Laine Stump <laine@laine.org>
+   Date:   Mon Mar 14 11:15:19 2011 -0400
+
+The newly added call to qemuAuditNetDevice in qemuPhysIfaceConnect was
+assuming that res_ifname (the name of the macvtap device) was always
+valid, but this isn't the case. If openMacvtapTap fails, it always
+returns NULL, which would result in a segv.
+
+Since the audit log only needs a record of devices that are actually
+sent to qemu, and a failure to open the macvtap device means that no
+device will be sent to qemu, we can solve this problem by only doing
+the audit if openMacvtapTap is successful (in which case res_ifname is
+guaranteed valid).
+---
+ src/qemu/qemu_command.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 2b70ce9..adc6e22 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -128,8 +128,8 @@ qemuPhysIfaceConnect(virDomainDefPtr def,
+                         net->data.direct.mode, vnet_hdr, def->uuid,
+                         &net->data.direct.virtPortProfile, &res_ifname,
+                         vmop);
+-    qemuAuditNetDevice(def, net, res_ifname, rc >= 0);
+     if (rc >= 0) {
++        qemuAuditNetDevice(def, net, res_ifname, true);
+         VIR_FREE(net->ifname);
+         net->ifname = res_ifname;
+     }
+-- 
+1.7.4.1
+

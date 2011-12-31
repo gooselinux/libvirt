@@ -1,0 +1,121 @@
+From 35791a8ac14585cd9c0882f2901d0cde3e8267e2 Mon Sep 17 00:00:00 2001
+Message-Id: <35791a8ac14585cd9c0882f2901d0cde3e8267e2.1296819816.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Fri, 28 Jan 2011 13:30:21 -0700
+Subject: [PATCH] avoid vm to be deleted if qemuConnectMonitor failed
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673588
+
+Steps to reproduce this bug:
+1. service libvirtd start
+2. virsh start <domain>
+3. kill -STOP $(cat /var/run/libvirt/qemu/<domain>.pid)
+4. service libvirtd restart
+5. kill -9 $(cat /var/run/libvirt/qemu/<domain>.pid)
+
+Then libvirtd will core dump or be in deadlock state.
+
+Make sure that json is built into libvirt and the version
+of qemu is newer than 0.13.0.
+
+The reason of libvirtd cores dump is that:
+We add vm->refs when we alloc the memory, and decrease it
+in the function qemuHandleMonitorEOF() in other thread.
+
+We add vm->refs in the function qemuConnectMonitor() and
+decrease it when the vm is inactive.
+
+The libvirtd will block in the function qemuMonitorSetCapabilities()
+because the vm is stopped by signal SIGSTOP. Now the vm->refs is 2.
+
+Then we kill the vm by signal SIGKILL. The function
+qemuMonitorSetCapabilities() failed, and then we will decrease vm->refs
+in the function qemuMonitorClose().
+In another thread, mon->fd is broken and the function
+qemuHandleMonitorEOF() is called.
+
+If qemuHandleMonitorEOF() decreases vm->refs before qemuConnectMonitor()
+returns, vm->refs will be decrease to 0 and the memory is freed.
+
+We will call qemudShutdownVMDaemon() as qemuConnectMonitor() failed.
+The memory has been freed, so qemudShutdownVMDaemon() is too dangerous.
+
+We will reference NULL pointer in the function virDomainConfVMNWFilterTeardown():
+=============
+void
+virDomainConfVMNWFilterTeardown(virDomainObjPtr vm) {
+    int i;
+
+    if (nwfilterDriver != NULL) {
+        for (i = 0; i < vm->def->nnets; i++)
+            virDomainConfNWFilterTeardown(vm->def->nets[i]);
+    }
+}
+============
+vm->def->nnets is not 0 but vm->def->nets is NULL(We don't set vm->def->nnets
+to 0 when we free vm).
+
+We should add an extra reference of vm to avoid vm to be deleted if
+qemuConnectMonitor() failed.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit d96431f9104a3a7fd12865b941a78b4cf7c6ec09)
+---
+ src/qemu/qemu_driver.c |   31 ++++++++++++++++++++++---------
+ 1 files changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 0b9614d..a926b6d 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1318,6 +1318,10 @@ qemuReconnectDomain(void *payload, const char *name ATTRIBUTE_UNUSED, void *opaq
+ 
+     priv = obj->privateData;
+ 
++    /* Hold an extra reference because we can't allow 'vm' to be
++     * deleted if qemuConnectMonitor() failed */
++    virDomainObjRef(obj);
++
+     /* XXX check PID liveliness & EXE path */
+     if (qemuConnectMonitor(driver, obj) < 0)
+         goto error;
+@@ -1352,18 +1356,27 @@ qemuReconnectDomain(void *payload, const char *name ATTRIBUTE_UNUSED, void *opaq
+     if (obj->def->id >= driver->nextvmid)
+         driver->nextvmid = obj->def->id + 1;
+ 
+-    virDomainObjUnlock(obj);
++    if (virDomainObjUnref(obj) > 0)
++        virDomainObjUnlock(obj);
+     return;
+ 
+ error:
+-    /* We can't get the monitor back, so must kill the VM
+-     * to remove danger of it ending up running twice if
+-     * user tries to start it again later */
+-    qemudShutdownVMDaemon(driver, obj, 0);
+-    if (!obj->persistent)
+-        virDomainRemoveInactive(&driver->domains, obj);
+-    else
+-        virDomainObjUnlock(obj);
++    if (!virDomainObjIsActive(obj)) {
++        if (virDomainObjUnref(obj) > 0)
++            virDomainObjUnlock(obj);
++        return;
++    }
++
++    if (virDomainObjUnref(obj) > 0) {
++        /* We can't get the monitor back, so must kill the VM
++         * to remove danger of it ending up running twice if
++         * user tries to start it again later */
++        qemudShutdownVMDaemon(driver, obj, 0);
++        if (!obj->persistent)
++            virDomainRemoveInactive(&driver->domains, obj);
++        else
++            virDomainObjUnlock(obj);
++    }
+ }
+ 
+ /**
+-- 
+1.7.4
+

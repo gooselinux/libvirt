@@ -1,0 +1,355 @@
+From 02f5b9a19f58f2e29b901df4361d6eb8288a02a5 Mon Sep 17 00:00:00 2001
+Message-Id: <02f5b9a19f58f2e29b901df4361d6eb8288a02a5.1296166858.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Mon, 24 Jan 2011 14:13:36 -0500
+Subject: [PATCH] qemu: Allow serving VNC over a unix domain socket
+
+https://bugzilla.redhat.com/show_bug.cgi?id=651415
+
+QEMU supports serving VNC over a unix domain socket rather than traditional
+TCP host/port. This is specified with:
+
+<graphics type='vnc' socket='/foo/bar/baz'/>
+
+This provides better security access control than VNC listening on
+127.0.0.1, but will cause issues with tools that rely on the lax security
+(virt-manager in fedora runs as regular user by default, and wouldn't be
+able to access a socket owned by 'qemu' or 'root').
+
+Also not currently supported by any clients, though I have patches for
+virt-manager, and virt-viewer should be simple to update.
+
+v2:
+    schema: Make listen vs. socket a <choice>
+(cherry picked from commit 1d9c0a08d99888a9aa3609997266f76a5e5f9b12)
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ docs/formatdomain.html.in                          |    6 ++-
+ docs/schemas/domain.rng                            |   47 +++++++++++-------
+ src/conf/domain_conf.c                             |   30 +++++++----
+ src/conf/domain_conf.h                             |    1 +
+ src/qemu/qemu_command.c                            |   52 +++++++++++++-------
+ src/qemu/qemu_driver.c                             |    1 +
+ tests/qemuargv2xmltest.c                           |    1 +
+ .../qemuxml2argv-graphics-vnc-socket.args          |    1 +
+ .../qemuxml2argv-graphics-vnc-socket.xml           |   30 +++++++++++
+ tests/qemuxml2argvtest.c                           |    1 +
+ 10 files changed, 122 insertions(+), 48 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 44e4902..67679c4 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1190,7 +1190,11 @@ qemu-kvm -net nic,model=? /dev/null
+   in clear text. The <code>keymap</code> attribute specifies the keymap
+   to use. It is possible to set a limit on the validity of the password
+   be giving an timestamp <code>passwdValidTo='2010-04-09T15:51:00'</code>
+-  assumed to be in UTC. NB, this may not be supported by all hypervisors.
++  assumed to be in UTC. NB, this may not be supported by all hypervisors.<br>
++  <br>
++  Rather than using listen/port, QEMU supports a <code>socket</code>
++  attribute for listening on a unix domain socket path.
++  <span class="since">Since 0.8.8</span>
+           </dd>
+           <dt><code>"spice"</code></dt>
+           <dd>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 901328a..59001a2 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1127,24 +1127,35 @@
+           <attribute name="type">
+             <value>vnc</value>
+           </attribute>
+-          <optional>
+-            <attribute name="port">
+-              <ref name="PortNumber"/>
+-            </attribute>
+-          </optional>
+-          <optional>
+-            <attribute name="autoport">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
+-            </attribute>
+-          </optional>
+-          <optional>
+-            <attribute name="listen">
+-              <ref name="addrIP"/>
+-            </attribute>
+-          </optional>
++          <choice>
++            <group>
++              <optional>
++                <attribute name="port">
++                  <ref name="PortNumber"/>
++                </attribute>
++              </optional>
++              <optional>
++                <attribute name="autoport">
++                  <choice>
++                    <value>yes</value>
++                    <value>no</value>
++                  </choice>
++                </attribute>
++              </optional>
++              <optional>
++                <attribute name="listen">
++                  <ref name="addrIP"/>
++                </attribute>
++              </optional>
++            </group>
++            <group>
++              <optional>
++                <attribute name="socket">
++                  <ref name="absFilePath"/>
++                </attribute>
++              </optional>
++            </group>
++          </choice>
+           <optional>
+             <attribute name="passwd">
+               <text/>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 67bc70c..ccfae26 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -478,6 +478,7 @@ void virDomainGraphicsDefFree(virDomainGraphicsDefPtr def)
+     switch (def->type) {
+     case VIR_DOMAIN_GRAPHICS_TYPE_VNC:
+         VIR_FREE(def->data.vnc.listenAddr);
++        VIR_FREE(def->data.vnc.socket);
+         VIR_FREE(def->data.vnc.keymap);
+         virDomainGraphicsAuthDefClear(&def->data.vnc.auth);
+         break;
+@@ -3460,6 +3461,7 @@ virDomainGraphicsDefParseXML(xmlNodePtr node, int flags) {
+         }
+ 
+         def->data.vnc.listenAddr = virXMLPropString(node, "listen");
++        def->data.vnc.socket = virXMLPropString(node, "socket");
+         def->data.vnc.keymap = virXMLPropString(node, "keymap");
+ 
+         if (virDomainGraphicsAuthDefParseXML(node, &def->data.vnc.auth) < 0)
+@@ -7025,19 +7027,25 @@ virDomainGraphicsDefFormat(virBufferPtr buf,
+ 
+     switch (def->type) {
+     case VIR_DOMAIN_GRAPHICS_TYPE_VNC:
+-        if (def->data.vnc.port &&
+-            (!def->data.vnc.autoport || !(flags & VIR_DOMAIN_XML_INACTIVE)))
+-            virBufferVSprintf(buf, " port='%d'",
+-                              def->data.vnc.port);
+-        else if (def->data.vnc.autoport)
+-            virBufferAddLit(buf, " port='-1'");
++        if (def->data.vnc.socket) {
++            if (def->data.vnc.socket)
++                virBufferVSprintf(buf, " socket='%s'",
++                                  def->data.vnc.socket);
++        } else {
++            if (def->data.vnc.port &&
++                (!def->data.vnc.autoport || !(flags & VIR_DOMAIN_XML_INACTIVE)))
++                virBufferVSprintf(buf, " port='%d'",
++                                  def->data.vnc.port);
++            else if (def->data.vnc.autoport)
++                virBufferAddLit(buf, " port='-1'");
+ 
+-        virBufferVSprintf(buf, " autoport='%s'",
+-                          def->data.vnc.autoport ? "yes" : "no");
++            virBufferVSprintf(buf, " autoport='%s'",
++                              def->data.vnc.autoport ? "yes" : "no");
+ 
+-        if (def->data.vnc.listenAddr)
+-            virBufferVSprintf(buf, " listen='%s'",
+-                              def->data.vnc.listenAddr);
++            if (def->data.vnc.listenAddr)
++                virBufferVSprintf(buf, " listen='%s'",
++                                  def->data.vnc.listenAddr);
++        }
+ 
+         if (def->data.vnc.keymap)
+             virBufferEscapeString(buf, " keymap='%s'",
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index dc42b12..7430ba3 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -590,6 +590,7 @@ struct _virDomainGraphicsDef {
+             unsigned int autoport :1;
+             char *listenAddr;
+             char *keymap;
++            char *socket;
+             virDomainGraphicsAuthDef auth;
+         } vnc;
+         struct {
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 5e74b13..0f317f5 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3568,7 +3568,11 @@ qemuBuildCommandLine(virConnectPtr conn,
+         def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC) {
+         virBuffer opt = VIR_BUFFER_INITIALIZER;
+ 
+-        if (qemuCmdFlags & QEMUD_CMD_FLAG_VNC_COLON) {
++        if (def->graphics[0]->data.vnc.socket) {
++            virBufferVSprintf(&opt, "unix:%s",
++                              def->graphics[0]->data.vnc.socket);
++
++        } else if (qemuCmdFlags & QEMUD_CMD_FLAG_VNC_COLON) {
+             if (def->graphics[0]->data.vnc.listenAddr)
+                 virBufferAdd(&opt, def->graphics[0]->data.vnc.listenAddr, -1);
+             else if (driver->vncListen)
+@@ -3577,6 +3581,12 @@ qemuBuildCommandLine(virConnectPtr conn,
+             virBufferVSprintf(&opt, ":%d",
+                               def->graphics[0]->data.vnc.port - 5900);
+ 
++        } else {
++            virBufferVSprintf(&opt, "%d",
++                              def->graphics[0]->data.vnc.port - 5900);
++        }
++
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_VNC_COLON) {
+             if (def->graphics[0]->data.vnc.auth.passwd ||
+                 driver->vncPassword)
+                 virBufferAddLit(&opt, ",password");
+@@ -3601,9 +3611,6 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+                 /* TODO: Support ACLs later */
+             }
+-        } else {
+-            virBufferVSprintf(&opt, "%d",
+-                              def->graphics[0]->data.vnc.port - 5900);
+         }
+ 
+         virCommandAddArg(cmd, "-vnc");
+@@ -5304,24 +5311,33 @@ virDomainDefPtr qemuParseCommandLine(virCapsPtr caps,
+                 goto no_memory;
+             vnc->type = VIR_DOMAIN_GRAPHICS_TYPE_VNC;
+ 
+-            tmp = strchr(val, ':');
+-            if (tmp) {
+-                char *opts;
+-                if (virStrToLong_i(tmp+1, &opts, 10, &vnc->data.vnc.port) < 0) {
+-                    VIR_FREE(vnc);
+-                    qemuReportError(VIR_ERR_INTERNAL_ERROR,             \
+-                                    _("cannot parse VNC port '%s'"), tmp+1);
+-                    goto error;
+-                }
+-                vnc->data.vnc.listenAddr = strndup(val, tmp-val);
+-                if (!vnc->data.vnc.listenAddr) {
++            if (STRPREFIX(val, "unix:")) {
++                vnc->data.vnc.socket = strdup(val + 5);
++                if (!vnc->data.vnc.socket) {
+                     VIR_FREE(vnc);
+                     goto no_memory;
+                 }
+-                vnc->data.vnc.port += 5900;
+-                vnc->data.vnc.autoport = 0;
+             } else {
+-                vnc->data.vnc.autoport = 1;
++                tmp = strchr(val, ':');
++                if (tmp) {
++                    char *opts;
++                    if (virStrToLong_i(tmp+1, &opts, 10,
++                                       &vnc->data.vnc.port) < 0) {
++                        VIR_FREE(vnc);
++                        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                        _("cannot parse VNC port '%s'"), tmp+1);
++                        goto error;
++                    }
++                    vnc->data.vnc.listenAddr = strndup(val, tmp-val);
++                    if (!vnc->data.vnc.listenAddr) {
++                        VIR_FREE(vnc);
++                        goto no_memory;
++                    }
++                    vnc->data.vnc.port += 5900;
++                    vnc->data.vnc.autoport = 0;
++                } else {
++                    vnc->data.vnc.autoport = 1;
++                }
+             }
+ 
+             if (VIR_REALLOC_N(def->graphics, def->ngraphics+1) < 0) {
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 66ef78b..7408aa8 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3080,6 +3080,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+ 
+     if (vm->def->ngraphics == 1) {
+         if (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
++            !vm->def->graphics[0]->data.vnc.socket &&
+             vm->def->graphics[0]->data.vnc.autoport) {
+             int port = qemudNextFreePort(driver, QEMU_VNC_PORT_MIN);
+             if (port < 0) {
+diff --git a/tests/qemuargv2xmltest.c b/tests/qemuargv2xmltest.c
+index 8338af3..7499ba0 100644
+--- a/tests/qemuargv2xmltest.c
++++ b/tests/qemuargv2xmltest.c
+@@ -178,6 +178,7 @@ mymain(int argc, char **argv)
+     DO_TEST("disk-drive-network-sheepdog");
+     DO_TEST("disk-usb");
+     DO_TEST("graphics-vnc");
++    DO_TEST("graphics-vnc-socket");
+ 
+     driver.vncSASL = 1;
+     driver.vncSASLdir = strdup("/root/.sasl2");
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.args
+new file mode 100644
+index 0000000..055c562
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none /usr/bin/qemu -S -M pc -m 214 -smp 1 -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -net none -serial none -parallel none -usb -vnc unix:/tmp/foo.socket
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
+new file mode 100644
+index 0000000..d6ad72b
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
+@@ -0,0 +1,30 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <input type='mouse' bus='ps2'/>
++    <graphics type='vnc' socket='/tmp/foo.socket'/>
++    <video>
++      <model type='cirrus' vram='9216' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 3567a56..eb210f8 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -322,6 +322,7 @@ mymain(int argc, char **argv)
+     DO_TEST("disk-scsi-device-auto", QEMUD_CMD_FLAG_DRIVE |
+             QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_NODEFCONFIG, false);
+     DO_TEST("graphics-vnc", 0, false);
++    DO_TEST("graphics-vnc-socket", 0, false);
+ 
+     driver.vncSASL = 1;
+     driver.vncSASLdir = strdup("/root/.sasl2");
+-- 
+1.7.4.rc3
+

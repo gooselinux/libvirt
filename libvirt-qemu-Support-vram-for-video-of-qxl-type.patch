@@ -1,0 +1,293 @@
+From 942fc70409581b445f6d61b315770b59b244bb99 Mon Sep 17 00:00:00 2001
+Message-Id: <942fc70409581b445f6d61b315770b59b244bb99.1299776671.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 8 Mar 2011 21:28:16 +0800
+Subject: [PATCH] qemu: Support vram for video of qxl type
+
+For qemu names the primary vga as "qxl-vga":
+
+  1) if vram is specified for 2nd qxl device:
+
+    -vga qxl -global qxl-vga.vram_size=$SIZE \
+    -device qxl,id=video1,vram_size=$SIZE,...
+
+  2) if vram is not specified for 2nd qxl device, (use the default
+     set by global):
+
+    -vga qxl -global qxl-vga.vram_size=$SIZE \
+    -device qxl,id=video1,...
+
+For qemu names all qxl devices as "qxl":
+
+  1) if vram is specified for 2nd qxl device:
+
+    -vga qxl -global qxl.vram_size=$SIZE \
+    -device qxl,id=video1,vram_size=$SIZE ...
+
+  2) if vram is not specified for 2nd qxl device:
+
+    -vga qxl -global qxl-vga.vram_size=$SIZE \
+    -device qxl,id=video1,...
+
+"-global" is the only way to define vram_size for the primary qxl
+device, regardless of how qemu names it, (It's not good a good
+way, as original idea of "-global" is to set a global default for
+a driver property, but to specify vram for first qxl device, we
+have to use it).
+
+For other qxl devices, as they are represented by "-device", could
+specify it directly and seperately for each, and it overrides the
+default set by "-global" if specified.
+
+v1 - v2:
+  * modify "virDomainVideoDefaultRAM" so that it returns 16M as the
+    default vram_size for qxl device.
+
+  * vram_size * 1024 (qemu accepts bytes for vram_size).
+
+  * apply default vram_size for qxl device for which vram_size is
+    not specified.
+
+  * modify "graphics-spice" tests (more sensiable vram_size)
+
+  * Add an argument of virDomainDefPtr type for qemuBuildVideoDevStr,
+    to use virDomainVideoDefaultRAM in qemuBuildVideoDevStr).
+
+v2 - v3:
+  * Modify default video memory size for qxl device from 16M to 24M
+
+  * Update codes to be consistent with changes on qemu_capabilities.*
+(cherry picked from commit 82dfc6f38e353cad24ff0029d2210ff2196e21a2)
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c
+	src/qemu/qemu_capabilities.h
+	src/qemu/qemu_command.c
+	tests/qemuhelptest.c
+	tests/qemuxml2argvtest.c
+
+Above confilicts is caused by upstream 21642e82b15b, which will not
+be backported to RHEL6.1, manually resolved.
+
+BZ# 673578
+https://bugzilla.redhat.com/show_bug.cgi?id=673578
+---
+ src/conf/domain_conf.c                             |    4 ++
+ src/qemu/qemu_capabilities.c                       |    2 +
+ src/qemu/qemu_capabilities.h                       |    1 +
+ src/qemu/qemu_command.c                            |   18 ++++++++++
+ tests/qemuhelptest.c                               |    1 +
+ .../qemuxml2argv-graphics-spice-qxl-vga.args       |    7 ++++
+ .../qemuxml2argv-graphics-spice-qxl-vga.xml        |   36 ++++++++++++++++++++
+ .../qemuxml2argv-graphics-spice.args               |    4 +-
+ .../qemuxml2argv-graphics-spice.xml                |    4 +-
+ tests/qemuxml2argvtest.c                           |    5 +++
+ tests/qemuxml2xmltest.c                            |    1 +
+ 11 files changed, 79 insertions(+), 4 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 7279c85..bbebdea 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -4167,6 +4167,10 @@ virDomainVideoDefaultRAM(virDomainDefPtr def,
+         /* Original Xen PVFB hardcoded to 4 MB */
+         return 4 * 1024;
+ 
++    case VIR_DOMAIN_VIDEO_TYPE_QXL:
++        /* QEMU use 64M as the minimal video video memory for qxl device */
++        return 64 * 1024;
++
+     default:
+         return 0;
+     }
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index f0c1c81..34697d5 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1112,6 +1112,8 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+     }
+     if (strstr(str, "virtio-net-pci.tx="))
+         *flags |= QEMUD_CMD_FLAG_VIRTIO_TX_ALG;
++    if (strstr(str, "name \"qxl-vga\""))
++        *flags |= QEMUD_CMD_FLAG_DEVICE_QXL_VGA;
+ 
+     return 0;
+ }
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index ad4a848..28d451e 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -93,6 +93,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_CHARDEV_SPICEVMC = (1LL << 56), /* newer -chardev spicevmc */
+     QEMUD_CMD_FLAG_DEVICE_SPICEVMC = (1LL << 57), /* older -device spicevmc*/
+     QEMUD_CMD_FLAG_VIRTIO_TX_ALG = (1LL << 58), /* -device virtio-net-pci,tx=string */
++    QEMUD_CMD_FLAG_DEVICE_QXL_VGA = (1LL << 59), /* Is the primary and vga campatible qxl device named qxl-vga? */
+     QEMUD_CMD_FLAG_DISABLE_KSM   = (1LL << 63), /* Is '-redhat-disable-KSM' available? */
+ };
+ 
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 8c8591d..53e4641 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1899,6 +1899,12 @@ qemuBuildVideoDevStr(virDomainVideoDefPtr video,
+ 
+     virBufferVSprintf(&buf, "%s", model);
+     virBufferVSprintf(&buf, ",id=%s", video->info.alias);
++
++    if (video->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
++        /* QEMU accepts bytes for vram_size. */
++        virBufferVSprintf(&buf, ",vram_size=%u", video->vram * 1024);
++    }
++
+     if (qemuBuildDeviceAddressStr(&buf, &video->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+@@ -4003,6 +4009,18 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 }
+ 
+                 virCommandAddArgList(cmd, "-vga", vgastr, NULL);
++
++                if (def->videos[0]->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
++                    if (def->videos[0]->vram &&
++                        (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++                            if (qemuCmdFlags &QEMUD_CMD_FLAG_DEVICE_QXL_VGA)
++                                virCommandAddArgFormat(cmd, "-global qxl-vga.vram_size=%u",
++                                                       def->videos[0]->vram * 1024);
++                            else
++                                virCommandAddArgFormat(cmd, "-global qxl.vram_size=%u",
++                                                       def->videos[0]->vram * 1024);
++                    }
++                }
+             }
+         } else {
+ 
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 76535a2..2d1e26e 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -482,6 +482,7 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_CCID_PASSTHRU |
+             QEMUD_CMD_FLAG_CHARDEV_SPICEVMC |
+             QEMUD_CMD_FLAG_VIRTIO_TX_ALG |
++            QEMUD_CMD_FLAG_DEVICE_QXL_VGA |
+             QEMUD_CMD_FLAG_DISABLE_KSM,
+             12001, 1,  0);
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.args
+new file mode 100644
+index 0000000..18013a5
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice \
++/usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefaults -monitor \
++unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda \
++/dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,\
++x509-dir=/etc/pki/libvirt-spice,tls-channel=main,plaintext-channel=inputs -vga \
++qxl -global qxl-vga.vram_size=33554432 -device qxl,id=video1,vram_size=67108864,bus=pci.0,addr=0x4 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
+new file mode 100644
+index 0000000..a38550c
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
+@@ -0,0 +1,36 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219136</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <input type='mouse' bus='ps2'/>
++    <graphics type='spice' port='5903' tlsPort='5904' autoport='no' listen='127.0.0.1'>
++      <channel name='main' mode='secure'/>
++      <channel name='inputs' mode='insecure'/>
++    </graphics>
++    <video>
++      <model type='qxl' vram='32768' heads='1'/>
++    </video>
++    <video>
++      <model type='qxl' vram='65536' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+index a8fb243..c788bb6 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+@@ -3,5 +3,5 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice \
+ unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda \
+ /dev/HostVG/QEMUGuest1 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,\
+ x509-dir=/etc/pki/libvirt-spice,tls-channel=main,plaintext-channel=inputs -vga \
+-qxl -device qxl,id=video1,bus=pci.0,addr=0x4 -device virtio-balloon-pci,\
+-id=balloon0,bus=pci.0,addr=0x3
++qxl -global qxl.vram_size=18874368 -device qxl,id=video1,vram_size=33554432,bus=pci.0,addr=0x4 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+index 15a22f3..29e3db5 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+@@ -26,10 +26,10 @@
+       <channel name='inputs' mode='insecure'/>
+     </graphics>
+     <video>
+-      <model type='qxl' vram='65536' heads='1'/>
++      <model type='qxl' vram='18432' heads='1'/>
+     </video>
+     <video>
+-      <model type='qxl' vram='65536' heads='1'/>
++      <model type='qxl' vram='32768' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 4817d51..ba0e724 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -355,6 +355,11 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_VGA | QEMUD_CMD_FLAG_VGA_QXL |
+             QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_SPICE, false);
+ 
++    DO_TEST("graphics-spice-qxl-vga",
++            QEMUD_CMD_FLAG_VGA | QEMUD_CMD_FLAG_VGA_QXL |
++            QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_SPICE |
++            QEMUD_CMD_FLAG_DEVICE_QXL_VGA, false);
++
+     DO_TEST("input-usbmouse", 0, false);
+     DO_TEST("input-usbtablet", 0, false);
+     DO_TEST("input-xen", QEMUD_CMD_FLAG_DOMID, true);
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 67e721b..c0c36ad 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -152,6 +152,7 @@ mymain(int argc, char **argv)
+     DO_TEST("graphics-sdl");
+     DO_TEST("graphics-sdl-fullscreen");
+     DO_TEST("graphics-spice");
++    DO_TEST("graphics-spice-qxl-vga");
+     DO_TEST("input-usbmouse");
+     DO_TEST("input-usbtablet");
+     DO_TEST("input-xen");
+-- 
+1.7.4.1
+

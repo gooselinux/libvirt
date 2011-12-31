@@ -1,0 +1,150 @@
+From 1ce30b19860b622d85386d678748d5cfd10388bd Mon Sep 17 00:00:00 2001
+Message-Id: <1ce30b19860b622d85386d678748d5cfd10388bd.1302097026.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 31 Mar 2011 15:31:19 +0100
+Subject: [PATCH] Filter out certain expected error messages from libvirtd
+
+https://bugzilla.redhat.com/show_bug.cgi?id=587603
+
+Add a hook to the error reporting APIs to allow specific
+error messages to be filtered out. Wire up libvirtd to
+remove VIR_ERR_NO_DOMAIN & similar error codes from the
+logs. They are still logged at DEBUG level.
+
+* daemon/libvirtd.c: Filter VIR_ERR_NO_DOMAIN and friends
+* src/libvirt_private.syms, src/util/virterror.c,
+  src/util/virterror_internal.h: Hook for changing error
+  reporting level
+(cherry picked from commit b8786c06417c6a2a90e03006b35b21d899cc4157)
+---
+ daemon/libvirtd.c             |   25 +++++++++++++++++++++++++
+ src/libvirt_private.syms      |    1 +
+ src/util/virterror.c          |   26 ++++++++++++++++++--------
+ src/util/virterror_internal.h |    3 +++
+ 4 files changed, 47 insertions(+), 8 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 36099b5..f3adb98 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -822,6 +822,30 @@ static void virshErrorHandler(void *opaque ATTRIBUTE_UNUSED, virErrorPtr err ATT
+      * took care of reporting the error */
+ }
+ 
++static int daemonErrorLogFilter(virErrorPtr err, int priority)
++{
++    /* These error codes don't really reflect real errors. They
++     * are expected events that occur when an app tries to check
++     * whether a particular guest already exists. This filters
++     * them to a lower log level to prevent pollution of syslog
++     */
++    switch (err->code) {
++    case VIR_ERR_NO_DOMAIN:
++    case VIR_ERR_NO_NETWORK:
++    case VIR_ERR_NO_STORAGE_POOL:
++    case VIR_ERR_NO_STORAGE_VOL:
++    case VIR_ERR_NO_NODE_DEVICE:
++    case VIR_ERR_NO_INTERFACE:
++    case VIR_ERR_NO_NWFILTER:
++    case VIR_ERR_NO_SECRET:
++    case VIR_ERR_NO_DOMAIN_SNAPSHOT:
++        return VIR_LOG_DEBUG;
++    }
++
++    return priority;
++}
++
++
+ static struct qemud_server *qemudInitialize(void) {
+     struct qemud_server *server;
+ 
+@@ -3260,6 +3284,7 @@ int main(int argc, char **argv) {
+ 
+     /* Disable error func, now logging is setup */
+     virSetErrorFunc(NULL, virshErrorHandler);
++    virSetErrorLogPriorityFunc(daemonErrorLogFilter);
+ 
+     /*
+      * Call the daemon startup hook
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 7ae39b5..4313a59 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -919,6 +919,7 @@ virReportErrorHelper;
+ virReportOOMErrorFull;
+ virReportSystemErrorFull;
+ virSetError;
++virSetErrorLogPriorityFunc;
+ virStrerror;
+ 
+ 
+diff --git a/src/util/virterror.c b/src/util/virterror.c
+index db89b48..8322645 100644
+--- a/src/util/virterror.c
++++ b/src/util/virterror.c
+@@ -26,6 +26,7 @@ virThreadLocal virLastErr;
+ 
+ virErrorFunc virErrorHandler = NULL;     /* global error handler */
+ void *virUserData = NULL;        /* associated data */
++virErrorLogPriorityFunc virErrorLogPriorityFilter = NULL;
+ 
+ /*
+  * Macro used to format the message as a string in virRaiseError
+@@ -722,14 +723,6 @@ virRaiseErrorFull(virConnectPtr conn ATTRIBUTE_UNUSED,
+     }
+ 
+     /*
+-     * Hook up the error or warning to the logging facility
+-     * XXXX should we include filename as 'category' instead of domain name ?
+-     */
+-    priority = virErrorLevelPriority(level);
+-    virLogMessage(virErrorDomainName(domain), priority,
+-                  funcname, linenr, 1, "%s", str);
+-
+-    /*
+      * Save the information about the error
+      */
+     /*
+@@ -749,6 +742,18 @@ virRaiseErrorFull(virConnectPtr conn ATTRIBUTE_UNUSED,
+     to->int1 = int1;
+     to->int2 = int2;
+ 
++    /*
++     * Hook up the error or warning to the logging facility
++     * XXXX should we include filename as 'category' instead of domain name ?
++     */
++    priority = virErrorLevelPriority(level);
++    if (virErrorLogPriorityFilter)
++        priority = virErrorLogPriorityFilter(to, priority);
++    virLogMessage(filename, priority,
++                  funcname, linenr,
++                  virErrorLogPriorityFilter ? 0 : 1,
++                  "%s", str);
++
+     errno = save_errno;
+ }
+ 
+@@ -1351,3 +1356,8 @@ void virReportOOMErrorFull(int domcode,
+                       domcode, VIR_ERR_NO_MEMORY, VIR_ERR_ERROR,
+                       virerr, NULL, NULL, -1, -1, virerr, NULL);
+ }
++
++void virSetErrorLogPriorityFunc(virErrorLogPriorityFunc func)
++{
++    virErrorLogPriorityFilter = func;
++}
+diff --git a/src/util/virterror_internal.h b/src/util/virterror_internal.h
+index 601a884..8f32f41 100644
+--- a/src/util/virterror_internal.h
++++ b/src/util/virterror_internal.h
+@@ -90,4 +90,7 @@ int virSetError(virErrorPtr newerr);
+ void virDispatchError(virConnectPtr conn);
+ const char *virStrerror(int theerrno, char *errBuf, size_t errBufLen);
+ 
++typedef int (*virErrorLogPriorityFunc)(virErrorPtr, int);
++void virSetErrorLogPriorityFunc(virErrorLogPriorityFunc func);
++
+ #endif
+-- 
+1.7.4.1
+

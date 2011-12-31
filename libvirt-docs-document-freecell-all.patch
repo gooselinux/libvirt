@@ -1,0 +1,40 @@
+From 5efe45071159171626c95adb36992ab147d7dc1b Mon Sep 17 00:00:00 2001
+Message-Id: <5efe45071159171626c95adb36992ab147d7dc1b.1303134271.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 12 Apr 2011 16:51:45 -0600
+Subject: [PATCH] docs: document freecell --all
+
+Based on a smaller patch developed by Moritoshi Oshiro:
+https://bugzilla.redhat.com/show_bug.cgi?id=693963
+
+Documentation bug introduced in
+https://bugzilla.redhat.com/show_bug.cgi?id=653530
+
+* tools/virsh.pod (freecell): Mention all, and clarify that
+optional cellno requires --cellno.
+(cherry picked from commit 0ddc8d0aebf2e727c78aa09a0f507766297f4e7c)
+---
+ tools/virsh.pod |    5 +++--
+ 1 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 7988a8d..c767a14 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -309,10 +309,11 @@ crashed.
+ 
+ =back
+ 
+-=item B<freecell> optional I<cellno>
++=item B<freecell> optional { I<--cellno> B<cellno> | I<--all> }
+ 
+ Prints the available amount of memory on the machine or within a
+-NUMA cell if I<cellno> is provided.
++NUMA cell if I<cellno> is provided.  If I<--all> is provided instead
++of I<--cellno>, then show the information on all NUMA cells.
+ 
+ =item B<cpu-baseline> I<FILE>
+ 
+-- 
+1.7.5.rc1
+

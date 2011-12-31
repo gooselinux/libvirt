@@ -1,0 +1,36 @@
+From 210d96d1e2f59abbe87b05a05ad6113a30a6c3b5 Mon Sep 17 00:00:00 2001
+Message-Id: <210d96d1e2f59abbe87b05a05ad6113a30a6c3b5.1295285119.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Thu, 13 Jan 2011 12:11:32 -0500
+Subject: [PATCH] Don't chown qemu saved image back to root after save if dynamic_ownership=0
+
+This fix is in response to:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=661720
+
+Upstream commit a691cb88f2fa9d4caaca12ed048ed487fdbc09e3
+
+When dynamic_ownership=0, saved images must be owned by the same uid
+as is used to run the qemu process, otherwise restore won't work. To
+accomplish this, qemuSecurityDACRestoreSavedStateLabel() needs to
+simply return when it's called.
+---
+ src/qemu/qemu_security_dac.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index b5c52d1..6b6170a 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -533,7 +533,7 @@ qemuSecurityDACRestoreSavedStateLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
+                                       virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                       const char *savefile)
+ {
+-    if (!driver->privileged)
++    if (!driver->privileged || !driver->dynamicOwnership)
+         return 0;
+ 
+     return qemuSecurityDACRestoreSecurityFileLabel(savefile);
+-- 
+1.7.4.rc2
+

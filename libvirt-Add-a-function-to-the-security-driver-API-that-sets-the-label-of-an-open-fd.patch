@@ -1,0 +1,233 @@
+From b0bd71b0f037e5a5ea6061ee679c274216eca0ec Mon Sep 17 00:00:00 2001
+Message-Id: <b0bd71b0f037e5a5ea6061ee679c274216eca0ec.1296166858.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Wed, 26 Jan 2011 16:22:07 -0500
+Subject: [PATCH] Add a function to the security driver API that sets the label of an open fd.
+
+This patch is derived from upstream commit
+d89608f994025aef9809bcb224e2d71f35fb85e9. It is required for:
+
+       https://bugzilla.redhat.com/show_bug.cgi?id=667756
+
+A need was found to set the SELinux context label on an open fd (a
+pipe, as a matter of fact). This patch adds a function to the security
+driver API that will set the label on an open fd to secdef.label. For
+all drivers other than the SELinux driver, it's a NOP. For the SElinux
+driver, it calls fsetfilecon().
+
+If the return is a failure, it only returns error up to the caller if
+1) the desired label is different from the existing label, 2) the
+destination fd is of a type that supports setting the selinux context,
+and 3) selinux is in enforcing mode. Otherwise it will return
+success. This follows the pattern of the existing function
+SELinuxSetFilecon().
+
+RHEL6 REBASE NOTES:
+
+Note that this is not a simple cherry-pick of the upstream commit. The
+security driver code has been refactored since the last rebase, so
+some manual rework was necessary. In particular:
+
+1) security_dac.c and security_stacked.c are in a different location
+   in RHEL6 - qemu/qemu_security_*.c. Also, there is no "nop" driver
+   in RHEL6.
+
+2) The calling sequence of security driver functions doesn't have a
+   virSecurityManager arg for every function.
+
+3) Calls to the security functions in RHEL6 are all directly to the
+   pointer in the security driver object rather than via security
+   manager helpers, so the caller must always check for a NULL pointer
+   before calling.
+---
+ src/qemu/qemu_security_dac.c     |    7 +++++
+ src/qemu/qemu_security_stacked.c |   20 ++++++++++++++
+ src/security/security_apparmor.c |    8 ++++++
+ src/security/security_driver.h   |    5 +++-
+ src/security/security_selinux.c  |   52 ++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 91 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index 6b6170a..b76b755 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -555,6 +555,12 @@ qemuSecurityDACSetProcessLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
+     return 0;
+ }
+ 
++static int
++qemuSecurityDACSetFDLabel(virDomainObjPtr vm ATTRIBUTE_UNUSED,
++                         int fd ATTRIBUTE_UNUSED)
++{
++    return 0;
++}
+ 
+ 
+ virSecurityDriver qemuDACSecurityDriver = {
+@@ -573,4 +579,5 @@ virSecurityDriver qemuDACSecurityDriver = {
+ 
+     .domainSetSavedStateLabel = qemuSecurityDACSetSavedStateLabel,
+     .domainRestoreSavedStateLabel = qemuSecurityDACRestoreSavedStateLabel,
++    .domainSetSecurityFDLabel = qemuSecurityDACSetFDLabel,
+ };
+diff --git a/src/qemu/qemu_security_stacked.c b/src/qemu/qemu_security_stacked.c
+index 432d095..01db873 100644
+--- a/src/qemu/qemu_security_stacked.c
++++ b/src/qemu/qemu_security_stacked.c
+@@ -389,6 +389,25 @@ qemuSecurityStackedClearSocketLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
+     return rc;
+ }
+ 
++static int
++qemuSecurityStackedSetFDLabel(virDomainObjPtr vm,
++                              int fd)
++{
++    int rc = 0;
++
++    if (driver->securitySecondaryDriver &&
++        driver->securitySecondaryDriver->domainSetSecurityFDLabel &&
++        driver->securitySecondaryDriver->domainSetSecurityFDLabel(vm, fd) < 0)
++        rc = -1;
++
++    if (driver->securityPrimaryDriver &&
++        driver->securityPrimaryDriver->domainSetSecurityFDLabel &&
++        driver->securityPrimaryDriver->domainSetSecurityFDLabel(vm, fd) < 0)
++        rc = -1;
++
++    return rc;
++}
++
+ 
+ virSecurityDriver qemuStackedSecurityDriver = {
+     .name                       = "qemuStacked",
+@@ -415,4 +434,5 @@ virSecurityDriver qemuStackedSecurityDriver = {
+ 
+     .domainClearSecuritySocketLabel = qemuSecurityStackedClearSocketLabel,
+     .domainSetSecuritySocketLabel = qemuSecurityStackedSetSocketLabel,
++    .domainSetSecurityFDLabel = qemuSecurityStackedSetFDLabel,
+ };
+diff --git a/src/security/security_apparmor.c b/src/security/security_apparmor.c
+index 468d0a3..2e3e7c0 100644
+--- a/src/security/security_apparmor.c
++++ b/src/security/security_apparmor.c
+@@ -769,6 +769,13 @@ AppArmorRestoreSavedStateLabel(virSecurityDriverPtr drv,
+     return reload_profile(drv, vm, NULL, false);
+ }
+ 
++static int
++AppArmorSetFDLabel(virDomainObjPtr vm ATTRIBUTE_UNUSED,
++                   int fd ATTRIBUTE_UNUSED)
++{
++    return 0;
++}
++
+ virSecurityDriver virAppArmorSecurityDriver = {
+     .name = SECURITY_APPARMOR_NAME,
+     .probe = AppArmorSecurityDriverProbe,
+@@ -787,4 +794,5 @@ virSecurityDriver virAppArmorSecurityDriver = {
+     .domainRestoreSecurityHostdevLabel = AppArmorRestoreSecurityHostdevLabel,
+     .domainSetSavedStateLabel = AppArmorSetSavedStateLabel,
+     .domainRestoreSavedStateLabel = AppArmorRestoreSavedStateLabel,
++    .domainSetSecurityFDLabel = AppArmorSetFDLabel,
+ };
+diff --git a/src/security/security_driver.h b/src/security/security_driver.h
+index d768f32..d7c84e5 100644
+--- a/src/security/security_driver.h
++++ b/src/security/security_driver.h
+@@ -76,6 +76,9 @@ typedef int (*virSecurityDomainSetProcessLabel) (virSecurityDriverPtr drv,
+                                                  virDomainObjPtr vm);
+ typedef int (*virSecurityDomainSecurityVerify) (virDomainDefPtr def);
+ 
++typedef int (*virSecurityDomainSetFDLabel) (virDomainObjPtr vm,
++                                            int fd);
++
+ struct _virSecurityDriver {
+     const char *name;
+     virSecurityDriverProbe probe;
+@@ -96,7 +99,7 @@ struct _virSecurityDriver {
+     virSecurityDomainSetHostdevLabel domainSetSecurityHostdevLabel;
+     virSecurityDomainSetSavedStateLabel domainSetSavedStateLabel;
+     virSecurityDomainRestoreSavedStateLabel domainRestoreSavedStateLabel;
+-
++    virSecurityDomainSetFDLabel domainSetSecurityFDLabel;
+     /*
+      * This is internally managed driver state and should only be accessed
+      * via helpers below.
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index 47da677..f924fa6 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -357,6 +357,45 @@ SELinuxSetFilecon(const char *path, char *tcon)
+     return 0;
+ }
+ 
++static int
++SELinuxFSetFilecon(int fd, char *tcon)
++{
++    security_context_t econ;
++
++    VIR_INFO("Setting SELinux context on fd %d to '%s'", fd, tcon);
++
++    if (fsetfilecon(fd, tcon) < 0) {
++        int fsetfilecon_errno = errno;
++
++        if (fgetfilecon(fd, &econ) >= 0) {
++            if (STREQ(tcon, econ)) {
++                freecon(econ);
++                /* It's alright, there's nothing to change anyway. */
++                return 0;
++            }
++            freecon(econ);
++        }
++
++        /* if the error complaint is related to an image hosted on
++         * an nfs mount, or a usbfs/sysfs filesystem not supporting
++         * labelling, then just ignore it & hope for the best.
++         * The user hopefully set one of the necessary SELinux
++         * virt_use_{nfs,usb,pci}  boolean tunables to allow it...
++         */
++        if (fsetfilecon_errno != EOPNOTSUPP) {
++            virReportSystemError(fsetfilecon_errno,
++                                 _("unable to set security context '%s' on fd %d"),
++                                 tcon, fd);
++            if (security_getenforce() == 1)
++                return -1;
++        } else {
++            VIR_INFO("Setting security context '%s' on fd %d not supported",
++                     tcon, fd);
++        }
++    }
++    return 0;
++}
++
+ /* Set fcon to the appropriate label for path and mode, or return -1.  */
+ static int
+ getContext(const char *newpath, mode_t mode, security_context_t *fcon)
+@@ -1063,6 +1102,18 @@ SELinuxSetSecurityAllLabel(virSecurityDriverPtr drv,
+     return 0;
+ }
+ 
++static int
++SELinuxSetFDLabel(virDomainObjPtr vm,
++                  int fd)
++{
++    const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
++
++    if (secdef->imagelabel == NULL)
++        return 0;
++
++    return SELinuxFSetFilecon(fd, secdef->imagelabel);
++}
++
+ virSecurityDriver virSELinuxSecurityDriver = {
+     .name                       = SECURITY_SELINUX_NAME,
+     .probe                      = SELinuxSecurityDriverProbe,
+@@ -1083,4 +1134,5 @@ virSecurityDriver virSELinuxSecurityDriver = {
+     .domainRestoreSecurityHostdevLabel = SELinuxRestoreSecurityHostdevLabel,
+     .domainSetSavedStateLabel = SELinuxSetSavedStateLabel,
+     .domainRestoreSavedStateLabel = SELinuxRestoreSavedStateLabel,
++    .domainSetSecurityFDLabel = SELinuxSetFDLabel,
+ };
+-- 
+1.7.4.rc3
+

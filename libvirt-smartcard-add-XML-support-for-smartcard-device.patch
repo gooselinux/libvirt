@@ -1,0 +1,374 @@
+From 438d4c214ab72c16c3eb3ce684ff38f4d5189243 Mon Sep 17 00:00:00 2001
+Message-Id: <438d4c214ab72c16c3eb3ce684ff38f4d5189243.1296838266.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:54:30 -0700
+Subject: [PATCH] smartcard: add XML support for <smartcard> device
+
+https://bugzilla.redhat.com/show_bug.cgi?id=641834
+
+Assuming a hypervisor that supports multiple smartcard devices in the
+guest, this would be a valid XML description:
+
+<devices>
+  <smartcard mode='host'/>
+  <smartcard mode='host-certificates'>
+    <certificate>/path/to/cert1</certificate>
+    <certificate>/path/to/cert2</certificate>
+    <certificate>/path/to/cert3</certificate>
+  </smartcard>
+  <smartcard mode='passthrough' type='tcp'>
+    <source mode='bind' host='127.0.0.1' service='2001'/>
+    <protocol type='raw'/>
+  </smartcard>
+</devices>
+
+(As of this commit, the qemu hypervisor will be the first
+implementation, but it only supports one smartcard.)
+
+* docs/formatdomain.html.in (Smartcard devices): New section.
+* docs/schemas/domain.rng (smartcard): New define, used in
+devices.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.xml: New file
+to test schema.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.xml:
+Likewise.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.xml:
+Likewise.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.xml:
+Likewise.
+
+(cherry picked from commit ffdf478be2e61c554ce229be186168a6997bb9b2)
+---
+ docs/formatdomain.html.in                          |   95 +++++++++++++++++++-
+ docs/schemas/domain.rng                            |   66 ++++++++++++++
+ .../qemuxml2argv-smartcard-controller.xml          |   19 ++++
+ .../qemuxml2argv-smartcard-host-certificates.xml   |   20 ++++
+ .../qemuxml2argv-smartcard-host.xml                |   16 ++++
+ .../qemuxml2argv-smartcard-passthrough-tcp.xml     |   19 ++++
+ 6 files changed, 234 insertions(+), 1 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index d16b215..9caed2b 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -810,7 +810,7 @@
+ 
+     <p>
+       Each controller has a mandatory attribute <code>type</code>,
+-      which must be one of "ide", "fdc", "scsi", "sata", or
++      which must be one of "ide", "fdc", "scsi", "sata", "ccid", or
+       "virtio-serial", and a mandatory attribute <code>index</code>
+       which is the decimal integer describing in which order the bus
+       controller is encountered (for use in <code>controller</code>
+@@ -909,6 +909,99 @@
+       not used by qemu.</dd>
+     </dl>
+ 
++    <h4><a name="elementsSmartcard">Smartcard devices</a></h4>
++
++    <p>
++      A virtual smartcard device can be supplied to the guest via the
++      <code>smartcard</code> element. A USB smartcard reader device on
++      the host cannot be used on a guest with simple device
++      passthrough, since it will then not be available on the host,
++      possibly locking the host computer when it is "removed".
++      Therefore, some hypervisors provide a specialized virtual device
++      that can present a smartcard interface to the guest, with
++      several modes for describing how credentials are obtained from
++      the host or even a from a channel created to a third-party
++      smartcard provider. <span class="since">Since 0.8.8</span>
++    </p>
++
++<pre>
++  ...
++  &lt;devices&gt;
++    &lt;smartcard mode='host'/&gt;
++    &lt;smartcard mode='host-certificates'&gt;
++      &lt;certificate&gt;cert1&lt;/certificate&gt;
++      &lt;certificate&gt;cert2&lt;/certificate&gt;
++      &lt;certificate&gt;cert3&lt;/certificate&gt;
++      &lt;database&gt;/etc/pki/nssdb/&lt;/database&gt;
++    &lt;/smartcard&gt;
++    &lt;smartcard mode='passthrough' type='tcp'&gt;
++      &lt;source mode='bind' host='127.0.0.1' service='2001'/&gt;
++      &lt;protocol type='raw'/&gt;
++      &lt;address type='ccid' controller='0' slot='0'/&gt;
++    &lt;/smartcard&gt;
++  &lt;/devices&gt;
++  ...
++</pre>
++
++    <p>
++      The <code>&lt;smartcard&gt;</code> element has a mandatory
++      attribute <code>mode</code>.  The following modes are supported;
++      in each mode, the guest sees a device on its USB bus that
++      behaves like a physical USB CCID (Chip/Smart Card Interface
++      Device) card.
++    </p>
++
++    <dl>
++      <dt><code>mode='host'</code></dt>
++      <dd>The simplest operation, where the hypervisor relays all
++      requests from the guest into direct access to the host's
++      smartcard via NSS.  No other attributes or sub-elements are
++      required.  See below about the use of an
++      optional <code>&lt;address&gt;</code> sub-element.</dd>
++
++      <dt><code>mode='host-certificates'</code></dt>
++      <dd>Rather than requiring a smartcard to be plugged into the
++      host, it is possible to provide three NSS certificate names
++      residing in a database on the host.  These certificates can be
++      generated via the command <code>certutil -d /etc/pki/nssdb -x -t
++      CT,CT,CT -S -s CN=cert1 -n cert1</code>, and the resulting three
++      certificate names must be supplied as the content of each of
++      three <code>&lt;certificate&gt;</code> sub-elements.  An
++      additional sub-element <code>&lt;database&gt;</code> can specify
++      the absolute path to an alternate directory (matching
++      the <code>-d</code> option of the <code>certutil</code> command
++      when creating the certificates); if not present, it defaults to
++      /etc/pki/nssdb.</dd>
++
++      <dt><code>mode='passthrough'</code></dt>
++      <dd>Rather than having the hypervisor directly communicate with
++      the host, it is possible to tunnel all requests through a
++      secondary character device to a third-party provider (which may
++      in turn be talking to a smartcard or using three certificate
++      files).  In this mode of operation, an additional
++      attribute <code>type</code> is required, matching one of the
++      supported <a href="#elementsConsole">serial device</a> types, to
++      describe the host side of the tunnel; <code>type='tcp'</code> is
++      typical.  Further sub-elements, such
++      as <code>&lt;source&gt;</code>, are required according to the
++      given type, although a <code>&lt;target&gt;</code> sub-element
++      is not required (since the consumer of the character device is
++      the hypervisor itself, rather than a device visible in the
++      guest).</dd>
++    </dl>
++
++    <p>
++      Each mode supports an optional
++      sub-element <code>&lt;address&gt;</code>, which fine-tunes the
++      correlation between the smartcard and a ccid bus controller.
++      If present, the element must have an attribute
++      of <code>type='ccid'</code> as well as a <code>bus</code>
++      attribute listing the index of the bus that the smartcard
++      utilizes.  An optional <code>slot</code> attribute lists which
++      slot within the bus.  For now, qemu only supports at most one
++      smartcard, with an address of bus=0 slot=0.
++    </p>
++
+     <h4><a name="elementsNICS">Network interfaces</a></h4>
+ 
+ <pre>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index dc56d09..325be6e 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -749,6 +749,7 @@
+                 <value>ide</value>
+                 <value>scsi</value>
+                 <value>sata</value>
++                <value>ccid</value>
+               </choice>
+             </attribute>
+           </optional>
+@@ -1625,6 +1626,51 @@
+       </interleave>
+     </element>
+   </define>
++  <define name="smartcard">
++    <element name="smartcard">
++      <choice>
++        <group>
++          <attribute name="mode">
++            <value>host</value>
++          </attribute>
++          <!-- might need to add optional database element here later -->
++        </group>
++        <group>
++          <attribute name="mode">
++            <value>host-certificates</value>
++          </attribute>
++          <ref name='certificate'/>
++          <ref name='certificate'/>
++          <ref name='certificate'/>
++          <optional>
++            <element name="database">
++              <ref name="absDirPath"/>
++            </element>
++          </optional>
++        </group>
++        <group>
++          <attribute name="mode">
++            <value>passthrough</value>
++          </attribute>
++          <ref name="qemucdevSrcType"/>
++          <interleave>
++            <ref name="qemucdevSrcDef"/>
++            <optional>
++              <ref name="qemucdevTgtDef"/>
++            </optional>
++          </interleave>
++        </group>
++      </choice>
++      <optional>
++        <ref name="address"/>
++      </optional>
++    </element>
++  </define>
++  <define name="certificate">
++    <element name="certificate">
++      <text/>
++    </element>
++  </define>
+   <define name="input">
+     <element name="input">
+       <attribute name="type">
+@@ -1761,8 +1807,21 @@
+       </attribute>
+     </optional>
+   </define>
++  <define name="ccidaddress">
++    <attribute name="controller">
++      <ref name="driveController"/>
++    </attribute>
++    <optional>
++      <attribute name="slot">
++        <ref name="driveUnit"/>
++      </attribute>
++    </optional>
++  </define>
+   <!--
+       Devices attached to a domain.
++      Sub-elements such as <alias> are not documented here, as they
++      can only exist when generated for a live domain and are ignored
++      when defining a domain.
+     -->
+   <define name="devices">
+     <element name="devices">
+@@ -1785,6 +1844,7 @@
+             <ref name="parallel"/>
+             <ref name="serial"/>
+             <ref name="channel"/>
++            <ref name="smartcard"/>
+           </choice>
+         </zeroOrMore>
+         <optional>
+@@ -2009,6 +2069,12 @@
+           </attribute>
+           <ref name="virtioserialaddress"/>
+         </group>
++        <group>
++          <attribute name="type">
++            <value>ccid</value>
++          </attribute>
++          <ref name="ccidaddress"/>
++        </group>
+       </choice>
+     </element>
+   </define>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.xml b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.xml
+new file mode 100644
+index 0000000..2a53dbb
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.xml
+@@ -0,0 +1,19 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <controller type='ccid' index='0'/>
++    <smartcard mode='host'>
++      <address type='ccid' controller='0' slot='0'/>
++    </smartcard>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.xml b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.xml
+new file mode 100644
+index 0000000..5a9844b
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.xml
+@@ -0,0 +1,20 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <smartcard mode='host-certificates'>
++      <certificate>cert1</certificate>
++      <certificate>cert2</certificate>
++      <certificate>cert3</certificate>
++    </smartcard>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.xml b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.xml
+new file mode 100644
+index 0000000..95790f2
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.xml
+@@ -0,0 +1,16 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <smartcard mode='host'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.xml b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.xml
+new file mode 100644
+index 0000000..f133391
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.xml
+@@ -0,0 +1,19 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <smartcard mode='passthrough' type='tcp'>
++      <source mode='bind' host='127.0.0.1' service='2001'/>
++      <protocol type='raw'/>
++    </smartcard>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+-- 
+1.7.4
+

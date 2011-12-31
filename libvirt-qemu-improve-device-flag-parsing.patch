@@ -1,0 +1,397 @@
+From 511b32c80c3912a2d4ab74b4809e83cbe250c13d Mon Sep 17 00:00:00 2001
+Message-Id: <511b32c80c3912a2d4ab74b4809e83cbe250c13d.1295285119.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 17 Jan 2011 17:12:26 +0100
+Subject: [PATCH] qemu: improve device flag parsing
+
+Required as a dependency for patches fixing
+    https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+* src/qemu/qemu_capabilities.h (qemuCapsParseDeviceStr): New
+prototype.
+* src/qemu/qemu_capabilities.c (qemuCapsParsePCIDeviceStrs)
+Rename and split...
+(qemuCapsExtractDeviceStr, qemuCapsParseDeviceStr): ...to make it
+easier to add and test device-specific checks.
+(qemuCapsExtractVersionInfo): Update caller.
+* tests/qemuhelptest.c (testHelpStrParsing): Also test parsing of
+device-related flags.
+(mymain): Update expected flags.
+* tests/qemuhelpdata/qemu-0.12.1-device: New file.
+* tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device: New file.
+* tests/qemuhelpdata/qemu-kvm-0.12.3-device: New file.
+* tests/qemuhelpdata/qemu-kvm-0.13.0-device: New file.
+(cherry picked from commit f892f5a562cbb6e5b914adced1000df20c3174d6)
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c
+---
+ src/qemu/qemu_capabilities.c                       |   41 ++++++++---
+ src/qemu/qemu_capabilities.h                       |    2 +
+ tests/qemuhelpdata/qemu-0.12.1-device              |    2 +
+ tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device |   57 ++++++++++++++++
+ tests/qemuhelpdata/qemu-kvm-0.12.3-device          |    2 +
+ tests/qemuhelpdata/qemu-kvm-0.13.0-device          |   70 ++++++++++++++++++++
+ tests/qemuhelptest.c                               |   48 ++++++++++----
+ 7 files changed, 199 insertions(+), 23 deletions(-)
+ create mode 100644 tests/qemuhelpdata/qemu-0.12.1-device
+ create mode 100644 tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device
+ create mode 100644 tests/qemuhelpdata/qemu-kvm-0.12.3-device
+ create mode 100644 tests/qemuhelpdata/qemu-kvm-0.13.0-device
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index e95a094..eb8e23e 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1032,28 +1032,46 @@ fail:
+     return -1;
+ }
+ 
+-static void
+-qemuCapsParsePCIDeviceStrs(const char *qemu,
+-                           unsigned long long *flags)
++static int
++qemuCapsExtractDeviceStr(const char *qemu,
++                         unsigned long long *flags)
+ {
+-    char *pciassign = NULL;
++    char *output = NULL;
+     virCommandPtr cmd;
++    int ret = -1;
+ 
+-    cmd = virCommandNewArgList(qemu, "-device", "pci-assign,?", NULL);
++    /* Cram together all device-related queries into one invocation;
++     * the output format makes it possible to distinguish what we
++     * need.  Unrecognized '-device bogus,?' cause an error in
++     * isolation, but are silently ignored in combination with
++     * '-device ?'.  */
++    cmd = virCommandNewArgList(qemu,
++                               "-device", "pci-assign,?",
++                               NULL);
+     virCommandAddEnvPassCommon(cmd);
+     /* qemu -help goes to stdout, but qemu -device ? goes to stderr.  */
+-    virCommandSetErrorBuffer(cmd, &pciassign);
++    virCommandSetErrorBuffer(cmd, &output);
+     virCommandClearCaps(cmd);
+ 
+     if (virCommandRun(cmd, NULL) < 0)
+         goto cleanup;
+ 
+-    if (strstr(pciassign, "pci-assign.configfd"))
+-        *flags |= QEMUD_CMD_FLAG_PCI_CONFIGFD;
++    ret = qemuCapsParseDeviceStr(output, flags);
+ 
+ cleanup:
+-    VIR_FREE(pciassign);
++    VIR_FREE(output);
+     virCommandFree(cmd);
++    return ret;
++}
++
++
++int
++qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
++{
++    if (strstr(str, "pci-assign.configfd"))
++        *flags |= QEMUD_CMD_FLAG_PCI_CONFIGFD;
++
++    return 0;
+ }
+ 
+ int qemuCapsExtractVersionInfo(const char *qemu,
+@@ -1103,8 +1121,9 @@ int qemuCapsExtractVersionInfo(const char *qemu,
+         flags |= QEMUD_CMD_FLAG_NETDEV;
+     }
+ 
+-    if (flags & QEMUD_CMD_FLAG_DEVICE)
+-        qemuCapsParsePCIDeviceStrs(qemu, &flags);
++    if ((flags & QEMUD_CMD_FLAG_DEVICE) &&
++        qemuCapsExtractDeviceStr(qemu, &flags) < 0)
++        goto cleanup;
+ 
+     if (retversion)
+         *retversion = version;
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index ee648f0..8057479 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -109,6 +109,8 @@ int qemuCapsParseHelpStr(const char *qemu,
+                          unsigned int *version,
+                          unsigned int *is_kvm,
+                          unsigned int *kvm_version);
++int qemuCapsParseDeviceStr(const char *str,
++                           unsigned long long *qemuCmdFlags);
+ 
+ 
+ #endif /* __QEMU_CAPABILITIES_H__*/
+diff --git a/tests/qemuhelpdata/qemu-0.12.1-device b/tests/qemuhelpdata/qemu-0.12.1-device
+new file mode 100644
+index 0000000..139597f
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-0.12.1-device
+@@ -0,0 +1,2 @@
++
++
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device
+new file mode 100644
+index 0000000..d20fb7d
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel60-device
+@@ -0,0 +1,57 @@
++name "pci-bridge", bus PCI
++name "virtio-balloon-pci", bus PCI
++name "virtio-serial-pci", bus PCI, alias "virtio-serial"
++name "virtio-net-pci", bus PCI
++name "virtio-blk-pci", bus PCI
++name "i82562", bus PCI
++name "i82559er", bus PCI
++name "i82559c", bus PCI
++name "i82559b", bus PCI
++name "i82559a", bus PCI
++name "i82558b", bus PCI
++name "i82558a", bus PCI
++name "i82557c", bus PCI
++name "i82557b", bus PCI
++name "i82557a", bus PCI
++name "i82551", bus PCI
++name "i82550", bus PCI
++name "pcnet", bus PCI
++name "rtl8139", bus PCI
++name "e1000", bus PCI, desc "Intel Gigabit Ethernet"
++name "ide-drive", bus IDE
++name "isa-ide", bus ISA
++name "ES1370", bus PCI, desc "ENSONIQ AudioPCI ES1370"
++name "AC97", bus PCI, desc "Intel 82801AA AC97 Audio"
++name "VGA", bus PCI
++name "SUNW,fdtwo", bus System
++name "sysbus-fdc", bus System
++name "isa-serial", bus ISA
++name "cirrus-vga", bus PCI, desc "Cirrus CLGD 54xx VGA"
++name "isa-parallel", bus ISA
++name "piix4-usb-uhci", bus PCI
++name "piix3-usb-uhci", bus PCI
++name "vmware-svga", bus PCI
++name "ib700", bus ISA
++name "ne2k_isa", bus ISA
++name "testdev", bus ISA
++name "pci-assign", bus PCI, desc "pass through host pci devices to the guest"
++name "qxl", bus PCI, desc "Spice QXL GPU"
++name "spicevmc", bus virtio-serial-bus
++name "smbus-eeprom", bus I2C
++name "usb-hub", bus USB
++name "usb-host", bus USB
++name "usb-kbd", bus USB
++name "usb-mouse", bus USB
++name "usb-tablet", bus USB
++name "usb-wacom-tablet", bus USB, desc "QEMU PenPartner Tablet"
++name "usb-braille", bus USB
++name "usb-serial", bus USB
++name "usb-net", bus USB
++name "usb-bt-dongle", bus USB
++name "virtserialport", bus virtio-serial-bus
++name "virtconsole", bus virtio-serial-bus
++name "i6300esb", bus PCI
++name "ne2k_pci", bus PCI
++pci-assign.host=pci-hostaddr
++pci-assign.iommu=uint32
++pci-assign.configfd=string
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.12.3-device b/tests/qemuhelpdata/qemu-kvm-0.12.3-device
+new file mode 100644
+index 0000000..139597f
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-kvm-0.12.3-device
+@@ -0,0 +1,2 @@
++
++
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.13.0-device b/tests/qemuhelpdata/qemu-kvm-0.13.0-device
+new file mode 100644
+index 0000000..b121257
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-kvm-0.13.0-device
+@@ -0,0 +1,70 @@
++name "pci-bridge", bus PCI
++name "virtio-balloon-pci", bus PCI
++name "virtio-serial-pci", bus PCI, alias "virtio-serial"
++name "virtio-net-pci", bus PCI
++name "virtio-blk-pci", bus PCI
++name "sysbus-ohci", bus System, desc "OHCI USB Controller"
++name "pci-ohci", bus PCI, desc "Apple USB Controller"
++name "rtl8139", bus PCI
++name "e1000", bus PCI, desc "Intel Gigabit Ethernet"
++name "ivshmem", bus PCI
++name "smbus-eeprom", bus I2C
++name "scsi-disk", bus SCSI, desc "virtual scsi disk or cdrom"
++name "scsi-generic", bus SCSI, desc "pass through generic scsi device (/dev/sg*)"
++name "usb-hub", bus USB
++name "usb-host", bus USB
++name "usb-kbd", bus USB
++name "usb-mouse", bus USB
++name "usb-tablet", bus USB
++name "usb-storage", bus USB
++name "usb-wacom-tablet", bus USB, desc "QEMU PenPartner Tablet"
++name "usb-braille", bus USB
++name "usb-serial", bus USB
++name "usb-net", bus USB
++name "usb-bt-dongle", bus USB
++name "virtconsole", bus virtio-serial-bus
++name "virtserialport", bus virtio-serial-bus
++name "isa-serial", bus ISA
++name "isa-parallel", bus ISA
++name "vt82c686b-usb-uhci", bus PCI
++name "piix4-usb-uhci", bus PCI
++name "piix3-usb-uhci", bus PCI
++name "SUNW,fdtwo", bus System
++name "sysbus-fdc", bus System
++name "i6300esb", bus PCI
++name "ne2k_pci", bus PCI
++name "i82801", bus PCI, desc "Intel i82801 Ethernet"
++name "i82562", bus PCI, desc "Intel i82562 Ethernet"
++name "i82559er", bus PCI, desc "Intel i82559ER Ethernet"
++name "i82559c", bus PCI, desc "Intel i82559C Ethernet"
++name "i82559b", bus PCI, desc "Intel i82559B Ethernet"
++name "i82559a", bus PCI, desc "Intel i82559A Ethernet"
++name "i82558b", bus PCI, desc "Intel i82558B Ethernet"
++name "i82558a", bus PCI, desc "Intel i82558A Ethernet"
++name "i82557c", bus PCI, desc "Intel i82557C Ethernet"
++name "i82557b", bus PCI, desc "Intel i82557B Ethernet"
++name "i82557a", bus PCI, desc "Intel i82557A Ethernet"
++name "i82551", bus PCI, desc "Intel i82551 Ethernet"
++name "i82550", bus PCI, desc "Intel i82550 Ethernet"
++name "pcnet", bus PCI
++name "ne2k_isa", bus ISA
++name "ide-drive", bus IDE
++name "isa-ide", bus ISA
++name "lsi53c895a", bus PCI, alias "lsi"
++name "VGA", bus PCI
++name "vmware-svga", bus PCI
++name "sb16", bus ISA, desc "Creative Sound Blaster 16"
++name "ES1370", bus PCI, desc "ENSONIQ AudioPCI ES1370"
++name "AC97", bus PCI, desc "Intel 82801AA AC97 Audio"
++name "cirrus-vga", bus PCI, desc "Cirrus CLGD 54xx VGA"
++name "isa-applesmc", bus ISA
++name "ib700", bus ISA
++name "isa-debugcon", bus ISA
++name "testdev", bus ISA
++name "PIIX4_PM", bus PCI, desc "PM"
++name "qxl", bus PCI, desc "Spice QXL GPU"
++name "spicevmc", bus virtio-serial-bus
++name "pci-assign", bus PCI, desc "pass through host pci devices to the guest"
++pci-assign.host=pci-hostaddr
++pci-assign.iommu=uint32
++pci-assign.configfd=string
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 18a71fa..5d78e2d 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -7,6 +7,7 @@
+ 
+ # include "testutils.h"
+ # include "qemu/qemu_capabilities.h"
++# include "memory.h"
+ 
+ # define MAX_HELP_OUTPUT_SIZE 1024*64
+ 
+@@ -39,50 +40,71 @@ static void printMismatchedFlags(unsigned long long got,
+ static int testHelpStrParsing(const void *data)
+ {
+     const struct testInfo *info = data;
+-    char path[PATH_MAX];
++    char *path = NULL;
+     char helpStr[MAX_HELP_OUTPUT_SIZE];
+     char *help = &(helpStr[0]);
+     unsigned int version, is_kvm, kvm_version;
+     unsigned long long flags;
++    int ret = -1;
+ 
+-    snprintf(path, PATH_MAX, "%s/qemuhelpdata/%s", abs_srcdir, info->name);
++    if (virAsprintf(&path, "%s/qemuhelpdata/%s", abs_srcdir, info->name) < 0)
++        return -1;
+ 
+     if (virtTestLoadFile(path, &help, MAX_HELP_OUTPUT_SIZE) < 0)
+-        return -1;
++        goto cleanup;
+ 
+     if (qemuCapsParseHelpStr("QEMU", help, &flags,
+                              &version, &is_kvm, &kvm_version) == -1)
+-        return -1;
++        goto cleanup;
++
++    if (info->flags & QEMUD_CMD_FLAG_DEVICE) {
++        VIR_FREE(path);
++        if (virAsprintf(&path, "%s/qemuhelpdata/%s-device", abs_srcdir,
++                        info->name) < 0)
++            goto cleanup;
++
++        if (virtTestLoadFile(path, &help, MAX_HELP_OUTPUT_SIZE) < 0)
++            goto cleanup;
++
++        if (qemuCapsParseDeviceStr(help, &flags) < 0)
++            goto cleanup;
++    }
+ 
+     if (flags != info->flags) {
+-        fprintf(stderr, "Computed flags do not match: got 0x%llx, expected 0x%llx\n",
++        fprintf(stderr,
++                "Computed flags do not match: got 0x%llx, expected 0x%llx\n",
+                 flags, info->flags);
+ 
+         if (getenv("VIR_TEST_DEBUG"))
+             printMismatchedFlags(flags, info->flags);
+ 
+-        return -1;
++        goto cleanup;
+     }
+ 
+     if (version != info->version) {
+         fprintf(stderr, "Parsed versions do not match: got %u, expected %u\n",
+                 version, info->version);
+-        return -1;
++        goto cleanup;
+     }
+ 
+     if (is_kvm != info->is_kvm) {
+-        fprintf(stderr, "Parsed is_kvm flag does not match: got %u, expected %u\n",
++        fprintf(stderr,
++                "Parsed is_kvm flag does not match: got %u, expected %u\n",
+                 is_kvm, info->is_kvm);
+-        return -1;
++        goto cleanup;
+     }
+ 
+     if (kvm_version != info->kvm_version) {
+-        fprintf(stderr, "Parsed KVM versions do not match: got %u, expected %u\n",
++        fprintf(stderr,
++                "Parsed KVM versions do not match: got %u, expected %u\n",
+                 kvm_version, info->kvm_version);
+-        return -1;
++        goto cleanup;
+     }
+ 
+-    return 0;
++    ret = 0;
++cleanup:
++    VIR_FREE(path);
++    return ret;
+ }
+ 
+ static int
+@@ -318,6 +340,7 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_VNET_HOST |
+             QEMUD_CMD_FLAG_NO_KVM_PIT |
+             QEMUD_CMD_FLAG_TDF |
++            QEMUD_CMD_FLAG_PCI_CONFIGFD |
+             QEMUD_CMD_FLAG_NODEFCONFIG |
+             QEMUD_CMD_FLAG_BOOT_MENU |
+             QEMUD_CMD_FLAG_NESTING |
+@@ -399,6 +422,7 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NO_HPET |
+             QEMUD_CMD_FLAG_NO_KVM_PIT |
+             QEMUD_CMD_FLAG_TDF |
++            QEMUD_CMD_FLAG_PCI_CONFIGFD |
+             QEMUD_CMD_FLAG_NODEFCONFIG |
+             QEMUD_CMD_FLAG_BOOT_MENU |
+             QEMUD_CMD_FLAG_FSDEV |
+-- 
+1.7.4.rc2
+

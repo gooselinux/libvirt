@@ -1,0 +1,678 @@
+From adaf1942d4cb5c43eed27d010aa033ea9191ad1e Mon Sep 17 00:00:00 2001
+Message-Id: <adaf1942d4cb5c43eed27d010aa033ea9191ad1e.1299776672.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:59 -0700
+Subject: [PATCH] audit: rename remaining qemu audit functions
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+Also add ATTRIBUTE_NONNULL markers.
+
+* src/qemu/qemu_audit.h: The pattern qemuDomainXXXAudit is
+inconsistent; prefer qemuAuditXXX instead.
+* src/qemu/qemu_audit.c: Reflect the renames.
+* src/qemu/qemu_driver.c: Likewise.
+* src/qemu/qemu_hotplug.c: Likewise.
+* src/qemu/qemu_migration.c: Likewise.
+* src/qemu/qemu_process.c: Likewise.
+(cherry picked from commit 48096a0064df4ed584407cb9536a991df2738f65)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split not backported
+	src/qemu/qemu_migration.c - changes in qemu_driver.c instead
+	src/qemu/qemu_process.c - changes in qemu_driver.c instead
+---
+ src/qemu/qemu_audit.c   |   84 ++++++++++++++++++++++-------------------------
+ src/qemu/qemu_audit.h   |   78 +++++++++++++++++++++++++++-----------------
+ src/qemu/qemu_driver.c  |   43 ++++++++++++------------
+ src/qemu/qemu_hotplug.c |   40 +++++++++++-----------
+ 4 files changed, 128 insertions(+), 117 deletions(-)
+
+diff --git a/src/qemu/qemu_audit.c b/src/qemu/qemu_audit.c
+index 7a8d3ee..5258c56 100644
+--- a/src/qemu/qemu_audit.c
++++ b/src/qemu/qemu_audit.c
+@@ -57,11 +57,10 @@ qemuAuditGetRdev(const char *path ATTRIBUTE_UNUSED)
+ }
+ #endif
+ 
+-void qemuDomainDiskAudit(virDomainObjPtr vm,
+-                         virDomainDiskDefPtr oldDef,
+-                         virDomainDiskDefPtr newDef,
+-                         const char *reason,
+-                         bool success)
++void
++qemuAuditDisk(virDomainObjPtr vm,
++              virDomainDiskDefPtr oldDef, virDomainDiskDefPtr newDef,
++              const char *reason, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
+@@ -99,11 +98,10 @@ cleanup:
+ }
+ 
+ 
+-void qemuDomainNetAudit(virDomainObjPtr vm,
+-                        virDomainNetDefPtr oldDef,
+-                        virDomainNetDefPtr newDef,
+-                        const char *reason,
+-                        bool success)
++void
++qemuAuditNet(virDomainObjPtr vm,
++             virDomainNetDefPtr oldDef, virDomainNetDefPtr newDef,
++             const char *reason, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char newMacstr[VIR_MAC_STRING_BUFLEN];
+@@ -131,7 +129,7 @@ void qemuDomainNetAudit(virDomainObjPtr vm,
+ 
+ 
+ /**
+- * qemuDomainHostdevAudit:
++ * qemuAuditHostdev:
+  * @vm: domain making a change in pass-through host device
+  * @hostdev: device being attached or removed
+  * @reason: one of "start", "attach", or "detach"
+@@ -140,10 +138,8 @@ void qemuDomainNetAudit(virDomainObjPtr vm,
+  * Log an audit message about an attempted device passthrough change.
+  */
+ void
+-qemuDomainHostdevAudit(virDomainObjPtr vm,
+-                       virDomainHostdevDefPtr hostdev,
+-                       const char *reason,
+-                       bool success)
++qemuAuditHostdev(virDomainObjPtr vm, virDomainHostdevDefPtr hostdev,
++                 const char *reason, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
+@@ -310,7 +306,7 @@ cleanup:
+ }
+ 
+ /**
+- * qemuDomainResourceAudit:
++ * qemuAuditResource:
+  * @vm: domain making an integer resource change
+  * @resource: name of the resource: "mem" or "vcpu"
+  * @oldval: the old value of the resource
+@@ -321,12 +317,9 @@ cleanup:
+  * Log an audit message about an attempted resource change.
+  */
+ static void
+-qemuDomainResourceAudit(virDomainObjPtr vm,
+-                        const char *resource,
+-                        unsigned long long oldval,
+-                        unsigned long long newval,
+-                        const char *reason,
+-                        bool success)
++qemuAuditResource(virDomainObjPtr vm, const char *resource,
++                  unsigned long long oldval, unsigned long long newval,
++                  const char *reason, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
+@@ -346,26 +339,24 @@ qemuDomainResourceAudit(virDomainObjPtr vm,
+ }
+ 
+ void
+-qemuDomainMemoryAudit(virDomainObjPtr vm,
+-                      unsigned long long oldmem, unsigned long long newmem,
+-                      const char *reason, bool success)
++qemuAuditMemory(virDomainObjPtr vm,
++                unsigned long long oldmem, unsigned long long newmem,
++                const char *reason, bool success)
+ {
+-    return qemuDomainResourceAudit(vm, "mem", oldmem, newmem, reason, success);
++    return qemuAuditResource(vm, "mem", oldmem, newmem, reason, success);
+ }
+ 
+ void
+-qemuDomainVcpuAudit(virDomainObjPtr vm,
+-                    unsigned int oldvcpu, unsigned int newvcpu,
+-                    const char *reason, bool success)
++qemuAuditVcpu(virDomainObjPtr vm,
++              unsigned int oldvcpu, unsigned int newvcpu,
++              const char *reason, bool success)
+ {
+-    return qemuDomainResourceAudit(vm, "vcpu", oldvcpu, newvcpu, reason,
+-                                   success);
++    return qemuAuditResource(vm, "vcpu", oldvcpu, newvcpu, reason, success);
+ }
+ 
+-static void qemuDomainLifecycleAudit(virDomainObjPtr vm,
+-                                     const char *op,
+-                                     const char *reason,
+-                                     bool success)
++static void
++qemuAuditLifecycle(virDomainObjPtr vm, const char *op,
++                   const char *reason, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
+@@ -384,39 +375,42 @@ static void qemuDomainLifecycleAudit(virDomainObjPtr vm,
+ }
+ 
+ 
+-void qemuDomainStartAudit(virDomainObjPtr vm, const char *reason, bool success)
++void
++qemuAuditDomainStart(virDomainObjPtr vm, const char *reason, bool success)
+ {
+     int i;
+ 
+     for (i = 0 ; i < vm->def->ndisks ; i++) {
+         virDomainDiskDefPtr disk = vm->def->disks[i];
+         if (disk->src) /* Skips CDROM without media initially inserted */
+-            qemuDomainDiskAudit(vm, NULL, disk, "start", true);
++            qemuAuditDisk(vm, NULL, disk, "start", true);
+     }
+ 
+     for (i = 0 ; i < vm->def->nnets ; i++) {
+         virDomainNetDefPtr net = vm->def->nets[i];
+-        qemuDomainNetAudit(vm, NULL, net, "start", true);
++        qemuAuditNet(vm, NULL, net, "start", true);
+     }
+ 
+     for (i = 0 ; i < vm->def->nhostdevs ; i++) {
+         virDomainHostdevDefPtr hostdev = vm->def->hostdevs[i];
+-        qemuDomainHostdevAudit(vm, hostdev, "start", true);
++        qemuAuditHostdev(vm, hostdev, "start", true);
+     }
+ 
+-    qemuDomainMemoryAudit(vm, 0, vm->def->mem.cur_balloon, "start", true);
+-    qemuDomainVcpuAudit(vm, 0, vm->def->vcpus, "start", true);
++    qemuAuditMemory(vm, 0, vm->def->mem.cur_balloon, "start", true);
++    qemuAuditVcpu(vm, 0, vm->def->vcpus, "start", true);
+ 
+-    qemuDomainLifecycleAudit(vm, "start", reason, success);
++    qemuAuditLifecycle(vm, "start", reason, success);
+ }
+ 
+ 
+-void qemuDomainStopAudit(virDomainObjPtr vm, const char *reason)
++void
++qemuAuditDomainStop(virDomainObjPtr vm, const char *reason)
+ {
+-    qemuDomainLifecycleAudit(vm, "stop", reason, true);
++    qemuAuditLifecycle(vm, "stop", reason, true);
+ }
+ 
+-void qemuDomainSecurityLabelAudit(virDomainObjPtr vm, bool success)
++void
++qemuAuditSecurityLabel(virDomainObjPtr vm, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
+diff --git a/src/qemu/qemu_audit.h b/src/qemu/qemu_audit.h
+index 53855e2..7921ae3 100644
+--- a/src/qemu/qemu_audit.h
++++ b/src/qemu/qemu_audit.h
+@@ -27,48 +27,66 @@
+ # include "domain_conf.h"
+ # include "cgroup.h"
+ 
+-void qemuDomainStartAudit(virDomainObjPtr vm, const char *reason, bool success);
+-void qemuDomainStopAudit(virDomainObjPtr vm, const char *reason);
+-void qemuDomainDiskAudit(virDomainObjPtr vm,
+-                         virDomainDiskDefPtr oldDef,
+-                         virDomainDiskDefPtr newDef,
+-                         const char *reason,
+-                         bool success);
+-void qemuDomainNetAudit(virDomainObjPtr vm,
+-                        virDomainNetDefPtr oldDef,
+-                        virDomainNetDefPtr newDef,
+-                        const char *reason,
+-                        bool success);
+-void qemuDomainHostdevAudit(virDomainObjPtr vm,
+-                            virDomainHostdevDefPtr def,
+-                            const char *reason,
+-                            bool success);
++void qemuAuditDomainStart(virDomainObjPtr vm,
++                          const char *reason,
++                          bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
++void qemuAuditDomainStop(virDomainObjPtr vm,
++                         const char *reason)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
++void qemuAuditDisk(virDomainObjPtr vm,
++                   virDomainDiskDefPtr oldDef,
++                   virDomainDiskDefPtr newDef,
++                   const char *reason,
++                   bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
++void qemuAuditNet(virDomainObjPtr vm,
++                  virDomainNetDefPtr oldDef,
++                  virDomainNetDefPtr newDef,
++                  const char *reason,
++                  bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
++void qemuAuditHostdev(virDomainObjPtr vm,
++                      virDomainHostdevDefPtr def,
++                      const char *reason,
++                      bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
+ void qemuAuditCgroup(virDomainObjPtr vm,
+                      virCgroupPtr group,
+                      const char *reason,
+                      const char *extra,
+-                     bool success);
++                     bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
++    ATTRIBUTE_NONNULL(4);
+ void qemuAuditCgroupMajor(virDomainObjPtr vm,
+                           virCgroupPtr group,
+                           const char *reason,
+                           int maj,
+                           const char *name,
+-                          bool success);
++                          bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
++    ATTRIBUTE_NONNULL(5);
+ void qemuAuditCgroupPath(virDomainObjPtr vm,
+                          virCgroupPtr group,
+                          const char *reason,
+                          const char *path,
+-                         int rc);
+-void qemuDomainMemoryAudit(virDomainObjPtr vm,
+-                           unsigned long long oldmem,
+-                           unsigned long long newmem,
+-                           const char *reason,
+-                           bool success);
+-void qemuDomainVcpuAudit(virDomainObjPtr vm,
+-                         unsigned int oldvcpu,
+-                         unsigned int newvcpu,
+-                         const char *reason,
+-                         bool success);
+-void qemuDomainSecurityLabelAudit(virDomainObjPtr vm, bool success);
++                         int rc)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
++    ATTRIBUTE_NONNULL(4);
++void qemuAuditMemory(virDomainObjPtr vm,
++                     unsigned long long oldmem,
++                     unsigned long long newmem,
++                     const char *reason,
++                     bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
++void qemuAuditVcpu(virDomainObjPtr vm,
++                   unsigned int oldvcpu,
++                   unsigned int newvcpu,
++                   const char *reason,
++                   bool success)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
++void qemuAuditSecurityLabel(virDomainObjPtr vm,
++                            bool success)
++    ATTRIBUTE_NONNULL(1);
+ 
+ #endif /* __QEMU_AUDIT_H__ */
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index c7738e2..3443ae7 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -760,7 +760,7 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                                      VIR_DOMAIN_EVENT_STOPPED_SHUTDOWN);
+ 
+     qemudShutdownVMDaemon(driver, vm, 0);
+-    qemuDomainStopAudit(vm, hasError ? "failed" : "shutdown");
++    qemuAuditDomainStop(vm, hasError ? "failed" : "shutdown");
+ 
+     if (!vm->persistent)
+         virDomainRemoveInactive(&driver->domains, vm);
+@@ -3072,7 +3072,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+         driver->securityDriver->domainGenSecurityLabel) {
+         ret = driver->securityDriver->domainGenSecurityLabel(driver->securityDriver,
+                                                              vm);
+-        qemuDomainSecurityLabelAudit(vm, ret >= 0);
++        qemuAuditSecurityLabel(vm, ret >= 0);
+         if (ret < 0)
+             goto cleanup;
+     }
+@@ -4018,7 +4018,7 @@ static virDomainPtr qemudDomainCreate(virConnectPtr conn, const char *xml,
+     if (qemudStartVMDaemon(conn, driver, vm, NULL,
+                            (flags & VIR_DOMAIN_START_PAUSED) != 0,
+                            -1, NULL, VIR_VM_OP_CREATE) < 0) {
+-        qemuDomainStartAudit(vm, "booted", false);
++        qemuAuditDomainStart(vm, "booted", false);
+         if (qemuDomainObjEndJob(vm) > 0)
+             virDomainRemoveInactive(&driver->domains,
+                                     vm);
+@@ -4029,7 +4029,7 @@ static virDomainPtr qemudDomainCreate(virConnectPtr conn, const char *xml,
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STARTED,
+                                      VIR_DOMAIN_EVENT_STARTED_BOOTED);
+-    qemuDomainStartAudit(vm, "booted", true);
++    qemuAuditDomainStart(vm, "booted", true);
+ 
+     dom = virGetDomain(conn, vm->def->name, vm->def->uuid);
+     if (dom) dom->id = vm->def->id;
+@@ -4244,7 +4244,7 @@ static int qemudDomainDestroy(virDomainPtr dom) {
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+                                      VIR_DOMAIN_EVENT_STOPPED_DESTROYED);
+-    qemuDomainStopAudit(vm, "destroyed");
++    qemuAuditDomainStop(vm, "destroyed");
+ 
+     if (!vm->persistent) {
+         if (qemuDomainObjEndJob(vm) > 0)
+@@ -4356,8 +4356,7 @@ static int qemudDomainSetMemory(virDomainPtr dom, unsigned long newmem) {
+     qemuDomainObjEnterMonitor(vm);
+     r = qemuMonitorSetBalloon(priv->mon, newmem);
+     qemuDomainObjExitMonitor(vm);
+-    qemuDomainMemoryAudit(vm, vm->def->mem.cur_balloon, newmem, "update",
+-                          r == 1);
++    qemuAuditMemory(vm, vm->def->mem.cur_balloon, newmem, "update", r == 1);
+     if (r < 0)
+         goto endjob;
+ 
+@@ -4949,7 +4948,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+ 
+     /* Shut it down */
+     qemudShutdownVMDaemon(driver, vm, 0);
+-    qemuDomainStopAudit(vm, "saved");
++    qemuAuditDomainStop(vm, "saved");
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+                                      VIR_DOMAIN_EVENT_STOPPED_SAVED);
+@@ -5351,7 +5350,7 @@ static int qemudDomainCoreDump(virDomainPtr dom,
+ endjob:
+     if ((ret == 0) && (flags & VIR_DUMP_CRASH)) {
+         qemudShutdownVMDaemon(driver, vm, 0);
+-        qemuDomainStopAudit(vm, "crashed");
++        qemuAuditDomainStop(vm, "crashed");
+         event = virDomainEventNewFromObj(vm,
+                                          VIR_DOMAIN_EVENT_STOPPED,
+                                          VIR_DOMAIN_EVENT_STOPPED_CRASHED);
+@@ -5481,7 +5480,7 @@ static int qemudDomainHotplugVcpus(virDomainObjPtr vm, unsigned int nvcpus)
+ 
+ cleanup:
+     qemuDomainObjExitMonitor(vm);
+-    qemuDomainVcpuAudit(vm, oldvcpus, nvcpus, "update", rc == 1);
++    qemuAuditVcpu(vm, oldvcpus, nvcpus, "update", rc == 1);
+     return ret;
+ 
+ unsupported:
+@@ -6260,14 +6259,14 @@ qemudDomainSaveImageStartVM(virConnectPtr conn,
+     *read_pid = -1;
+ 
+     if (ret < 0) {
+-        qemuDomainStartAudit(vm, "restored", false);
++        qemuAuditDomainStart(vm, "restored", false);
+         goto out;
+     }
+ 
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STARTED,
+                                      VIR_DOMAIN_EVENT_STARTED_RESTORED);
+-    qemuDomainStartAudit(vm, "restored", true);
++    qemuAuditDomainStart(vm, "restored", true);
+     if (event)
+         qemuDomainEventQueue(driver, event);
+ 
+@@ -6644,7 +6643,7 @@ static int qemudDomainObjStart(virConnectPtr conn,
+ 
+     ret = qemudStartVMDaemon(conn, driver, vm, NULL, start_paused, -1, NULL,
+                              VIR_VM_OP_CREATE);
+-    qemuDomainStartAudit(vm, "booted", ret >= 0);
++    qemuAuditDomainStart(vm, "booted", ret >= 0);
+     if (ret >= 0) {
+         virDomainEventPtr event =
+             virDomainEventNewFromObj(vm,
+@@ -8585,7 +8584,7 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+                                      -1, NULL, VIR_VM_OP_MIGRATE_IN_START);
+     VIR_FREE(migrateFrom);
+     if (internalret < 0) {
+-        qemuDomainStartAudit(vm, "migrated", false);
++        qemuAuditDomainStart(vm, "migrated", false);
+         /* Note that we don't set an error here because qemudStartVMDaemon
+          * should have already done that.
+          */
+@@ -8599,7 +8598,7 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+     if (virFDStreamConnectUNIX(st,
+                                unixfile,
+                                false) < 0) {
+-        qemuDomainStartAudit(vm, "migrated", false);
++        qemuAuditDomainStart(vm, "migrated", false);
+         qemudShutdownVMDaemon(driver, vm, 0);
+         if (!vm->persistent) {
+             if (qemuDomainObjEndJob(vm) > 0)
+@@ -8612,7 +8611,7 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+         goto endjob;
+     }
+ 
+-    qemuDomainStartAudit(vm, "migrated", true);
++    qemuAuditDomainStart(vm, "migrated", true);
+ 
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STARTED,
+@@ -8827,7 +8826,7 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+     snprintf (migrateFrom, sizeof (migrateFrom), "tcp:0.0.0.0:%d", this_port);
+     if (qemudStartVMDaemon (dconn, driver, vm, migrateFrom, true,
+                             -1, NULL, VIR_VM_OP_MIGRATE_IN_START) < 0) {
+-        qemuDomainStartAudit(vm, "migrated", false);
++        qemuAuditDomainStart(vm, "migrated", false);
+         /* Note that we don't set an error here because qemudStartVMDaemon
+          * should have already done that.
+          */
+@@ -8848,7 +8847,7 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+         VIR_WARN0("Unable to encode migration cookie");
+     }
+ 
+-    qemuDomainStartAudit(vm, "migrated", true);
++    qemuAuditDomainStart(vm, "migrated", true);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STARTED,
+                                      VIR_DOMAIN_EVENT_STARTED_MIGRATED);
+@@ -9459,7 +9458,7 @@ qemudDomainMigratePerform (virDomainPtr dom,
+ 
+     /* Clean up the source domain. */
+     qemudShutdownVMDaemon(driver, vm, 1);
+-    qemuDomainStopAudit(vm, "migrated");
++    qemuAuditDomainStop(vm, "migrated");
+     resume = 0;
+ 
+     event = virDomainEventNewFromObj(vm,
+@@ -9663,7 +9662,7 @@ qemudDomainMigrateFinish2 (virConnectPtr dconn,
+         }
+     } else {
+         qemudShutdownVMDaemon(driver, vm, 1);
+-        qemuDomainStopAudit(vm, "failed");
++        qemuAuditDomainStop(vm, "failed");
+         event = virDomainEventNewFromObj(vm,
+                                          VIR_DOMAIN_EVENT_STOPPED,
+                                          VIR_DOMAIN_EVENT_STOPPED_FAILED);
+@@ -10543,7 +10542,7 @@ static int qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+ 
+             rc = qemudStartVMDaemon(snapshot->domain->conn, driver, vm, NULL,
+                                     false, -1, NULL, VIR_VM_OP_CREATE);
+-            qemuDomainStartAudit(vm, "from-snapshot", rc >= 0);
++            qemuAuditDomainStart(vm, "from-snapshot", rc >= 0);
+             if (qemuDomainSnapshotSetCurrentInactive(vm, driver->snapshotDir) < 0)
+                 goto endjob;
+             if (rc < 0)
+@@ -10576,7 +10575,7 @@ static int qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+ 
+         if (virDomainObjIsActive(vm)) {
+             qemudShutdownVMDaemon(driver, vm, 0);
+-            qemuDomainStopAudit(vm, "from-snapshot");
++            qemuAuditDomainStop(vm, "from-snapshot");
+             event = virDomainEventNewFromObj(vm,
+                                              VIR_DOMAIN_EVENT_STOPPED,
+                                              VIR_DOMAIN_EVENT_STOPPED_FROM_SNAPSHOT);
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 94a97b0..46b8fe6 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -110,7 +110,7 @@ int qemuDomainChangeEjectableMedia(struct qemud_driver *driver,
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, origdisk, disk, "update", ret >= 0);
++    qemuAuditDisk(vm, origdisk, disk, "update", ret >= 0);
+ 
+     if (ret < 0)
+         goto error;
+@@ -211,7 +211,7 @@ int qemuDomainAttachPciDiskDevice(struct qemud_driver *driver,
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, NULL, disk, "attach", ret >= 0);
++    qemuAuditDisk(vm, NULL, disk, "attach", ret >= 0);
+ 
+     if (ret < 0)
+         goto error;
+@@ -447,7 +447,7 @@ int qemuDomainAttachSCSIDisk(struct qemud_driver *driver,
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, NULL, disk, "attach", ret >= 0);
++    qemuAuditDisk(vm, NULL, disk, "attach", ret >= 0);
+ 
+     if (ret < 0)
+         goto error;
+@@ -534,7 +534,7 @@ int qemuDomainAttachUsbMassstorageDevice(struct qemud_driver *driver,
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, NULL, disk, "attach", ret >= 0);
++    qemuAuditDisk(vm, NULL, disk, "attach", ret >= 0);
+ 
+     if (ret < 0)
+         goto error;
+@@ -671,13 +671,13 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+         if (qemuMonitorAddNetdev(priv->mon, netstr) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, NULL, net, "attach", false);
++            qemuAuditNet(vm, NULL, net, "attach", false);
+             goto try_tapfd_close;
+         }
+     } else {
+         if (qemuMonitorAddHostNetwork(priv->mon, netstr) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, NULL, net, "attach", false);
++            qemuAuditNet(vm, NULL, net, "attach", false);
+             goto try_tapfd_close;
+         }
+     }
+@@ -703,14 +703,14 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (qemuMonitorAddDevice(priv->mon, nicstr) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, NULL, net, "attach", false);
++            qemuAuditNet(vm, NULL, net, "attach", false);
+             goto try_remove;
+         }
+     } else {
+         if (qemuMonitorAddPCINetwork(priv->mon, nicstr,
+                                      &guestAddr) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, NULL, net, "attach", false);
++            qemuAuditNet(vm, NULL, net, "attach", false);
+             goto try_remove;
+         }
+         net->info.type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_PCI;
+@@ -718,7 +718,7 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainNetAudit(vm, NULL, net, "attach", true);
++    qemuAuditNet(vm, NULL, net, "attach", true);
+ 
+     ret = 0;
+ 
+@@ -860,7 +860,7 @@ int qemuDomainAttachHostPciDevice(struct qemud_driver *driver,
+         hostdev->info.type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_PCI;
+         memcpy(&hostdev->info.addr.pci, &guestAddr, sizeof(guestAddr));
+     }
+-    qemuDomainHostdevAudit(vm, hostdev, "attach", ret == 0);
++    qemuAuditHostdev(vm, hostdev, "attach", ret == 0);
+     if (ret < 0)
+         goto error;
+ 
+@@ -937,7 +937,7 @@ int qemuDomainAttachHostUsbDevice(struct qemud_driver *driver,
+                                            hostdev->source.subsys.u.usb.bus,
+                                            hostdev->source.subsys.u.usb.device);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+-    qemuDomainHostdevAudit(vm, hostdev, "attach", ret == 0);
++    qemuAuditHostdev(vm, hostdev, "attach", ret == 0);
+     if (ret < 0)
+         goto error;
+ 
+@@ -1273,7 +1273,7 @@ int qemuDomainDetachPciDiskDevice(struct qemud_driver *driver,
+ 
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, detach, NULL, "detach", ret >= 0);
++    qemuAuditDisk(vm, detach, NULL, "detach", ret >= 0);
+ 
+     if ((qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) &&
+         qemuDomainPCIAddressReleaseAddr(priv->pciaddrs, &detach->info) < 0)
+@@ -1357,7 +1357,7 @@ int qemuDomainDetachSCSIDiskDevice(struct qemud_driver *driver,
+ 
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainDiskAudit(vm, detach, NULL, "detach", ret >= 0);
++    qemuAuditDisk(vm, detach, NULL, "detach", ret >= 0);
+ 
+     virDomainDiskRemove(vm->def, i);
+ 
+@@ -1512,14 +1512,14 @@ int qemuDomainDetachNetDevice(struct qemud_driver *driver,
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (qemuMonitorDelDevice(priv->mon, detach->info.alias) < 0) {
+             qemuDomainObjExitMonitor(vm);
+-            qemuDomainNetAudit(vm, detach, NULL, "detach", false);
++            qemuAuditNet(vm, detach, NULL, "detach", false);
+             goto cleanup;
+         }
+     } else {
+         if (qemuMonitorRemovePCIDevice(priv->mon,
+                                        &detach->info.addr.pci) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, detach, NULL, "detach", false);
++            qemuAuditNet(vm, detach, NULL, "detach", false);
+             goto cleanup;
+         }
+     }
+@@ -1528,19 +1528,19 @@ int qemuDomainDetachNetDevice(struct qemud_driver *driver,
+         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+         if (qemuMonitorRemoveNetdev(priv->mon, hostnet_name) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, detach, NULL, "detach", false);
++            qemuAuditNet(vm, detach, NULL, "detach", false);
+             goto cleanup;
+         }
+     } else {
+         if (qemuMonitorRemoveHostNetwork(priv->mon, vlan, hostnet_name) < 0) {
+             qemuDomainObjExitMonitorWithDriver(driver, vm);
+-            qemuDomainNetAudit(vm, detach, NULL, "detach", false);
++            qemuAuditNet(vm, detach, NULL, "detach", false);
+             goto cleanup;
+         }
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+-    qemuDomainNetAudit(vm, detach, NULL, "detach", true);
++    qemuAuditNet(vm, detach, NULL, "detach", true);
+ 
+     if ((qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) &&
+         qemuDomainPCIAddressReleaseAddr(priv->pciaddrs, &detach->info) < 0)
+@@ -1641,7 +1641,7 @@ int qemuDomainDetachHostPciDevice(struct qemud_driver *driver,
+         ret = qemuMonitorRemovePCIDevice(priv->mon, &detach->info.addr.pci);
+     }
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+-    qemuDomainHostdevAudit(vm, detach, "detach", ret == 0);
++    qemuAuditHostdev(vm, detach, "detach", ret == 0);
+     if (ret < 0)
+         return -1;
+ 
+@@ -1740,7 +1740,7 @@ int qemuDomainDetachHostUsbDevice(struct qemud_driver *driver,
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+     ret = qemuMonitorDelDevice(priv->mon, detach->info.alias);
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+-    qemuDomainHostdevAudit(vm, detach, "detach", ret == 0);
++    qemuAuditHostdev(vm, detach, "detach", ret == 0);
+     if (ret < 0)
+         return -1;
+ 
+-- 
+1.7.4.1
+

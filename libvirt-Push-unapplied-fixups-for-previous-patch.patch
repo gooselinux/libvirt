@@ -1,0 +1,56 @@
+From 0bda337d6508b911f65c3b8f75bf46f35f09849b Mon Sep 17 00:00:00 2001
+Message-Id: <0bda337d6508b911f65c3b8f75bf46f35f09849b.1296166858.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Mon, 24 Jan 2011 14:13:38 -0500
+Subject: [PATCH] Push unapplied fixups for previous patch
+
+https://bugzilla.redhat.com/show_bug.cgi?id=651415
+
+- Add augeas tests
+- Clarify vnc_auto_unix_socket precedence in qemu.conf
+(cherry picked from commit 1e1f7a89503820ce972fbcac4b6a7bf973f959e9)
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ daemon/test_libvirtd.aug |    6 ++++++
+ src/qemu/qemu.conf       |    3 ++-
+ 2 files changed, 8 insertions(+), 1 deletions(-)
+
+diff --git a/daemon/test_libvirtd.aug b/daemon/test_libvirtd.aug
+index 5f8b644..31fa643 100644
+--- a/daemon/test_libvirtd.aug
++++ b/daemon/test_libvirtd.aug
+@@ -271,6 +271,9 @@ log_filters=\"a\"
+ 
+ # Auditing:
+ audit_level = 2
++
++# VNC socket
++vnc_auto_unix_socket = 1
+ "
+ 
+    test Libvirtd.lns get conf =
+@@ -549,3 +552,6 @@ audit_level = 2
+ 	{ "#empty" }
+         { "#comment" = "Auditing:" }
+         { "audit_level" = "2" }
++        { "#empty" }
++        { "#comment" = "VNC socket:" }
++        { "vnc_auto_unix_socket" = "1" }
+diff --git a/src/qemu/qemu.conf b/src/qemu/qemu.conf
+index ae6136f..66310d4 100644
+--- a/src/qemu/qemu.conf
++++ b/src/qemu/qemu.conf
+@@ -16,7 +16,8 @@
+ # host machine, though most VNC clients do not support it.
+ #
+ # This will only be enabled for VNC configurations that do not have
+-# a hardcoded 'listen' or 'socket' value.
++# a hardcoded 'listen' or 'socket' value. This setting takes preference
++# over vnc_listen.
+ #
+ # vnc_auto_unix_socket = 1
+ 
+-- 
+1.7.4.rc3
+

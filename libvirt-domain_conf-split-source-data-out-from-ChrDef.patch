@@ -1,0 +1,2348 @@
+From 013778b32f7451e34eade4eaaeb77becf0ad61d4 Mon Sep 17 00:00:00 2001
+Message-Id: <013778b32f7451e34eade4eaaeb77becf0ad61d4.1296838266.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:46:43 -0700
+Subject: [PATCH] domain_conf: split source data out from ChrDef
+
+https://bugzilla.redhat.com/show_bug.cgi?id=641834
+Prerequisite patch to minimize merge conflicts.
+
+This opens up the possibility of reusing the smaller ChrSourceDef
+for both qemu monitor and a passthrough smartcard device.
+
+* src/conf/domain_conf.h (_virDomainChrDef): Factor host
+details...
+(_virDomainChrSourceDef): ...into new struct.
+(virDomainChrSourceDefFree): New prototype.
+* src/conf/domain_conf.c (virDomainChrDefFree)
+(virDomainChrDefParseXML, virDomainChrDefFormat): Split...
+(virDomainChrSourceDefClear, virDomainChrSourceDefFree)
+(virDomainChrSourceDefParseXML, virDomainChrSourceDefFormat):
+...into new functions.
+(virDomainChrDefParseTargetXML): Update clients to reflect type
+split.
+* src/vmx/vmx.c (virVMXParseSerial, virVMXParseParallel)
+(virVMXFormatSerial, virVMXFormatParallel): Likewise.
+* src/xen/xen_driver.c (xenUnifiedDomainOpenConsole): Likewise.
+* src/xen/xend_internal.c (xenDaemonParseSxprChar)
+(xenDaemonFormatSxprChr): Likewise.
+* src/vbox/vbox_tmpl.c (vboxDomainDumpXML, vboxAttachSerial)
+(vboxAttachParallel): Likewise.
+* src/security/security_dac.c (virSecurityDACSetChardevLabel)
+(virSecurityDACSetChardevCallback)
+(virSecurityDACRestoreChardevLabel)
+(virSecurityDACRestoreChardevCallback): Likewise.
+* src/security/security_selinux.c (SELinuxSetSecurityChardevLabel)
+(SELinuxSetSecurityChardevCallback)
+(SELinuxRestoreSecurityChardevLabel)
+(SELinuxSetSecurityChardevCallback): Likewise.
+* src/security/virt-aa-helper.c (get_files): Likewise.
+* src/lxc/lxc_driver.c (lxcVmStart, lxcDomainOpenConsole):
+Likewise.
+* src/uml/uml_conf.c (umlBuildCommandLineChr): Likewise.
+* src/uml/uml_driver.c (umlIdentifyOneChrPTY, umlIdentifyChrPTY)
+(umlDomainOpenConsole): Likewise.
+* src/qemu/qemu_command.c (qemuBuildChrChardevStr)
+(qemuBuildChrArgStr, qemuBuildCommandLine)
+(qemuParseCommandLineChr): Likewise.
+* src/qemu/qemu_domain.c (qemuDomainObjPrivateXMLFormat)
+(qemuDomainObjPrivateXMLParse): Likewise.
+* src/qemu/qemu_cgroup.c (qemuSetupChardevCgroup): Likewise.
+* src/qemu/qemu_hotplug.c (qemuDomainAttachNetDevice): Likewise.
+* src/qemu/qemu_driver.c (qemudFindCharDevicePTYsMonitor)
+(qemudFindCharDevicePTYs, qemuPrepareChardevDevice)
+(qemuPrepareMonitorChr, qemudShutdownVMDaemon)
+(qemuDomainOpenConsole): Likewise.
+* src/qemu/qemu_command.h (qemuBuildChrChardevStr)
+(qemuBuildChrArgStr): Delete, now that they are static.
+* src/libvirt_private.syms (domain_conf.h): New exports.
+* cfg.mk (useless_free_options): Update list.
+* tests/qemuxml2argvtest.c (testCompareXMLToArgvFiles): Update
+tests.
+(cherry picked from commit 98334e7c3a086661a70e79c061d2baf1cc4a2da3)
+
+Conflicts:
+
+	src/security/security_dac.c -> renamed from src/qemu/qemu_security_dac.c
+	cfg.mk -> not in tarball, so no patch needed
+---
+ src/conf/domain_conf.c          |  342 +++++++++++++++++++++++---------------
+ src/conf/domain_conf.h          |   39 +++--
+ src/libvirt_private.syms        |    1 +
+ src/lxc/lxc_driver.c            |   12 +-
+ src/qemu/qemu_cgroup.c          |   10 +-
+ src/qemu/qemu_command.c         |  133 ++++++++-------
+ src/qemu/qemu_command.h         |    7 +-
+ src/qemu/qemu_domain.c          |   22 ++--
+ src/qemu/qemu_driver.c          |   45 +++---
+ src/qemu/qemu_hotplug.c         |    6 +-
+ src/qemu/qemu_monitor.c         |   10 +-
+ src/qemu/qemu_security_dac.c    |    8 +-
+ src/security/security_selinux.c |   10 +-
+ src/security/virt-aa-helper.c   |   42 +++---
+ src/uml/uml_conf.c              |   16 +-
+ src/uml/uml_driver.c            |   14 +-
+ src/vbox/vbox_tmpl.c            |   49 +++---
+ src/vmx/vmx.c                   |   84 +++++-----
+ src/xen/xen_driver.c            |    6 +-
+ src/xen/xend_internal.c         |   87 ++++++----
+ tests/qemuxml2argvtest.c        |    6 +-
+ 21 files changed, 529 insertions(+), 420 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 2038f9b..73ad5c3 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1,7 +1,7 @@
+ /*
+  * domain_conf.c: domain XML processing
+  *
+- * Copyright (C) 2006-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -626,28 +626,9 @@ void virDomainNetDefFree(virDomainNetDefPtr def)
+     VIR_FREE(def);
+ }
+ 
+-void virDomainChrDefFree(virDomainChrDefPtr def)
++static void ATTRIBUTE_NONNULL(1)
++virDomainChrSourceDefClear(virDomainChrSourceDefPtr def)
+ {
+-    if (!def)
+-        return;
+-
+-    switch (def->deviceType) {
+-    case VIR_DOMAIN_CHR_DEVICE_TYPE_CHANNEL:
+-        switch (def->targetType) {
+-        case VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_GUESTFWD:
+-            VIR_FREE(def->target.addr);
+-            break;
+-
+-        case VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO:
+-            VIR_FREE(def->target.name);
+-            break;
+-        }
+-        break;
+-
+-    default:
+-        break;
+-    }
+-
+     switch (def->type) {
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+     case VIR_DOMAIN_CHR_TYPE_DEV:
+@@ -672,7 +653,41 @@ void virDomainChrDefFree(virDomainChrDefPtr def)
+         VIR_FREE(def->data.nix.path);
+         break;
+     }
++}
++
++void virDomainChrSourceDefFree(virDomainChrSourceDefPtr def)
++{
++    if (!def)
++        return;
++
++    virDomainChrSourceDefClear(def);
++
++    VIR_FREE(def);
++}
+ 
++void virDomainChrDefFree(virDomainChrDefPtr def)
++{
++    if (!def)
++        return;
++
++    switch (def->deviceType) {
++    case VIR_DOMAIN_CHR_DEVICE_TYPE_CHANNEL:
++        switch (def->targetType) {
++        case VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_GUESTFWD:
++            VIR_FREE(def->target.addr);
++            break;
++
++        case VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO:
++            VIR_FREE(def->target.name);
++            break;
++        }
++        break;
++
++    default:
++        break;
++    }
++
++    virDomainChrSourceDefClear(&def->source);
+     virDomainDeviceInfoClear(&def->info);
+ 
+     VIR_FREE(def);
+@@ -2878,51 +2893,15 @@ error:
+     return ret;
+ }
+ 
+-
+-/* Parse the XML definition for a character device
+- * @param node XML nodeset to parse for net definition
+- *
+- * The XML we're dealing with looks like
+- *
+- * <serial type="pty">
+- *   <source path="/dev/pts/3"/>
+- *   <target port="1"/>
+- * </serial>
+- *
+- * <serial type="dev">
+- *   <source path="/dev/ttyS0"/>
+- *   <target port="1"/>
+- * </serial>
+- *
+- * <serial type="tcp">
+- *   <source mode="connect" host="0.0.0.0" service="2445"/>
+- *   <target port="1"/>
+- * </serial>
+- *
+- * <serial type="tcp">
+- *   <source mode="bind" host="0.0.0.0" service="2445"/>
+- *   <target port="1"/>
+- *   <protocol type='raw'/>
+- * </serial>
+- *
+- * <serial type="udp">
+- *   <source mode="bind" host="0.0.0.0" service="2445"/>
+- *   <source mode="connect" host="0.0.0.0" service="2445"/>
+- *   <target port="1"/>
+- * </serial>
+- *
+- * <serial type="unix">
+- *   <source mode="bind" path="/tmp/foo"/>
+- *   <target port="1"/>
+- * </serial>
+- *
+- */
+-static virDomainChrDefPtr
+-virDomainChrDefParseXML(virCapsPtr caps,
+-                        xmlNodePtr node,
+-                        int flags) {
+-    xmlNodePtr cur;
+-    char *type = NULL;
++/* Parse the source half of the XML definition for a character device,
++ * where node is the first element of node->children of the parent
++ * element.  def->type must already be valid.  Return -1 on failure,
++ * otherwise the number of ignored children (this intentionally skips
++ * <target>, which is used by <serial> but not <smartcard>). */
++static int
++virDomainChrSourceDefParseXML(virDomainChrSourceDefPtr def,
++                              xmlNodePtr cur)
++{
+     char *bindHost = NULL;
+     char *bindService = NULL;
+     char *connectHost = NULL;
+@@ -2930,32 +2909,8 @@ virDomainChrDefParseXML(virCapsPtr caps,
+     char *path = NULL;
+     char *mode = NULL;
+     char *protocol = NULL;
+-    const char *nodeName;
+-    virDomainChrDefPtr def;
+-
+-    if (VIR_ALLOC(def) < 0) {
+-        virReportOOMError();
+-        return NULL;
+-    }
+-
+-    type = virXMLPropString(node, "type");
+-    if (type == NULL) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_PTY;
+-    } else if ((def->type = virDomainChrTypeFromString(type)) < 0) {
+-        virDomainReportError(VIR_ERR_XML_ERROR,
+-                             _("unknown type presented to host for character device: %s"),
+-                             type);
+-        goto error;
+-    }
++    int remaining = 0;
+ 
+-    nodeName = (const char *) node->name;
+-    if ((def->deviceType = virDomainChrDeviceTypeFromString(nodeName)) < 0) {
+-        virDomainReportError(VIR_ERR_XML_ERROR,
+-                             _("unknown character device type: %s"),
+-                             nodeName);
+-    }
+-
+-    cur = node->children;
+     while (cur != NULL) {
+         if (cur->type == XML_ELEMENT_NODE) {
+             if (xmlStrEqual(cur->name, BAD_CAST "source")) {
+@@ -3000,10 +2955,8 @@ virDomainChrDefParseXML(virCapsPtr caps,
+             } else if (xmlStrEqual(cur->name, BAD_CAST "protocol")) {
+                 if (protocol == NULL)
+                     protocol = virXMLPropString(cur, "type");
+-            } else if (xmlStrEqual(cur->name, BAD_CAST "target")) {
+-                if (virDomainChrDefParseTargetXML(caps, def, cur, flags) < 0) {
+-                    goto error;
+-                }
++            } else {
++                remaining++;
+             }
+         }
+         cur = cur->next;
+@@ -3054,7 +3007,7 @@ virDomainChrDefParseXML(virCapsPtr caps,
+             connectHost = NULL;
+             def->data.tcp.service = connectService;
+             connectService = NULL;
+-            def->data.tcp.listen = 0;
++            def->data.tcp.listen = false;
+         } else {
+             if (bindHost == NULL) {
+                 virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+@@ -3071,7 +3024,7 @@ virDomainChrDefParseXML(virCapsPtr caps,
+             bindHost = NULL;
+             def->data.tcp.service = bindService;
+             bindService = NULL;
+-            def->data.tcp.listen = 1;
++            def->data.tcp.listen = true;
+         }
+ 
+         if (protocol == NULL)
+@@ -3110,30 +3063,124 @@ virDomainChrDefParseXML(virCapsPtr caps,
+             goto error;
+         }
+ 
+-        if (mode != NULL &&
+-            STRNEQ(mode, "connect"))
+-            def->data.nix.listen = 1;
+-        else
+-            def->data.nix.listen = 0;
++        def->data.nix.listen = mode != NULL && STRNEQ(mode, "connect");
+ 
+         def->data.nix.path = path;
+         path = NULL;
+         break;
+     }
+ 
+-    if (virDomainDeviceInfoParseXML(node, &def->info, flags) < 0)
+-        goto error;
+-
+ cleanup:
+     VIR_FREE(mode);
+     VIR_FREE(protocol);
+-    VIR_FREE(type);
+     VIR_FREE(bindHost);
+     VIR_FREE(bindService);
+     VIR_FREE(connectHost);
+     VIR_FREE(connectService);
+     VIR_FREE(path);
+ 
++    return remaining;
++
++error:
++    virDomainChrSourceDefClear(def);
++    remaining = -1;
++    goto cleanup;
++}
++
++/* Parse the XML definition for a character device
++ * @param node XML nodeset to parse for net definition
++ *
++ * The XML we're dealing with looks like
++ *
++ * <serial type="pty">
++ *   <source path="/dev/pts/3"/>
++ *   <target port="1"/>
++ * </serial>
++ *
++ * <serial type="dev">
++ *   <source path="/dev/ttyS0"/>
++ *   <target port="1"/>
++ * </serial>
++ *
++ * <serial type="tcp">
++ *   <source mode="connect" host="0.0.0.0" service="2445"/>
++ *   <target port="1"/>
++ * </serial>
++ *
++ * <serial type="tcp">
++ *   <source mode="bind" host="0.0.0.0" service="2445"/>
++ *   <target port="1"/>
++ *   <protocol type='raw'/>
++ * </serial>
++ *
++ * <serial type="udp">
++ *   <source mode="bind" host="0.0.0.0" service="2445"/>
++ *   <source mode="connect" host="0.0.0.0" service="2445"/>
++ *   <target port="1"/>
++ * </serial>
++ *
++ * <serial type="unix">
++ *   <source mode="bind" path="/tmp/foo"/>
++ *   <target port="1"/>
++ * </serial>
++ *
++ */
++static virDomainChrDefPtr
++virDomainChrDefParseXML(virCapsPtr caps,
++                        xmlNodePtr node,
++                        int flags) {
++    xmlNodePtr cur;
++    char *type = NULL;
++    const char *nodeName;
++    virDomainChrDefPtr def;
++    int remaining;
++
++    if (VIR_ALLOC(def) < 0) {
++        virReportOOMError();
++        return NULL;
++    }
++
++    type = virXMLPropString(node, "type");
++    if (type == NULL) {
++        def->source.type = VIR_DOMAIN_CHR_TYPE_PTY;
++    } else if ((def->source.type = virDomainChrTypeFromString(type)) < 0) {
++        virDomainReportError(VIR_ERR_XML_ERROR,
++                             _("unknown type presented to host for character device: %s"),
++                             type);
++        goto error;
++    }
++
++    nodeName = (const char *) node->name;
++    if ((def->deviceType = virDomainChrDeviceTypeFromString(nodeName)) < 0) {
++        virDomainReportError(VIR_ERR_XML_ERROR,
++                             _("unknown character device type: %s"),
++                             nodeName);
++    }
++
++    cur = node->children;
++    remaining = virDomainChrSourceDefParseXML(&def->source, cur);
++    if (remaining < 0)
++        goto error;
++    if (remaining) {
++        while (cur != NULL) {
++            if (cur->type == XML_ELEMENT_NODE) {
++                if (xmlStrEqual(cur->name, BAD_CAST "target")) {
++                    if (virDomainChrDefParseTargetXML(caps, def, cur,
++                                                      flags) < 0) {
++                        goto error;
++                    }
++                }
++            }
++            cur = cur->next;
++        }
++    }
++
++    if (virDomainDeviceInfoParseXML(node, &def->info, flags) < 0)
++        goto error;
++
++cleanup:
++    VIR_FREE(type);
++
+     return def;
+ 
+ error:
+@@ -6505,17 +6552,15 @@ virDomainNetDefFormat(virBufferPtr buf,
+ }
+ 
+ 
++/* Assumes that "<device" has already been generated, and starts
++ * output at " type='type'>". */
+ static int
+-virDomainChrDefFormat(virBufferPtr buf,
+-                      virDomainChrDefPtr def,
+-                      int flags)
++virDomainChrSourceDefFormat(virBufferPtr buf,
++                            virDomainChrSourceDefPtr def,
++                            bool tty_compat,
++                            int flags)
+ {
+     const char *type = virDomainChrTypeToString(def->type);
+-    const char *elementName = virDomainChrDeviceTypeToString(def->deviceType);
+-    const char *targetType = virDomainChrTargetTypeToString(def->deviceType,
+-                                                            def->targetType);
+-
+-    int ret = 0;
+ 
+     if (!type) {
+         virDomainReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -6523,21 +6568,9 @@ virDomainChrDefFormat(virBufferPtr buf,
+         return -1;
+     }
+ 
+-    if (!elementName) {
+-        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
+-                             _("unexpected char device type %d"),
+-                             def->deviceType);
+-        return -1;
+-    }
+-
+     /* Compat with legacy  <console tty='/dev/pts/5'/> syntax */
+-    virBufferVSprintf(buf, "    <%s type='%s'",
+-                      elementName, type);
+-    if (def->deviceType == VIR_DOMAIN_CHR_DEVICE_TYPE_CONSOLE &&
+-        def->target.port == 0 &&
+-        def->type == VIR_DOMAIN_CHR_TYPE_PTY &&
+-        !(flags & VIR_DOMAIN_XML_INACTIVE) &&
+-        def->data.file.path) {
++    virBufferVSprintf(buf, " type='%s'", type);
++    if (tty_compat) {
+         virBufferEscapeString(buf, " tty='%s'",
+                               def->data.file.path);
+     }
+@@ -6555,7 +6588,8 @@ virDomainChrDefFormat(virBufferPtr buf,
+     case VIR_DOMAIN_CHR_TYPE_FILE:
+     case VIR_DOMAIN_CHR_TYPE_PIPE:
+         if (def->type != VIR_DOMAIN_CHR_TYPE_PTY ||
+-            (def->data.file.path && !(flags & VIR_DOMAIN_XML_INACTIVE))) {
++            (def->data.file.path &&
++             !(flags & VIR_DOMAIN_XML_INACTIVE))) {
+             virBufferEscapeString(buf, "      <source path='%s'/>\n",
+                                   def->data.file.path);
+         }
+@@ -6564,7 +6598,9 @@ virDomainChrDefFormat(virBufferPtr buf,
+     case VIR_DOMAIN_CHR_TYPE_UDP:
+         if (def->data.udp.bindService &&
+             def->data.udp.bindHost) {
+-            virBufferVSprintf(buf, "      <source mode='bind' host='%s' service='%s'/>\n",
++            virBufferVSprintf(buf,
++                              "      <source mode='bind' host='%s' "
++                              "service='%s'/>\n",
+                               def->data.udp.bindHost,
+                               def->data.udp.bindService);
+         } else if (def->data.udp.bindHost) {
+@@ -6577,25 +6613,30 @@ virDomainChrDefFormat(virBufferPtr buf,
+ 
+         if (def->data.udp.connectService &&
+             def->data.udp.connectHost) {
+-            virBufferVSprintf(buf, "      <source mode='connect' host='%s' service='%s'/>\n",
++            virBufferVSprintf(buf,
++                              "      <source mode='connect' host='%s' "
++                              "service='%s'/>\n",
+                               def->data.udp.connectHost,
+                               def->data.udp.connectService);
+         } else if (def->data.udp.connectHost) {
+             virBufferVSprintf(buf, "      <source mode='connect' host='%s'/>\n",
+                               def->data.udp.connectHost);
+         } else if (def->data.udp.connectService) {
+-            virBufferVSprintf(buf, "      <source mode='connect' service='%s'/>\n",
++            virBufferVSprintf(buf,
++                              "      <source mode='connect' service='%s'/>\n",
+                               def->data.udp.connectService);
+         }
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_TCP:
+-        virBufferVSprintf(buf, "      <source mode='%s' host='%s' service='%s'/>\n",
++        virBufferVSprintf(buf,
++                          "      <source mode='%s' host='%s' service='%s'/>\n",
+                           def->data.tcp.listen ? "bind" : "connect",
+                           def->data.tcp.host,
+                           def->data.tcp.service);
+         virBufferVSprintf(buf, "      <protocol type='%s'/>\n",
+-                          virDomainChrTcpProtocolTypeToString(def->data.tcp.protocol));
++                          virDomainChrTcpProtocolTypeToString(
++                              def->data.tcp.protocol));
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+@@ -6606,6 +6647,37 @@ virDomainChrDefFormat(virBufferPtr buf,
+         break;
+     }
+ 
++    return 0;
++}
++
++static int
++virDomainChrDefFormat(virBufferPtr buf,
++                      virDomainChrDefPtr def,
++                      int flags)
++{
++    const char *elementName = virDomainChrDeviceTypeToString(def->deviceType);
++    const char *targetType = virDomainChrTargetTypeToString(def->deviceType,
++                                                            def->targetType);
++    bool tty_compat;
++
++    int ret = 0;
++
++    if (!elementName) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                             _("unexpected char device type %d"),
++                             def->deviceType);
++        return -1;
++    }
++
++    virBufferVSprintf(buf, "    <%s", elementName);
++    tty_compat = (def->deviceType == VIR_DOMAIN_CHR_DEVICE_TYPE_CONSOLE &&
++                  def->target.port == 0 &&
++                  def->source.type == VIR_DOMAIN_CHR_TYPE_PTY &&
++                  !(flags & VIR_DOMAIN_XML_INACTIVE) &&
++                  def->source.data.file.path);
++    if (virDomainChrSourceDefFormat(buf, &def->source, tty_compat, flags) < 0)
++        return -1;
++
+     /* Format <target> block */
+     switch (def->deviceType) {
+     case VIR_DOMAIN_CHR_DEVICE_TYPE_CHANNEL: {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 9866977..ee4605d 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1,7 +1,7 @@
+ /*
+  * domain_conf.h: domain XML processing
+  *
+- * Copyright (C) 2006-2008, 2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -417,18 +417,11 @@ enum virDomainChrTcpProtocol {
+     VIR_DOMAIN_CHR_TCP_PROTOCOL_LAST,
+ };
+ 
+-typedef struct _virDomainChrDef virDomainChrDef;
+-typedef virDomainChrDef *virDomainChrDefPtr;
+-struct _virDomainChrDef {
+-    int deviceType;
+-    int targetType;
+-    union {
+-        int port; /* parallel, serial, console */
+-        virSocketAddrPtr addr; /* guestfwd */
+-        char *name; /* virtio */
+-    } target;
+-
+-    int type;
++/* The host side information for a character device.  */
++typedef struct _virDomainChrSourceDef virDomainChrSourceDef;
++typedef virDomainChrSourceDef *virDomainChrSourceDefPtr;
++struct _virDomainChrSourceDef {
++    int type; /* virDomainChrType */
+     union {
+         struct {
+             char *path;
+@@ -436,7 +429,7 @@ struct _virDomainChrDef {
+         struct {
+             char *host;
+             char *service;
+-            int listen;
++            bool listen;
+             int protocol;
+         } tcp;
+         struct {
+@@ -447,9 +440,24 @@ struct _virDomainChrDef {
+         } udp;
+         struct {
+             char *path;
+-            int listen;
++            bool listen;
+         } nix;
+     } data;
++};
++
++/* A complete character device, both host and domain views.  */
++typedef struct _virDomainChrDef virDomainChrDef;
++typedef virDomainChrDef *virDomainChrDefPtr;
++struct _virDomainChrDef {
++    int deviceType;
++    int targetType;
++    union {
++        int port; /* parallel, serial, console */
++        virSocketAddrPtr addr; /* guestfwd */
++        char *name; /* virtio */
++    } target;
++
++    virDomainChrSourceDef source;
+ 
+     virDomainDeviceInfo info;
+ };
+@@ -1103,6 +1111,7 @@ void virDomainControllerDefFree(virDomainControllerDefPtr def);
+ void virDomainFSDefFree(virDomainFSDefPtr def);
+ void virDomainNetDefFree(virDomainNetDefPtr def);
+ void virDomainChrDefFree(virDomainChrDefPtr def);
++void virDomainChrSourceDefFree(virDomainChrSourceDefPtr def);
+ void virDomainSoundDefFree(virDomainSoundDefPtr def);
+ void virDomainMemballoonDefFree(virDomainMemballoonDefPtr def);
+ void virDomainWatchdogDefFree(virDomainWatchdogDefPtr def);
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 707ebd8..9b638c0 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -192,6 +192,7 @@ virDomainChrConsoleTargetTypeFromString;
+ virDomainChrConsoleTargetTypeToString;
+ virDomainChrDefForeach;
+ virDomainChrDefFree;
++virDomainChrSourceDefFree;
+ virDomainChrTcpProtocolTypeFromString;
+ virDomainChrTcpProtocolTypeToString;
+ virDomainChrTypeFromString;
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index 821cdf2..2b06d33 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright IBM Corp. 2008
+  *
+  * lxc_driver.c: linux container driver functions
+@@ -1494,9 +1494,9 @@ static int lxcVmStart(virConnectPtr conn,
+         goto cleanup;
+     }
+     if (vm->def->console &&
+-        vm->def->console->type == VIR_DOMAIN_CHR_TYPE_PTY) {
+-        VIR_FREE(vm->def->console->data.file.path);
+-        vm->def->console->data.file.path = parentTtyPath;
++        vm->def->console->source.type == VIR_DOMAIN_CHR_TYPE_PTY) {
++        VIR_FREE(vm->def->console->source.data.file.path);
++        vm->def->console->source.data.file.path = parentTtyPath;
+     } else {
+         VIR_FREE(parentTtyPath);
+     }
+@@ -2804,13 +2804,13 @@ lxcDomainOpenConsole(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (chr->type != VIR_DOMAIN_CHR_TYPE_PTY) {
++    if (chr->source.type != VIR_DOMAIN_CHR_TYPE_PTY) {
+         lxcError(VIR_ERR_INTERNAL_ERROR,
+                  _("character device %s is not using a PTY"), devname);
+         goto cleanup;
+     }
+ 
+-    if (virFDStreamOpenFile(st, chr->data.file.path, O_RDWR) < 0)
++    if (virFDStreamOpenFile(st, chr->source.data.file.path, O_RDWR) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 180e7c4..e5536c0 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_cgroup.c: QEMU cgroup management
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -142,16 +142,16 @@ int qemuSetupChardevCgroup(virDomainDefPtr def,
+     virCgroupPtr cgroup = opaque;
+     int rc;
+ 
+-    if (dev->type != VIR_DOMAIN_CHR_TYPE_DEV)
++    if (dev->source.type != VIR_DOMAIN_CHR_TYPE_DEV)
+         return 0;
+ 
+ 
+-    VIR_DEBUG("Process path '%s' for disk", dev->data.file.path);
+-    rc = virCgroupAllowDevicePath(cgroup, dev->data.file.path);
++    VIR_DEBUG("Process path '%s' for disk", dev->source.data.file.path);
++    rc = virCgroupAllowDevicePath(cgroup, dev->source.data.file.path);
+     if (rc != 0) {
+         virReportSystemError(-rc,
+                              _("Unable to allow device %s for %s"),
+-                             dev->data.file.path, def->name);
++                             dev->source.data.file.path, def->name);
+         return -1;
+     }
+ 
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index c61a186..652a60f 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_command.c: QEMU command generation
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -1996,45 +1996,48 @@ qemuBuildUSBHostdevUsbDevStr(virDomainHostdevDefPtr dev)
+ 
+ /* This function outputs a -chardev command line option which describes only the
+  * host side of the character device */
+-char *
+-qemuBuildChrChardevStr(virDomainChrDefPtr dev)
++static char *
++qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     bool telnet;
+ 
+     switch(dev->type) {
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+-        virBufferVSprintf(&buf, "null,id=%s", dev->info.alias);
++        virBufferVSprintf(&buf, "null,id=%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_VC:
+-        virBufferVSprintf(&buf, "vc,id=%s", dev->info.alias);
++        virBufferVSprintf(&buf, "vc,id=%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+-        virBufferVSprintf(&buf, "pty,id=%s", dev->info.alias);
++        virBufferVSprintf(&buf, "pty,id=%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_DEV:
+-        virBufferVSprintf(&buf, "tty,id=%s,path=%s", dev->info.alias, dev->data.file.path);
++        virBufferVSprintf(&buf, "tty,id=%s,path=%s", alias,
++                          dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_FILE:
+-        virBufferVSprintf(&buf, "file,id=%s,path=%s", dev->info.alias, dev->data.file.path);
++        virBufferVSprintf(&buf, "file,id=%s,path=%s", alias,
++                          dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_PIPE:
+-        virBufferVSprintf(&buf, "pipe,id=%s,path=%s", dev->info.alias, dev->data.file.path);
++        virBufferVSprintf(&buf, "pipe,id=%s,path=%s", alias,
++                          dev->data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
+-        virBufferVSprintf(&buf, "stdio,id=%s", dev->info.alias);
++        virBufferVSprintf(&buf, "stdio,id=%s", alias);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_UDP:
+         virBufferVSprintf(&buf,
+                           "udp,id=%s,host=%s,port=%s,localaddr=%s,localport=%s",
+-                          dev->info.alias,
++                          alias,
+                           dev->data.udp.connectHost,
+                           dev->data.udp.connectService,
+                           dev->data.udp.bindHost,
+@@ -2045,7 +2048,7 @@ qemuBuildChrChardevStr(virDomainChrDefPtr dev)
+         telnet = dev->data.tcp.protocol == VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
+         virBufferVSprintf(&buf,
+                           "socket,id=%s,host=%s,port=%s%s%s",
+-                          dev->info.alias,
++                          alias,
+                           dev->data.tcp.host,
+                           dev->data.tcp.service,
+                           telnet ? ",telnet" : "",
+@@ -2055,7 +2058,7 @@ qemuBuildChrChardevStr(virDomainChrDefPtr dev)
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+         virBufferVSprintf(&buf,
+                           "socket,id=%s,path=%s%s",
+-                          dev->info.alias,
++                          alias,
+                           dev->data.nix.path,
+                           dev->data.nix.listen ? ",server,nowait" : "");
+         break;
+@@ -2074,8 +2077,8 @@ error:
+ }
+ 
+ 
+-char *
+-qemuBuildChrArgStr(virDomainChrDefPtr dev, const char *prefix)
++static char *
++qemuBuildChrArgStr(virDomainChrSourceDefPtr dev, const char *prefix)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+@@ -2811,7 +2814,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+         if (qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) {
+ 
+             virCommandAddArg(cmd, "-chardev");
+-            if (!(chrdev = qemuBuildChrChardevStr(monitor_chr)))
++            if (!(chrdev = qemuBuildChrChardevStr(&monitor_chr->source,
++                                                  monitor_chr->info.alias)))
+                 goto error;
+             virCommandAddArg(cmd, chrdev);
+             VIR_FREE(chrdev);
+@@ -2825,7 +2829,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 prefix = "control,";
+ 
+             virCommandAddArg(cmd, "-monitor");
+-            if (!(chrdev = qemuBuildChrArgStr(monitor_chr, prefix)))
++            if (!(chrdev = qemuBuildChrArgStr(&monitor_chr->source, prefix)))
+                 goto error;
+             virCommandAddArg(cmd, chrdev);
+             VIR_FREE(chrdev);
+@@ -3441,7 +3445,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             if ((qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) &&
+                 (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+                 virCommandAddArg(cmd, "-chardev");
+-                if (!(devstr = qemuBuildChrChardevStr(serial)))
++                if (!(devstr = qemuBuildChrChardevStr(&serial->source,
++                                                      serial->info.alias)))
+                     goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3451,7 +3456,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                                        serial->info.alias);
+             } else {
+                 virCommandAddArg(cmd, "-serial");
+-                if (!(devstr = qemuBuildChrArgStr(serial, NULL)))
++                if (!(devstr = qemuBuildChrArgStr(&serial->source, NULL)))
+                     goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3472,7 +3477,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             if ((qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) &&
+                 (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+                 virCommandAddArg(cmd, "-chardev");
+-                if (!(devstr = qemuBuildChrChardevStr(parallel)))
++                if (!(devstr = qemuBuildChrChardevStr(&parallel->source,
++                                                      parallel->info.alias)))
+                     goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3482,7 +3488,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                                        parallel->info.alias);
+             } else {
+                 virCommandAddArg(cmd, "-parallel");
+-                if (!(devstr = qemuBuildChrArgStr(parallel, NULL)))
++                if (!(devstr = qemuBuildChrArgStr(&parallel->source, NULL)))
+                       goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3504,7 +3510,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             }
+ 
+             virCommandAddArg(cmd, "-chardev");
+-            if (!(devstr = qemuBuildChrChardevStr(channel)))
++            if (!(devstr = qemuBuildChrChardevStr(&channel->source,
++                                                  channel->info.alias)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+@@ -3530,7 +3537,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             }
+ 
+             virCommandAddArg(cmd, "-chardev");
+-            if (!(devstr = qemuBuildChrChardevStr(channel)))
++            if (!(devstr = qemuBuildChrChardevStr(&channel->source,
++                                                  channel->info.alias)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+@@ -3558,7 +3566,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+             }
+ 
+             virCommandAddArg(cmd, "-chardev");
+-            if (!(devstr = qemuBuildChrChardevStr(console)))
++            if (!(devstr = qemuBuildChrChardevStr(&console->source,
++                                                  console->info.alias)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+@@ -5006,75 +5015,75 @@ qemuParseCommandLineChr(const char *val)
+         goto no_memory;
+ 
+     if (STREQ(val, "null")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_NULL;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_NULL;
+     } else if (STREQ(val, "vc")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_VC;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_VC;
+     } else if (STREQ(val, "pty")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_PTY;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_PTY;
+     } else if (STRPREFIX(val, "file:")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_FILE;
+-        def->data.file.path = strdup(val+strlen("file:"));
+-        if (!def->data.file.path)
++        def->source.type = VIR_DOMAIN_CHR_TYPE_FILE;
++        def->source.data.file.path = strdup(val+strlen("file:"));
++        if (!def->source.data.file.path)
+             goto no_memory;
+     } else if (STRPREFIX(val, "pipe:")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_PIPE;
+-        def->data.file.path = strdup(val+strlen("pipe:"));
+-        if (!def->data.file.path)
++        def->source.type = VIR_DOMAIN_CHR_TYPE_PIPE;
++        def->source.data.file.path = strdup(val+strlen("pipe:"));
++        if (!def->source.data.file.path)
+             goto no_memory;
+     } else if (STREQ(val, "stdio")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_STDIO;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_STDIO;
+     } else if (STRPREFIX(val, "udp:")) {
+         const char *svc1, *host2, *svc2;
+-        def->type = VIR_DOMAIN_CHR_TYPE_UDP;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_UDP;
+         val += strlen("udp:");
+         svc1 = strchr(val, ':');
+         host2 = svc1 ? strchr(svc1, '@') : NULL;
+         svc2 = host2 ? strchr(host2, ':') : NULL;
+ 
+         if (svc1)
+-            def->data.udp.connectHost = strndup(val, svc1-val);
++            def->source.data.udp.connectHost = strndup(val, svc1-val);
+         else
+-            def->data.udp.connectHost = strdup(val);
++            def->source.data.udp.connectHost = strdup(val);
+ 
+-        if (!def->data.udp.connectHost)
++        if (!def->source.data.udp.connectHost)
+             goto no_memory;
+ 
+         if (svc1) {
+             svc1++;
+             if (host2)
+-                def->data.udp.connectService = strndup(svc1, host2-svc1);
++                def->source.data.udp.connectService = strndup(svc1, host2-svc1);
+             else
+-                def->data.udp.connectService = strdup(svc1);
++                def->source.data.udp.connectService = strdup(svc1);
+ 
+-            if (!def->data.udp.connectService)
++            if (!def->source.data.udp.connectService)
+                 goto no_memory;
+         }
+ 
+         if (host2) {
+             host2++;
+             if (svc2)
+-                def->data.udp.bindHost = strndup(host2, svc2-host2);
++                def->source.data.udp.bindHost = strndup(host2, svc2-host2);
+             else
+-                def->data.udp.bindHost = strdup(host2);
++                def->source.data.udp.bindHost = strdup(host2);
+ 
+-            if (!def->data.udp.bindHost)
++            if (!def->source.data.udp.bindHost)
+                 goto no_memory;
+         }
+         if (svc2) {
+             svc2++;
+-            def->data.udp.bindService = strdup(svc2);
+-            if (!def->data.udp.bindService)
++            def->source.data.udp.bindService = strdup(svc2);
++            if (!def->source.data.udp.bindService)
+                 goto no_memory;
+         }
+     } else if (STRPREFIX(val, "tcp:") ||
+                STRPREFIX(val, "telnet:")) {
+         const char *opt, *svc;
+-        def->type = VIR_DOMAIN_CHR_TYPE_TCP;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_TCP;
+         if (STRPREFIX(val, "tcp:")) {
+             val += strlen("tcp:");
+         } else {
+             val += strlen("telnet:");
+-            def->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
++            def->source.data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
+         }
+         svc = strchr(val, ':');
+         if (!svc) {
+@@ -5084,38 +5093,38 @@ qemuParseCommandLineChr(const char *val)
+         }
+         opt = strchr(svc, ',');
+         if (opt && strstr(opt, "server"))
+-            def->data.tcp.listen = 1;
++            def->source.data.tcp.listen = true;
+ 
+-        def->data.tcp.host = strndup(val, svc-val);
+-        if (!def->data.tcp.host)
++        def->source.data.tcp.host = strndup(val, svc-val);
++        if (!def->source.data.tcp.host)
+             goto no_memory;
+         svc++;
+         if (opt) {
+-            def->data.tcp.service = strndup(svc, opt-svc);
++            def->source.data.tcp.service = strndup(svc, opt-svc);
+         } else {
+-            def->data.tcp.service = strdup(svc);
++            def->source.data.tcp.service = strdup(svc);
+         }
+-        if (!def->data.tcp.service)
++        if (!def->source.data.tcp.service)
+             goto no_memory;
+     } else if (STRPREFIX(val, "unix:")) {
+         const char *opt;
+         val += strlen("unix:");
+         opt = strchr(val, ',');
+-        def->type = VIR_DOMAIN_CHR_TYPE_UNIX;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_UNIX;
+         if (opt) {
+             if (strstr(opt, "listen"))
+-                def->data.nix.listen = 1;
+-            def->data.nix.path = strndup(val, opt-val);
++                def->source.data.nix.listen = true;
++            def->source.data.nix.path = strndup(val, opt-val);
+         } else {
+-            def->data.nix.path = strdup(val);
++            def->source.data.nix.path = strdup(val);
+         }
+-        if (!def->data.nix.path)
++        if (!def->source.data.nix.path)
+             goto no_memory;
+ 
+     } else if (STRPREFIX(val, "/dev")) {
+-        def->type = VIR_DOMAIN_CHR_TYPE_DEV;
+-        def->data.file.path = strdup(val);
+-        if (!def->data.file.path)
++        def->source.type = VIR_DOMAIN_CHR_TYPE_DEV;
++        def->source.data.file.path = strdup(val);
++        if (!def->source.data.file.path)
+             goto no_memory;
+     } else {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 8ada3c1..5c9823c 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_command.h: QEMU command generation
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -105,11 +105,6 @@ char * qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev,
+ 
+ int qemuOpenPCIConfig(virDomainHostdevDefPtr dev);
+ 
+-/* Current, best practice */
+-char * qemuBuildChrChardevStr(virDomainChrDefPtr dev);
+-/* Legacy, pre device support */
+-char * qemuBuildChrArgStr(virDomainChrDefPtr dev, const char *prefix);
+-
+ char * qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev);
+ 
+ /* Legacy, pre device support */
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 27f353f..48820bb 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_domain.h: QEMU domain private state
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -75,13 +75,13 @@ static int qemuDomainObjPrivateXMLFormat(virBufferPtr buf, void *data)
+ 
+     /* priv->monitor_chr is set only for qemu */
+     if (priv->monConfig) {
+-        switch (priv->monConfig->type) {
++        switch (priv->monConfig->source.type) {
+         case VIR_DOMAIN_CHR_TYPE_UNIX:
+-            monitorpath = priv->monConfig->data.nix.path;
++            monitorpath = priv->monConfig->source.data.nix.path;
+             break;
+         default:
+         case VIR_DOMAIN_CHR_TYPE_PTY:
+-            monitorpath = priv->monConfig->data.file.path;
++            monitorpath = priv->monConfig->source.data.file.path;
+             break;
+         }
+ 
+@@ -89,7 +89,7 @@ static int qemuDomainObjPrivateXMLFormat(virBufferPtr buf, void *data)
+         if (priv->monJSON)
+             virBufferAddLit(buf, " json='1'");
+         virBufferVSprintf(buf, " type='%s'/>\n",
+-                          virDomainChrTypeToString(priv->monConfig->type));
++                          virDomainChrTypeToString(priv->monConfig->source.type));
+     }
+ 
+ 
+@@ -132,9 +132,9 @@ static int qemuDomainObjPrivateXMLParse(xmlXPathContextPtr ctxt, void *data)
+ 
+     tmp = virXPathString("string(./monitor[1]/@type)", ctxt);
+     if (tmp)
+-        priv->monConfig->type = virDomainChrTypeFromString(tmp);
++        priv->monConfig->source.type = virDomainChrTypeFromString(tmp);
+     else
+-        priv->monConfig->type = VIR_DOMAIN_CHR_TYPE_PTY;
++        priv->monConfig->source.type = VIR_DOMAIN_CHR_TYPE_PTY;
+     VIR_FREE(tmp);
+ 
+     if (virXPathBoolean("count(./monitor[@json = '1']) > 0", ctxt)) {
+@@ -143,18 +143,18 @@ static int qemuDomainObjPrivateXMLParse(xmlXPathContextPtr ctxt, void *data)
+         priv->monJSON = 0;
+     }
+ 
+-    switch (priv->monConfig->type) {
++    switch (priv->monConfig->source.type) {
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+-        priv->monConfig->data.file.path = monitorpath;
++        priv->monConfig->source.data.file.path = monitorpath;
+         break;
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+-        priv->monConfig->data.nix.path = monitorpath;
++        priv->monConfig->source.data.nix.path = monitorpath;
+         break;
+     default:
+         VIR_FREE(monitorpath);
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("unsupported monitor type '%s'"),
+-                        virDomainChrTypeToString(priv->monConfig->type));
++                        virDomainChrTypeToString(priv->monConfig->source.type));
+         goto error;
+     }
+ 
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 709af80..0ab88d0 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1,7 +1,7 @@
+ /*
+  * driver.c: core driver methods for managing qemu guests
+  *
+- * Copyright (C) 2006, 2007, 2008, 2009, 2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -2114,7 +2114,7 @@ qemudFindCharDevicePTYsMonitor(virDomainObjPtr vm,
+ #define LOOKUP_PTYS(array, arraylen, idprefix)                            \
+     for (i = 0 ; i < (arraylen) ; i++) {                                  \
+         virDomainChrDefPtr chr = (array)[i];                              \
+-        if (chr->type == VIR_DOMAIN_CHR_TYPE_PTY) {                       \
++        if (chr->source.type == VIR_DOMAIN_CHR_TYPE_PTY) {                \
+             char id[16];                                                  \
+                                                                           \
+             if (snprintf(id, sizeof(id), idprefix "%i", i) >= sizeof(id)) \
+@@ -2122,7 +2122,7 @@ qemudFindCharDevicePTYsMonitor(virDomainObjPtr vm,
+                                                                           \
+             const char *path = (const char *) virHashLookup(paths, id);   \
+             if (path == NULL) {                                           \
+-                if (chr->data.file.path == NULL) {                        \
++                if (chr->source.data.file.path == NULL) {                 \
+                     /* neither the log output nor 'info chardev' had a */ \
+                     /* pty path for this chardev, report an error */      \
+                     qemuReportError(VIR_ERR_INTERNAL_ERROR,               \
+@@ -2135,10 +2135,10 @@ qemudFindCharDevicePTYsMonitor(virDomainObjPtr vm,
+                 }                                                         \
+             }                                                             \
+                                                                           \
+-            VIR_FREE(chr->data.file.path);                                \
+-            chr->data.file.path = strdup(path);                           \
++            VIR_FREE(chr->source.data.file.path);                         \
++            chr->source.data.file.path = strdup(path);                    \
+                                                                           \
+-            if (chr->data.file.path == NULL) {                            \
++            if (chr->source.data.file.path == NULL) {                     \
+                 virReportOOMError();                                      \
+                 return -1;                                                \
+             }                                                             \
+@@ -2170,9 +2170,9 @@ qemudFindCharDevicePTYs(virDomainObjPtr vm,
+     /* first comes the serial devices */
+     for (i = 0 ; i < vm->def->nserials ; i++) {
+         virDomainChrDefPtr chr = vm->def->serials[i];
+-        if (chr->type == VIR_DOMAIN_CHR_TYPE_PTY) {
++        if (chr->source.type == VIR_DOMAIN_CHR_TYPE_PTY) {
+             if ((ret = qemudExtractTTYPath(output, &offset,
+-                                           &chr->data.file.path)) != 0)
++                                           &chr->source.data.file.path)) != 0)
+                 return ret;
+         }
+     }
+@@ -2180,9 +2180,9 @@ qemudFindCharDevicePTYs(virDomainObjPtr vm,
+     /* then the parallel devices */
+     for (i = 0 ; i < vm->def->nparallels ; i++) {
+         virDomainChrDefPtr chr = vm->def->parallels[i];
+-        if (chr->type == VIR_DOMAIN_CHR_TYPE_PTY) {
++        if (chr->source.type == VIR_DOMAIN_CHR_TYPE_PTY) {
+             if ((ret = qemudExtractTTYPath(output, &offset,
+-                                           &chr->data.file.path)) != 0)
++                                           &chr->source.data.file.path)) != 0)
+                 return ret;
+         }
+     }
+@@ -2190,9 +2190,9 @@ qemudFindCharDevicePTYs(virDomainObjPtr vm,
+     /* then the channel devices */
+     for (i = 0 ; i < vm->def->nchannels ; i++) {
+         virDomainChrDefPtr chr = vm->def->channels[i];
+-        if (chr->type == VIR_DOMAIN_CHR_TYPE_PTY) {
++        if (chr->source.type == VIR_DOMAIN_CHR_TYPE_PTY) {
+             if ((ret = qemudExtractTTYPath(output, &offset,
+-                                           &chr->data.file.path)) != 0)
++                                           &chr->source.data.file.path)) != 0)
+                 return ret;
+         }
+     }
+@@ -2936,13 +2936,14 @@ qemuPrepareChardevDevice(virDomainDefPtr def ATTRIBUTE_UNUSED,
+                          void *opaque ATTRIBUTE_UNUSED)
+ {
+     int fd;
+-    if (dev->type != VIR_DOMAIN_CHR_TYPE_FILE)
++    if (dev->source.type != VIR_DOMAIN_CHR_TYPE_FILE)
+         return 0;
+ 
+-    if ((fd = open(dev->data.file.path, O_CREAT | O_APPEND, S_IRUSR|S_IWUSR)) < 0) {
++    if ((fd = open(dev->source.data.file.path,
++                   O_CREAT | O_APPEND, S_IRUSR|S_IWUSR)) < 0) {
+         virReportSystemError(errno,
+                              _("Unable to pre-create chardev file '%s'"),
+-                             dev->data.file.path);
++                             dev->source.data.file.path);
+         return -1;
+     }
+ 
+@@ -2987,15 +2988,15 @@ qemuPrepareMonitorChr(struct qemud_driver *driver,
+ {
+     monConfig->deviceType = VIR_DOMAIN_CHR_DEVICE_TYPE_MONITOR;
+ 
+-    monConfig->type = VIR_DOMAIN_CHR_TYPE_UNIX;
+-    monConfig->data.nix.listen = 1;
++    monConfig->source.type = VIR_DOMAIN_CHR_TYPE_UNIX;
++    monConfig->source.data.nix.listen = true;
+ 
+     if (!(monConfig->info.alias = strdup("monitor"))) {
+         virReportOOMError();
+         return -1;
+     }
+ 
+-    if (virAsprintf(&monConfig->data.nix.path, "%s/%s.monitor",
++    if (virAsprintf(&monConfig->source.data.nix.path, "%s/%s.monitor",
+                     driver->libDir, vm) < 0) {
+         virReportOOMError();
+         return -1;
+@@ -3462,8 +3463,8 @@ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+         qemuMonitorClose(priv->mon);
+ 
+     if (priv->monConfig) {
+-        if (priv->monConfig->type == VIR_DOMAIN_CHR_TYPE_UNIX)
+-            unlink(priv->monConfig->data.nix.path);
++        if (priv->monConfig->source.type == VIR_DOMAIN_CHR_TYPE_UNIX)
++            unlink(priv->monConfig->source.data.nix.path);
+         virDomainChrDefFree(priv->monConfig);
+         priv->monConfig = NULL;
+     }
+@@ -10882,14 +10883,14 @@ qemuDomainOpenConsole(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (chr->type != VIR_DOMAIN_CHR_TYPE_PTY) {
++    if (chr->source.type != VIR_DOMAIN_CHR_TYPE_PTY) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("character device %s is not using a PTY"),
+                         NULLSTR(devname));
+         goto cleanup;
+     }
+ 
+-    if (virFDStreamOpenFile(st, chr->data.file.path, O_RDWR) < 0)
++    if (virFDStreamOpenFile(st, chr->source.data.file.path, O_RDWR) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 2ed4421..1d6b345 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_hotplug.h: QEMU device hotplug management
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -584,7 +584,7 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+ 
+     if (net->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
+         net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+-        if (priv->monConfig->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
++        if (priv->monConfig->source.type != VIR_DOMAIN_CHR_TYPE_UNIX) {
+             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             _("network device type '%s' cannot be attached: "
+                               "qemu is not using a unix socket monitor"),
+@@ -595,7 +595,7 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+         if ((tapfd = qemuNetworkIfaceConnect(conn, driver, net, qemuCmdFlags)) < 0)
+             return -1;
+     } else if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+-        if (priv->monConfig->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
++        if (priv->monConfig->source.type != VIR_DOMAIN_CHR_TYPE_UNIX) {
+             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             _("network device type '%s' cannot be attached: "
+                             "qemu is not using a unix socket monitor"),
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 9600c55..3435db6 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_monitor.c: interaction with QEMU monitor console
+  *
+- * Copyright (C) 2006-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -625,20 +625,20 @@ qemuMonitorOpen(virDomainObjPtr vm,
+     mon->cb = cb;
+     qemuMonitorLock(mon);
+ 
+-    switch (config->type) {
++    switch (config->source.type) {
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+         mon->hasSendFD = 1;
+-        mon->fd = qemuMonitorOpenUnix(config->data.nix.path);
++        mon->fd = qemuMonitorOpenUnix(config->source.data.nix.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+-        mon->fd = qemuMonitorOpenPty(config->data.file.path);
++        mon->fd = qemuMonitorOpenPty(config->source.data.file.path);
+         break;
+ 
+     default:
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("unable to handle monitor type: %s"),
+-                        virDomainChrTypeToString(config->type));
++                        virDomainChrTypeToString(config->source.type));
+         goto cleanup;
+     }
+ 
+diff --git a/src/qemu/qemu_security_dac.c b/src/qemu/qemu_security_dac.c
+index b76b755..3313d47 100644
+--- a/src/qemu/qemu_security_dac.c
++++ b/src/qemu/qemu_security_dac.c
+@@ -319,7 +319,7 @@ done:
+ 
+ static int
+ qemuSecurityDACSetChardevLabel(virDomainObjPtr vm,
+-                               virDomainChrDefPtr dev)
++                               virDomainChrSourceDefPtr dev)
+ 
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+@@ -360,7 +360,7 @@ done:
+ 
+ static int
+ qemuSecurityDACRestoreChardevLabel(virDomainObjPtr vm,
+-                                   virDomainChrDefPtr dev)
++                                   virDomainChrSourceDefPtr dev)
+ 
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+@@ -407,7 +407,7 @@ qemuSecurityDACRestoreChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ {
+     virDomainObjPtr vm = opaque;
+ 
+-    return qemuSecurityDACRestoreChardevLabel(vm, dev);
++    return qemuSecurityDACRestoreChardevLabel(vm, &dev->source);
+ }
+ 
+ 
+@@ -464,7 +464,7 @@ qemuSecurityDACSetChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ {
+     virDomainObjPtr vm = opaque;
+ 
+-    return qemuSecurityDACSetChardevLabel(vm, dev);
++    return qemuSecurityDACSetChardevLabel(vm, &dev->source);
+ }
+ 
+ 
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index f924fa6..3760ed9 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2008-2010 Red Hat, Inc.
++ * Copyright (C) 2008-2011 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -701,7 +701,7 @@ done:
+ 
+ static int
+ SELinuxSetSecurityChardevLabel(virDomainObjPtr vm,
+-                               virDomainChrDefPtr dev)
++                               virDomainChrSourceDefPtr dev)
+ 
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+@@ -742,7 +742,7 @@ done:
+ 
+ static int
+ SELinuxRestoreSecurityChardevLabel(virDomainObjPtr vm,
+-                                   virDomainChrDefPtr dev)
++                                   virDomainChrSourceDefPtr dev)
+ 
+ {
+     const virSecurityLabelDefPtr secdef = &vm->def->seclabel;
+@@ -790,7 +790,7 @@ SELinuxRestoreSecurityChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ {
+     virDomainObjPtr vm = opaque;
+ 
+-    return SELinuxRestoreSecurityChardevLabel(vm, dev);
++    return SELinuxRestoreSecurityChardevLabel(vm, &dev->source);
+ }
+ 
+ 
+@@ -1045,7 +1045,7 @@ SELinuxSetSecurityChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ {
+     virDomainObjPtr vm = opaque;
+ 
+-    return SELinuxSetSecurityChardevLabel(vm, dev);
++    return SELinuxSetSecurityChardevLabel(vm, &dev->source);
+ }
+ 
+ 
+diff --git a/src/security/virt-aa-helper.c b/src/security/virt-aa-helper.c
+index 41bc598..b91cf98 100644
+--- a/src/security/virt-aa-helper.c
++++ b/src/security/virt-aa-helper.c
+@@ -2,7 +2,7 @@
+ /*
+  * virt-aa-helper: wrapper program used by AppArmor security driver.
+  *
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright (C) 2009-2010 Canonical Ltd.
+  *
+  * See COPYING.LIB for the License of this software
+@@ -912,40 +912,40 @@ get_files(vahControl * ctl)
+ 
+     for (i = 0; i < ctl->def->nserials; i++)
+         if (ctl->def->serials[i] &&
+-            (ctl->def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_PTY ||
+-             ctl->def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_DEV ||
+-             ctl->def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_FILE ||
+-             ctl->def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
+-            ctl->def->serials[i]->data.file.path)
++            (ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY ||
++             ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV ||
++             ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
++             ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
++            ctl->def->serials[i]->source.data.file.path)
+             if (vah_add_file(&buf,
+-                             ctl->def->serials[i]->data.file.path, "rw") != 0)
++                             ctl->def->serials[i]->source.data.file.path, "rw") != 0)
+                 goto clean;
+ 
+-    if (ctl->def->console && ctl->def->console->data.file.path)
+-        if (vah_add_file(&buf, ctl->def->console->data.file.path, "rw") != 0)
++    if (ctl->def->console && ctl->def->console->source.data.file.path)
++        if (vah_add_file(&buf, ctl->def->console->source.data.file.path, "rw") != 0)
+             goto clean;
+ 
+     for (i = 0 ; i < ctl->def->nparallels; i++)
+         if (ctl->def->parallels[i] &&
+-            (ctl->def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_PTY ||
+-             ctl->def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_DEV ||
+-             ctl->def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_FILE ||
+-             ctl->def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
+-            ctl->def->parallels[i]->data.file.path)
++            (ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY ||
++             ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV ||
++             ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
++             ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
++            ctl->def->parallels[i]->source.data.file.path)
+             if (vah_add_file(&buf,
+-                             ctl->def->parallels[i]->data.file.path,
++                             ctl->def->parallels[i]->source.data.file.path,
+                              "rw") != 0)
+                 goto clean;
+ 
+     for (i = 0 ; i < ctl->def->nchannels; i++)
+         if (ctl->def->channels[i] &&
+-            (ctl->def->channels[i]->type == VIR_DOMAIN_CHR_TYPE_PTY ||
+-             ctl->def->channels[i]->type == VIR_DOMAIN_CHR_TYPE_DEV ||
+-             ctl->def->channels[i]->type == VIR_DOMAIN_CHR_TYPE_FILE ||
+-             ctl->def->channels[i]->type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
+-            ctl->def->channels[i]->data.file.path)
++            (ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY ||
++             ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV ||
++             ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
++             ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
++            ctl->def->channels[i]->source.data.file.path)
+             if (vah_add_file(&buf,
+-                             ctl->def->channels[i]->data.file.path,
++                             ctl->def->channels[i]->source.data.file.path,
+                              "rw") != 0)
+                 goto clean;
+ 
+diff --git a/src/uml/uml_conf.c b/src/uml/uml_conf.c
+index 55b3ef6..e5dbed9 100644
+--- a/src/uml/uml_conf.c
++++ b/src/uml/uml_conf.c
+@@ -1,7 +1,7 @@
+ /*
+  * uml_conf.c: UML driver configuration
+  *
+- * Copyright (C) 2006-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -312,7 +312,7 @@ umlBuildCommandLineChr(virDomainChrDefPtr def,
+ {
+     char *ret = NULL;
+ 
+-    switch (def->type) {
++    switch (def->source.type) {
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+         if (virAsprintf(&ret, "%s%d=null", dev, def->target.port) < 0) {
+             virReportOOMError();
+@@ -329,7 +329,7 @@ umlBuildCommandLineChr(virDomainChrDefPtr def,
+ 
+     case VIR_DOMAIN_CHR_TYPE_DEV:
+         if (virAsprintf(&ret, "%s%d=tty:%s", dev, def->target.port,
+-                        def->data.file.path) < 0) {
++                        def->source.data.file.path) < 0) {
+             virReportOOMError();
+             return NULL;
+         }
+@@ -343,14 +343,14 @@ umlBuildCommandLineChr(virDomainChrDefPtr def,
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_TCP:
+-        if (def->data.tcp.listen != 1) {
++        if (def->source.data.tcp.listen != 1) {
+             umlReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("only TCP listen is supported for chr device"));
+             return NULL;
+         }
+ 
+         if (virAsprintf(&ret, "%s%d=port:%s", dev, def->target.port,
+-                        def->data.tcp.service) < 0) {
++                        def->source.data.tcp.service) < 0) {
+             virReportOOMError();
+             return NULL;
+         }
+@@ -360,11 +360,11 @@ umlBuildCommandLineChr(virDomainChrDefPtr def,
+          {
+             int fd_out;
+ 
+-            if ((fd_out = open(def->data.file.path,
++            if ((fd_out = open(def->source.data.file.path,
+                                O_WRONLY | O_APPEND | O_CREAT, 0660)) < 0) {
+                 virReportSystemError(errno,
+                                      _("failed to open chardev file: %s"),
+-                                     def->data.file.path);
++                                     def->source.data.file.path);
+                 return NULL;
+             }
+             if (virAsprintf(&ret, "%s%d=null,fd:%d", dev, def->target.port, fd_out) < 0) {
+@@ -384,7 +384,7 @@ umlBuildCommandLineChr(virDomainChrDefPtr def,
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+     default:
+         umlReportError(VIR_ERR_INTERNAL_ERROR,
+-                       _("unsupported chr device type %d"), def->type);
++                       _("unsupported chr device type %d"), def->source.type);
+         break;
+     }
+ 
+diff --git a/src/uml/uml_driver.c b/src/uml/uml_driver.c
+index dbceb40..135551f 100644
+--- a/src/uml/uml_driver.c
++++ b/src/uml/uml_driver.c
+@@ -1,7 +1,7 @@
+ /*
+  * uml_driver.c: core driver methods for managing UML guests
+  *
+- * Copyright (C) 2006-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -206,8 +206,8 @@ requery:
+         return -1;
+ 
+     if (res && STRPREFIX(res, "pts:")) {
+-        VIR_FREE(def->data.file.path);
+-        if ((def->data.file.path = strdup(res + 4)) == NULL) {
++        VIR_FREE(def->source.data.file.path);
++        if ((def->source.data.file.path = strdup(res + 4)) == NULL) {
+             virReportOOMError();
+             VIR_FREE(res);
+             VIR_FREE(cmd);
+@@ -236,13 +236,13 @@ umlIdentifyChrPTY(struct uml_driver *driver,
+     int i;
+ 
+     if (dom->def->console &&
+-        dom->def->console->type == VIR_DOMAIN_CHR_TYPE_PTY)
++        dom->def->console->source.type == VIR_DOMAIN_CHR_TYPE_PTY)
+         if (umlIdentifyOneChrPTY(driver, dom,
+                                  dom->def->console, "con") < 0)
+             return -1;
+ 
+     for (i = 0 ; i < dom->def->nserials; i++)
+-        if (dom->def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_PTY &&
++        if (dom->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY &&
+             umlIdentifyOneChrPTY(driver, dom,
+                                  dom->def->serials[i], "ssl") < 0)
+             return -1;
+@@ -2124,13 +2124,13 @@ umlDomainOpenConsole(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (chr->type != VIR_DOMAIN_CHR_TYPE_PTY) {
++    if (chr->source.type != VIR_DOMAIN_CHR_TYPE_PTY) {
+         umlReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("character device %s is not using a PTY"), devname);
+         goto cleanup;
+     }
+ 
+-    if (virFDStreamOpenFile(st, chr->data.file.path, O_RDWR) < 0)
++    if (virFDStreamOpenFile(st, chr->source.data.file.path, O_RDWR) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+diff --git a/src/vbox/vbox_tmpl.c b/src/vbox/vbox_tmpl.c
+index f45e8ed..c9065ed 100644
+--- a/src/vbox/vbox_tmpl.c
++++ b/src/vbox/vbox_tmpl.c
+@@ -8,7 +8,7 @@
+  */
+ 
+ /*
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright (C) 2008-2009 Sun Microsystems, Inc.
+  *
+  * This file is part of a free software library; you can redistribute
+@@ -3001,15 +3001,15 @@ static char *vboxDomainDumpXML(virDomainPtr dom, int flags) {
+ 
+                         serialPort->vtbl->GetHostMode(serialPort, &hostMode);
+                         if (hostMode == PortMode_HostPipe) {
+-                            def->serials[serialPortIncCount]->type = VIR_DOMAIN_CHR_TYPE_PIPE;
++                            def->serials[serialPortIncCount]->source.type = VIR_DOMAIN_CHR_TYPE_PIPE;
+                         } else if (hostMode == PortMode_HostDevice) {
+-                            def->serials[serialPortIncCount]->type = VIR_DOMAIN_CHR_TYPE_DEV;
++                            def->serials[serialPortIncCount]->source.type = VIR_DOMAIN_CHR_TYPE_DEV;
+ #if VBOX_API_VERSION >= 3000
+                         } else if (hostMode == PortMode_RawFile) {
+-                            def->serials[serialPortIncCount]->type = VIR_DOMAIN_CHR_TYPE_FILE;
++                            def->serials[serialPortIncCount]->source.type = VIR_DOMAIN_CHR_TYPE_FILE;
+ #endif /* VBOX_API_VERSION >= 3000 */
+                         } else {
+-                            def->serials[serialPortIncCount]->type = VIR_DOMAIN_CHR_TYPE_NULL;
++                            def->serials[serialPortIncCount]->source.type = VIR_DOMAIN_CHR_TYPE_NULL;
+                         }
+ 
+                         def->serials[serialPortIncCount]->deviceType = VIR_DOMAIN_CHR_DEVICE_TYPE_SERIAL;
+@@ -3026,7 +3026,7 @@ static char *vboxDomainDumpXML(virDomainPtr dom, int flags) {
+ 
+                         if (pathUtf16) {
+                             VBOX_UTF16_TO_UTF8(pathUtf16, &path);
+-                            def->serials[serialPortIncCount]->data.file.path = strdup(path);
++                            def->serials[serialPortIncCount]->source.data.file.path = strdup(path);
+                         }
+ 
+                         serialPortIncCount++;
+@@ -3090,13 +3090,13 @@ static char *vboxDomainDumpXML(virDomainPtr dom, int flags) {
+                             def->parallels[parallelPortIncCount]->target.port = 1;
+                         }
+ 
+-                        def->parallels[parallelPortIncCount]->type = VIR_DOMAIN_CHR_TYPE_FILE;
++                        def->parallels[parallelPortIncCount]->source.type = VIR_DOMAIN_CHR_TYPE_FILE;
+                         def->parallels[parallelPortIncCount]->deviceType = VIR_DOMAIN_CHR_DEVICE_TYPE_PARALLEL;
+ 
+                         parallelPort->vtbl->GetPath(parallelPort, &pathUtf16);
+ 
+                         VBOX_UTF16_TO_UTF8(pathUtf16, &path);
+-                        def->parallels[parallelPortIncCount]->data.file.path = strdup(path);
++                        def->parallels[parallelPortIncCount]->source.data.file.path = strdup(path);
+ 
+                         parallelPortIncCount++;
+ 
+@@ -4267,7 +4267,7 @@ vboxAttachSerial(virDomainDefPtr def, vboxGlobalData *data, IMachine *machine)
+     for (i = 0; (i < def->nserials) && (i < serialPortCount); i++) {
+         ISerialPort *serialPort = NULL;
+ 
+-        DEBUG("SerialPort(%d): Type: %d", i, def->serials[i]->type);
++        DEBUG("SerialPort(%d): Type: %d", i, def->serials[i]->source.type);
+         DEBUG("SerialPort(%d): target.port: %d", i,
+               def->serials[i]->target.port);
+ 
+@@ -4277,8 +4277,9 @@ vboxAttachSerial(virDomainDefPtr def, vboxGlobalData *data, IMachine *machine)
+ 
+             serialPort->vtbl->SetEnabled(serialPort, 1);
+ 
+-            if (def->serials[i]->data.file.path) {
+-                VBOX_UTF8_TO_UTF16(def->serials[i]->data.file.path, &pathUtf16);
++            if (def->serials[i]->source.data.file.path) {
++                VBOX_UTF8_TO_UTF16(def->serials[i]->source.data.file.path,
++                                   &pathUtf16);
+                 serialPort->vtbl->SetPath(serialPort, pathUtf16);
+             }
+ 
+@@ -4295,20 +4296,20 @@ vboxAttachSerial(virDomainDefPtr def, vboxGlobalData *data, IMachine *machine)
+                 serialPort->vtbl->SetIRQ(serialPort, 4);
+                 serialPort->vtbl->SetIOBase(serialPort, 1016);
+                 DEBUG(" serialPort-%d irq: %d, iobase 0x%x, path: %s",
+-                      i, 4, 1016, def->serials[i]->data.file.path);
++                      i, 4, 1016, def->serials[i]->source.data.file.path);
+             } else if (def->serials[i]->target.port == 1) {
+                 serialPort->vtbl->SetIRQ(serialPort, 3);
+                 serialPort->vtbl->SetIOBase(serialPort, 760);
+                 DEBUG(" serialPort-%d irq: %d, iobase 0x%x, path: %s",
+-                      i, 3, 760, def->serials[i]->data.file.path);
++                      i, 3, 760, def->serials[i]->source.data.file.path);
+             }
+ 
+-            if (def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_DEV) {
++            if (def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV) {
+                 serialPort->vtbl->SetHostMode(serialPort, PortMode_HostDevice);
+-            } else if (def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_PIPE) {
++            } else if (def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) {
+                 serialPort->vtbl->SetHostMode(serialPort, PortMode_HostPipe);
+ #if VBOX_API_VERSION >= 3000
+-            } else if (def->serials[i]->type == VIR_DOMAIN_CHR_TYPE_FILE) {
++            } else if (def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE) {
+                 serialPort->vtbl->SetHostMode(serialPort, PortMode_RawFile);
+ #endif /* VBOX_API_VERSION >= 3000 */
+             } else {
+@@ -4345,7 +4346,7 @@ vboxAttachParallel(virDomainDefPtr def, vboxGlobalData *data, IMachine *machine)
+     for (i = 0; (i < def->nparallels) && (i < parallelPortCount); i++) {
+         IParallelPort *parallelPort = NULL;
+ 
+-        DEBUG("ParallelPort(%d): Type: %d", i, def->parallels[i]->type);
++        DEBUG("ParallelPort(%d): Type: %d", i, def->parallels[i]->source.type);
+         DEBUG("ParallelPort(%d): target.port: %d", i,
+               def->parallels[i]->target.port);
+ 
+@@ -4353,28 +4354,28 @@ vboxAttachParallel(virDomainDefPtr def, vboxGlobalData *data, IMachine *machine)
+         if (parallelPort) {
+             PRUnichar *pathUtf16 = NULL;
+ 
+-            VBOX_UTF8_TO_UTF16(def->parallels[i]->data.file.path, &pathUtf16);
++            VBOX_UTF8_TO_UTF16(def->parallels[i]->source.data.file.path, &pathUtf16);
+ 
+             /* For now hard code the parallel ports to
+              * LPT1 (Base Addr: 0x378 (decimal: 888), IRQ: 7)
+              * LPT2 (Base Addr: 0x278 (decimal: 632), IRQ: 5)
+              * TODO: make this more flexible
+              */
+-            if ((def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_DEV)  ||
+-                (def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_PTY)  ||
+-                (def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_FILE) ||
+-                (def->parallels[i]->type == VIR_DOMAIN_CHR_TYPE_PIPE)) {
++            if ((def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV)  ||
++                (def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY)  ||
++                (def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE) ||
++                (def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE)) {
+                 parallelPort->vtbl->SetPath(parallelPort, pathUtf16);
+                 if (i == 0) {
+                     parallelPort->vtbl->SetIRQ(parallelPort, 7);
+                     parallelPort->vtbl->SetIOBase(parallelPort, 888);
+                     DEBUG(" parallePort-%d irq: %d, iobase 0x%x, path: %s",
+-                          i, 7, 888, def->parallels[i]->data.file.path);
++                          i, 7, 888, def->parallels[i]->source.data.file.path);
+                 } else if (i == 1) {
+                     parallelPort->vtbl->SetIRQ(parallelPort, 5);
+                     parallelPort->vtbl->SetIOBase(parallelPort, 632);
+                     DEBUG(" parallePort-%d irq: %d, iobase 0x%x, path: %s",
+-                          i, 5, 632, def->parallels[i]->data.file.path);
++                          i, 5, 632, def->parallels[i]->source.data.file.path);
+                 }
+             }
+ 
+diff --git a/src/vmx/vmx.c b/src/vmx/vmx.c
+index 6e3e9af..b14b1a2 100644
+--- a/src/vmx/vmx.c
++++ b/src/vmx/vmx.c
+@@ -2,7 +2,7 @@
+ /*
+  * vmx.c: VMware VMX parsing/formatting functions
+  *
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright (C) 2009-2010 Matthias Bolte <matthias.bolte@googlemail.com>
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -391,7 +391,7 @@ def->serials[0]...
+ ->data.tcp.service = <service>                                                  # e.g. "telnet://0.0.0.0:42001"
+ ->data.tcp.protocol = <protocol>
+ 
+-->data.tcp.listen = 1             <=>   serial0.network.endPoint = "server"     # defaults to "server"
++->data.tcp.listen = true          <=>   serial0.network.endPoint = "server"     # defaults to "server"
+ 
+ ???                               <=>   serial0.vspc = "foobar"                 # defaults to <not present>, FIXME: not representable
+ ???                               <=>   serial0.tryNoRxLoss = "false"           # defaults to "false", FIXME: not representable
+@@ -406,7 +406,7 @@ def->serials[0]...
+ ->data.tcp.service = <service>                                                  # e.g. "telnet://192.168.0.17:42001"
+ ->data.tcp.protocol = <protocol>
+ 
+-->data.tcp.listen = 0             <=>   serial0.network.endPoint = "client"     # defaults to "server"
++->data.tcp.listen = false         <=>   serial0.network.endPoint = "client"     # defaults to "server"
+ 
+ ???                               <=>   serial0.vspc = "foobar"                 # defaults to <not present>, FIXME: not representable
+ ???                               <=>   serial0.tryNoRxLoss = "false"           # defaults to "false", FIXME: not representable
+@@ -2532,16 +2532,17 @@ virVMXParseSerial(virVMXContext *ctx, virConfPtr conf, int port,
+     /* Setup virDomainChrDef */
+     if (STRCASEEQ(fileType, "device")) {
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_DEV;
+-        (*def)->data.file.path = fileName;
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_DEV;
++        (*def)->source.data.file.path = fileName;
+ 
+         fileName = NULL;
+     } else if (STRCASEEQ(fileType, "file")) {
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_FILE;
+-        (*def)->data.file.path = ctx->parseFileName(fileName, ctx->opaque);
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_FILE;
++        (*def)->source.data.file.path = ctx->parseFileName(fileName,
++                                                           ctx->opaque);
+ 
+-        if ((*def)->data.file.path == NULL) {
++        if ((*def)->source.data.file.path == NULL) {
+             goto cleanup;
+         }
+     } else if (STRCASEEQ(fileType, "pipe")) {
+@@ -2550,13 +2551,13 @@ virVMXParseSerial(virVMXContext *ctx, virConfPtr conf, int port,
+          *        not representable in domain XML form
+          */
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_PIPE;
+-        (*def)->data.file.path = fileName;
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_PIPE;
++        (*def)->source.data.file.path = fileName;
+ 
+         fileName = NULL;
+     } else if (STRCASEEQ(fileType, "network")) {
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_TCP;
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_TCP;
+ 
+         parsedUri = xmlParseURI(fileName);
+ 
+@@ -2572,14 +2573,15 @@ virVMXParseSerial(virVMXContext *ctx, virConfPtr conf, int port,
+             goto cleanup;
+         }
+ 
+-        (*def)->data.tcp.host = strdup(parsedUri->server);
++        (*def)->source.data.tcp.host = strdup(parsedUri->server);
+ 
+-        if ((*def)->data.tcp.host == NULL) {
++        if ((*def)->source.data.tcp.host == NULL) {
+             virReportOOMError();
+             goto cleanup;
+         }
+ 
+-        if (virAsprintf(&(*def)->data.tcp.service, "%d", parsedUri->port) < 0) {
++        if (virAsprintf(&(*def)->source.data.tcp.service, "%d",
++                        parsedUri->port) < 0) {
+             virReportOOMError();
+             goto cleanup;
+         }
+@@ -2589,16 +2591,18 @@ virVMXParseSerial(virVMXContext *ctx, virConfPtr conf, int port,
+             STRCASEEQ(parsedUri->scheme, "tcp") ||
+             STRCASEEQ(parsedUri->scheme, "tcp4") ||
+             STRCASEEQ(parsedUri->scheme, "tcp6")) {
+-            (*def)->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_RAW;
++            (*def)->source.data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_RAW;
+         } else if (STRCASEEQ(parsedUri->scheme, "telnet")) {
+-            (*def)->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
++            (*def)->source.data.tcp.protocol
++                = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
+         } else if (STRCASEEQ(parsedUri->scheme, "telnets")) {
+-            (*def)->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNETS;
++            (*def)->source.data.tcp.protocol
++                = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNETS;
+         } else if (STRCASEEQ(parsedUri->scheme, "ssl") ||
+                    STRCASEEQ(parsedUri->scheme, "tcp+ssl") ||
+                    STRCASEEQ(parsedUri->scheme, "tcp4+ssl") ||
+                    STRCASEEQ(parsedUri->scheme, "tcp6+ssl")) {
+-            (*def)->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TLS;
++            (*def)->source.data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TLS;
+         } else {
+             VMX_ERROR(VIR_ERR_INTERNAL_ERROR,
+                       _("VMX entry '%s' contains unsupported scheme '%s'"),
+@@ -2607,9 +2611,9 @@ virVMXParseSerial(virVMXContext *ctx, virConfPtr conf, int port,
+         }
+ 
+         if (network_endPoint == NULL || STRCASEEQ(network_endPoint, "server")) {
+-            (*def)->data.tcp.listen = 1;
++            (*def)->source.data.tcp.listen = true;
+         } else if (STRCASEEQ(network_endPoint, "client")) {
+-            (*def)->data.tcp.listen = 0;
++            (*def)->source.data.tcp.listen = false;
+         } else {
+             VMX_ERROR(VIR_ERR_INTERNAL_ERROR,
+                       _("Expecting VMX entry '%s' to be 'server' or 'client' "
+@@ -2722,16 +2726,17 @@ virVMXParseParallel(virVMXContext *ctx, virConfPtr conf, int port,
+     /* Setup virDomainChrDef */
+     if (STRCASEEQ(fileType, "device")) {
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_DEV;
+-        (*def)->data.file.path = fileName;
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_DEV;
++        (*def)->source.data.file.path = fileName;
+ 
+         fileName = NULL;
+     } else if (STRCASEEQ(fileType, "file")) {
+         (*def)->target.port = port;
+-        (*def)->type = VIR_DOMAIN_CHR_TYPE_FILE;
+-        (*def)->data.file.path = ctx->parseFileName(fileName, ctx->opaque);
++        (*def)->source.type = VIR_DOMAIN_CHR_TYPE_FILE;
++        (*def)->source.data.file.path = ctx->parseFileName(fileName,
++                                                           ctx->opaque);
+ 
+-        if ((*def)->data.file.path == NULL) {
++        if ((*def)->source.data.file.path == NULL) {
+             goto cleanup;
+         }
+     } else {
+@@ -3506,19 +3511,19 @@ virVMXFormatSerial(virVMXContext *ctx, virDomainChrDefPtr def,
+     virBufferVSprintf(buffer, "serial%d.present = \"true\"\n", def->target.port);
+ 
+     /* def:type -> vmx:fileType and def:data.file.path -> vmx:fileName */
+-    switch (def->type) {
++    switch (def->source.type) {
+       case VIR_DOMAIN_CHR_TYPE_DEV:
+         virBufferVSprintf(buffer, "serial%d.fileType = \"device\"\n",
+                           def->target.port);
+         virBufferVSprintf(buffer, "serial%d.fileName = \"%s\"\n",
+-                          def->target.port, def->data.file.path);
++                          def->target.port, def->source.data.file.path);
+         break;
+ 
+       case VIR_DOMAIN_CHR_TYPE_FILE:
+         virBufferVSprintf(buffer, "serial%d.fileType = \"file\"\n",
+                           def->target.port);
+ 
+-        fileName = ctx->formatFileName(def->data.file.path, ctx->opaque);
++        fileName = ctx->formatFileName(def->source.data.file.path, ctx->opaque);
+ 
+         if (fileName == NULL) {
+             return -1;
+@@ -3540,11 +3545,11 @@ virVMXFormatSerial(virVMXContext *ctx, virDomainChrDefPtr def,
+         virBufferVSprintf(buffer, "serial%d.tryNoRxLoss = \"false\"\n",
+                           def->target.port);
+         virBufferVSprintf(buffer, "serial%d.fileName = \"%s\"\n",
+-                          def->target.port, def->data.file.path);
++                          def->target.port, def->source.data.file.path);
+         break;
+ 
+       case VIR_DOMAIN_CHR_TYPE_TCP:
+-        switch (def->data.tcp.protocol) {
++        switch (def->source.data.tcp.protocol) {
+           case VIR_DOMAIN_CHR_TCP_PROTOCOL_RAW:
+             protocol = "tcp";
+             break;
+@@ -3564,24 +3569,25 @@ virVMXFormatSerial(virVMXContext *ctx, virDomainChrDefPtr def,
+           default:
+             VMX_ERROR(VIR_ERR_INTERNAL_ERROR,
+                       _("Unsupported character device TCP protocol '%s'"),
+-                      virDomainChrTcpProtocolTypeToString(def->data.tcp.protocol));
++                      virDomainChrTcpProtocolTypeToString(
++                          def->source.data.tcp.protocol));
+             return -1;
+         }
+ 
+         virBufferVSprintf(buffer, "serial%d.fileType = \"network\"\n",
+                           def->target.port);
+         virBufferVSprintf(buffer, "serial%d.fileName = \"%s://%s:%s\"\n",
+-                          def->target.port, protocol, def->data.tcp.host,
+-                          def->data.tcp.service);
++                          def->target.port, protocol, def->source.data.tcp.host,
++                          def->source.data.tcp.service);
+         virBufferVSprintf(buffer, "serial%d.network.endPoint = \"%s\"\n",
+                           def->target.port,
+-                          def->data.tcp.listen ? "server" : "client");
++                          def->source.data.tcp.listen ? "server" : "client");
+         break;
+ 
+       default:
+         VMX_ERROR(VIR_ERR_INTERNAL_ERROR,
+                   _("Unsupported character device type '%s'"),
+-                  virDomainChrTypeToString(def->type));
++                  virDomainChrTypeToString(def->source.type));
+         return -1;
+     }
+ 
+@@ -3612,19 +3618,19 @@ virVMXFormatParallel(virVMXContext *ctx, virDomainChrDefPtr def,
+                       def->target.port);
+ 
+     /* def:type -> vmx:fileType and def:data.file.path -> vmx:fileName */
+-    switch (def->type) {
++    switch (def->source.type) {
+       case VIR_DOMAIN_CHR_TYPE_DEV:
+         virBufferVSprintf(buffer, "parallel%d.fileType = \"device\"\n",
+                           def->target.port);
+         virBufferVSprintf(buffer, "parallel%d.fileName = \"%s\"\n",
+-                          def->target.port, def->data.file.path);
++                          def->target.port, def->source.data.file.path);
+         break;
+ 
+       case VIR_DOMAIN_CHR_TYPE_FILE:
+         virBufferVSprintf(buffer, "parallel%d.fileType = \"file\"\n",
+                           def->target.port);
+ 
+-        fileName = ctx->formatFileName(def->data.file.path, ctx->opaque);
++        fileName = ctx->formatFileName(def->source.data.file.path, ctx->opaque);
+ 
+         if (fileName == NULL) {
+             return -1;
+@@ -3639,7 +3645,7 @@ virVMXFormatParallel(virVMXContext *ctx, virDomainChrDefPtr def,
+       default:
+         VMX_ERROR(VIR_ERR_INTERNAL_ERROR,
+                   _("Unsupported character device type '%s'"),
+-                  virDomainChrTypeToString(def->type));
++                  virDomainChrTypeToString(def->source.type));
+         return -1;
+     }
+ 
+diff --git a/src/xen/xen_driver.c b/src/xen/xen_driver.c
+index 4c11b11..f3613f0 100644
+--- a/src/xen/xen_driver.c
++++ b/src/xen/xen_driver.c
+@@ -1,7 +1,7 @@
+ /*
+  * xen_driver.c: Unified Xen driver.
+  *
+- * Copyright (C) 2007-2010 Red Hat, Inc.
++ * Copyright (C) 2007-2011 Red Hat, Inc.
+  *
+  * See COPYING.LIB for the License of this software
+  *
+@@ -1977,13 +1977,13 @@ xenUnifiedDomainOpenConsole(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (chr->type != VIR_DOMAIN_CHR_TYPE_PTY) {
++    if (chr->source.type != VIR_DOMAIN_CHR_TYPE_PTY) {
+         xenUnifiedError(VIR_ERR_INTERNAL_ERROR,
+                         _("character device %s is not using a PTY"), devname);
+         goto cleanup;
+     }
+ 
+-    if (virFDStreamOpenFile(st, chr->data.file.path, O_RDWR) < 0)
++    if (virFDStreamOpenFile(st, chr->source.data.file.path, O_RDWR) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+diff --git a/src/xen/xend_internal.c b/src/xen/xend_internal.c
+index 6ce0c3f..abfa7ef 100644
+--- a/src/xen/xend_internal.c
++++ b/src/xen/xend_internal.c
+@@ -1,7 +1,7 @@
+ /*
+  * xend_internal.c: access to Xen though the Xen Daemon interface
+  *
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright (C) 2005 Anthony Liguori <aliguori@us.ibm.com>
+  *
+  *  This file is subject to the terms and conditions of the GNU Lesser General
+@@ -1217,7 +1217,7 @@ xenDaemonParseSxprChar(const char *value,
+     prefix = value;
+ 
+     if (value[0] == '/') {
+-        def->type = VIR_DOMAIN_CHR_TYPE_DEV;
++        def->source.type = VIR_DOMAIN_CHR_TYPE_DEV;
+     } else {
+         if ((tmp = strchr(value, ':')) != NULL) {
+             *tmp = '\0';
+@@ -1225,10 +1225,10 @@ xenDaemonParseSxprChar(const char *value,
+         }
+ 
+         if (STRPREFIX(prefix, "telnet")) {
+-            def->type = VIR_DOMAIN_CHR_TYPE_TCP;
+-            def->data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
++            def->source.type = VIR_DOMAIN_CHR_TYPE_TCP;
++            def->source.data.tcp.protocol = VIR_DOMAIN_CHR_TCP_PROTOCOL_TELNET;
+         } else {
+-            if ((def->type = virDomainChrTypeFromString(prefix)) < 0) {
++            if ((def->source.type = virDomainChrTypeFromString(prefix)) < 0) {
+                 virXendError(VIR_ERR_INTERNAL_ERROR,
+                              _("unknown chr device type '%s'"), prefix);
+                 goto error;
+@@ -1237,16 +1237,16 @@ xenDaemonParseSxprChar(const char *value,
+     }
+ 
+     /* Compat with legacy  <console tty='/dev/pts/5'/> syntax */
+-    switch (def->type) {
++    switch (def->source.type) {
+     case VIR_DOMAIN_CHR_TYPE_PTY:
+         if (tty != NULL &&
+-            !(def->data.file.path = strdup(tty)))
++            !(def->source.data.file.path = strdup(tty)))
+             goto no_memory;
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_FILE:
+     case VIR_DOMAIN_CHR_TYPE_PIPE:
+-        if (!(def->data.file.path = strdup(value)))
++        if (!(def->source.data.file.path = strdup(value)))
+             goto no_memory;
+         break;
+ 
+@@ -1262,19 +1262,21 @@ xenDaemonParseSxprChar(const char *value,
+         }
+ 
+         if (offset != value &&
+-            (def->data.tcp.host = strndup(value, offset - value)) == NULL)
++            (def->source.data.tcp.host = strndup(value,
++                                                 offset - value)) == NULL)
+             goto no_memory;
+ 
+         offset2 = strchr(offset, ',');
+         if (offset2 == NULL)
+-            def->data.tcp.service = strdup(offset+1);
++            def->source.data.tcp.service = strdup(offset+1);
+         else
+-            def->data.tcp.service = strndup(offset+1, offset2-(offset+1));
+-        if (def->data.tcp.service == NULL)
++            def->source.data.tcp.service = strndup(offset+1,
++                                                   offset2-(offset+1));
++        if (def->source.data.tcp.service == NULL)
+             goto no_memory;
+ 
+         if (offset2 && strstr(offset2, ",server"))
+-            def->data.tcp.listen = 1;
++            def->source.data.tcp.listen = true;
+     }
+     break;
+ 
+@@ -1290,12 +1292,14 @@ xenDaemonParseSxprChar(const char *value,
+         }
+ 
+         if (offset != value &&
+-            (def->data.udp.connectHost = strndup(value, offset - value)) == NULL)
++            (def->source.data.udp.connectHost
++             = strndup(value, offset - value)) == NULL)
+             goto no_memory;
+ 
+         offset2 = strchr(offset, '@');
+         if (offset2 != NULL) {
+-            if ((def->data.udp.connectService = strndup(offset + 1, offset2-(offset+1))) == NULL)
++            if ((def->source.data.udp.connectService
++                 = strndup(offset + 1, offset2-(offset+1))) == NULL)
+                 goto no_memory;
+ 
+             offset3 = strchr(offset2, ':');
+@@ -1306,13 +1310,16 @@ xenDaemonParseSxprChar(const char *value,
+             }
+ 
+             if (offset3 > (offset2 + 1) &&
+-                (def->data.udp.bindHost = strndup(offset2 + 1, offset3 - (offset2+1))) == NULL)
++                (def->source.data.udp.bindHost
++                 = strndup(offset2 + 1, offset3 - (offset2+1))) == NULL)
+                 goto no_memory;
+ 
+-            if ((def->data.udp.bindService = strdup(offset3 + 1)) == NULL)
++            if ((def->source.data.udp.bindService
++                 = strdup(offset3 + 1)) == NULL)
+                 goto no_memory;
+         } else {
+-            if ((def->data.udp.connectService = strdup(offset + 1)) == NULL)
++            if ((def->source.data.udp.connectService
++                 = strdup(offset + 1)) == NULL)
+                 goto no_memory;
+         }
+     }
+@@ -1322,15 +1329,15 @@ xenDaemonParseSxprChar(const char *value,
+     {
+         const char *offset = strchr(value, ',');
+         if (offset)
+-            def->data.nix.path = strndup(value, (offset - value));
++            def->source.data.nix.path = strndup(value, (offset - value));
+         else
+-            def->data.nix.path = strdup(value);
+-        if (def->data.nix.path == NULL)
++            def->source.data.nix.path = strdup(value);
++        if (def->source.data.nix.path == NULL)
+             goto no_memory;
+ 
+         if (offset != NULL &&
+             strstr(offset, ",server") != NULL)
+-            def->data.nix.listen = 1;
++            def->source.data.nix.listen = true;
+     }
+     break;
+     }
+@@ -5287,7 +5294,7 @@ int
+ xenDaemonFormatSxprChr(virDomainChrDefPtr def,
+                        virBufferPtr buf)
+ {
+-    const char *type = virDomainChrTypeToString(def->type);
++    const char *type = virDomainChrTypeToString(def->source.type);
+ 
+     if (!type) {
+         virXendError(VIR_ERR_INTERNAL_ERROR,
+@@ -5295,7 +5302,7 @@ xenDaemonFormatSxprChr(virDomainChrDefPtr def,
+         return -1;
+     }
+ 
+-    switch (def->type) {
++    switch (def->source.type) {
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
+     case VIR_DOMAIN_CHR_TYPE_VC:
+@@ -5306,34 +5313,42 @@ xenDaemonFormatSxprChr(virDomainChrDefPtr def,
+     case VIR_DOMAIN_CHR_TYPE_FILE:
+     case VIR_DOMAIN_CHR_TYPE_PIPE:
+         virBufferVSprintf(buf, "%s:", type);
+-        virBufferEscapeSexpr(buf, "%s", def->data.file.path);
++        virBufferEscapeSexpr(buf, "%s", def->source.data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_DEV:
+-        virBufferEscapeSexpr(buf, "%s", def->data.file.path);
++        virBufferEscapeSexpr(buf, "%s", def->source.data.file.path);
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_TCP:
+         virBufferVSprintf(buf, "%s:%s:%s%s",
+-                          (def->data.tcp.protocol == VIR_DOMAIN_CHR_TCP_PROTOCOL_RAW ?
++                          (def->source.data.tcp.protocol
++                           == VIR_DOMAIN_CHR_TCP_PROTOCOL_RAW ?
+                            "tcp" : "telnet"),
+-                          (def->data.tcp.host ? def->data.tcp.host : ""),
+-                          (def->data.tcp.service ? def->data.tcp.service : ""),
+-                          (def->data.tcp.listen ? ",server,nowait" : ""));
++                          (def->source.data.tcp.host ?
++                           def->source.data.tcp.host : ""),
++                          (def->source.data.tcp.service ?
++                           def->source.data.tcp.service : ""),
++                          (def->source.data.tcp.listen ?
++                           ",server,nowait" : ""));
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_UDP:
+         virBufferVSprintf(buf, "%s:%s:%s@%s:%s", type,
+-                          (def->data.udp.connectHost ? def->data.udp.connectHost : ""),
+-                          (def->data.udp.connectService ? def->data.udp.connectService : ""),
+-                          (def->data.udp.bindHost ? def->data.udp.bindHost : ""),
+-                          (def->data.udp.bindService ? def->data.udp.bindService : ""));
++                          (def->source.data.udp.connectHost ?
++                           def->source.data.udp.connectHost : ""),
++                          (def->source.data.udp.connectService ?
++                           def->source.data.udp.connectService : ""),
++                          (def->source.data.udp.bindHost ?
++                           def->source.data.udp.bindHost : ""),
++                          (def->source.data.udp.bindService ?
++                           def->source.data.udp.bindService : ""));
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_UNIX:
+         virBufferVSprintf(buf, "%s:", type);
+-        virBufferEscapeSexpr(buf, "%s", def->data.nix.path);
+-        if (def->data.nix.listen)
++        virBufferEscapeSexpr(buf, "%s", def->source.data.nix.path);
++        if (def->source.data.nix.listen)
+             virBufferAddLit(buf, ",server,nowait");
+         break;
+     }
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 25ae724..79c1e80 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -85,9 +85,9 @@ static int testCompareXMLToArgvFiles(const char *xml,
+         vmdef->id = -1;
+ 
+     memset(&monitor_chr, 0, sizeof(monitor_chr));
+-    monitor_chr.type = VIR_DOMAIN_CHR_TYPE_UNIX;
+-    monitor_chr.data.nix.path = (char *)"/tmp/test-monitor";
+-    monitor_chr.data.nix.listen = 1;
++    monitor_chr.source.type = VIR_DOMAIN_CHR_TYPE_UNIX;
++    monitor_chr.source.data.nix.path = (char *)"/tmp/test-monitor";
++    monitor_chr.source.data.nix.listen = true;
+     monitor_chr.info.alias = (char *)"monitor";
+ 
+     flags = QEMUD_CMD_FLAG_VNC_COLON |
+-- 
+1.7.4
+

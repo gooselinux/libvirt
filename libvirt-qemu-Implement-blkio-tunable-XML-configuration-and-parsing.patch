@@ -1,0 +1,189 @@
+From b915917dca2b1cc7547d5b88abeeaac5fb6b71b3 Mon Sep 17 00:00:00 2001
+Message-Id: <b915917dca2b1cc7547d5b88abeeaac5fb6b71b3.1297440281.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 11 Feb 2011 12:55:59 +0100
+Subject: [PATCH] qemu: Implement blkio tunable XML configuration and parsing.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=632492
+
+Implement blkio tunable XML configuration and parsing.
+
+Reviewed-by: "Nikunj A. Dadhania" <nikunj@linux.vnet.ibm.com>
+Signed-off-by: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+(cherry picked from commit d9b28a319a98c6ef67902692517ba42bb5cde242)
+
+Conflicts:
+
+	src/conf/domain_conf.c -- RHEL-specific context
+---
+ src/conf/domain_conf.c                             |   13 +++++++++
+ src/conf/domain_conf.h                             |    4 +++
+ src/qemu/qemu_cgroup.c                             |   15 ++++++++++
+ src/qemu/qemu_conf.c                               |    3 +-
+ tests/qemuxml2argvdata/qemuxml2argv-blkiotune.args |    4 +++
+ tests/qemuxml2argvdata/qemuxml2argv-blkiotune.xml  |   28 ++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |    3 ++
+ tests/qemuxml2xmltest.c                            |    1 +
+ 8 files changed, 70 insertions(+), 1 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-blkiotune.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-blkiotune.xml
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 9d65855..b87507b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -5152,6 +5152,11 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     if (node)
+         def->mem.ksm_disabled = 1;
+ 
++    /* Extract blkio cgroup tunables */
++    if (virXPathUInt("string(./blkiotune/weight)", ctxt,
++                     &def->blkio.weight) < 0)
++        def->blkio.weight = 0;
++
+     /* Extract other memory tunables */
+     if (virXPathULong("string(./memtune/hard_limit)", ctxt,
+                       &def->mem.hard_limit) < 0)
+@@ -7685,6 +7690,14 @@ char *virDomainDefFormat(virDomainDefPtr def,
+     virBufferVSprintf(&buf, "  <currentMemory>%lu</currentMemory>\n",
+                       def->mem.cur_balloon);
+ 
++    /* add blkiotune only if there are any */
++    if (def->blkio.weight) {
++        virBufferVSprintf(&buf, "  <blkiotune>\n");
++        virBufferVSprintf(&buf, "    <weight>%u</weight>\n",
++                          def->blkio.weight);
++        virBufferVSprintf(&buf, "  </blkiotune>\n");
++    }
++
+     /* add memtune only if there are any */
+     if (def->mem.hard_limit || def->mem.soft_limit || def->mem.min_guarantee ||
+         def->mem.swap_hard_limit)
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 1001cd8..1503ebb 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1028,6 +1028,10 @@ struct _virDomainDef {
+     char *description;
+ 
+     struct {
++        unsigned int weight;
++    } blkio;
++
++    struct {
+         unsigned long max_balloon;
+         unsigned long cur_balloon;
+         unsigned long hugepage_backed;
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index e5536c0..f016e8d 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -270,6 +270,21 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+         }
+     }
+ 
++    if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_BLKIO)) {
++        if (vm->def->blkio.weight != 0) {
++            rc = virCgroupSetBlkioWeight(cgroup, vm->def->blkio.weight);
++            if(rc != 0) {
++                virReportSystemError(-rc,
++                                     _("Unable to set io weight for domain %s"),
++                                     vm->def->name);
++                goto cleanup;
++            }
++        }
++    } else {
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("Block I/O tuning is not available on this host"));
++    }
++
+     if ((rc = qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_MEMORY))) {
+         if (vm->def->mem.hard_limit != 0) {
+             rc = virCgroupSetMemoryHardLimit(cgroup, vm->def->mem.hard_limit);
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 9f9e99e..9ba60b1 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -303,7 +303,8 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
+         driver->cgroupControllers =
+             (1 << VIR_CGROUP_CONTROLLER_CPU) |
+             (1 << VIR_CGROUP_CONTROLLER_DEVICES) |
+-            (1 << VIR_CGROUP_CONTROLLER_MEMORY);
++            (1 << VIR_CGROUP_CONTROLLER_MEMORY) |
++            (1 << VIR_CGROUP_CONTROLLER_BLKIO);
+     }
+     for (i = 0 ; i < VIR_CGROUP_CONTROLLER_LAST ; i++) {
+         if (driver->cgroupControllers & (1 << i)) {
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.args b/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.args
+new file mode 100644
+index 0000000..651793d
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.args
+@@ -0,0 +1,4 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -name QEMUGuest1 -nographic -monitor unix:/tmp/test-monitor,\
++server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -net none -serial \
++none -parallel none -usb
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.xml b/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.xml
+new file mode 100644
+index 0000000..4fa03ef
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-blkiotune.xml
+@@ -0,0 +1,28 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219136</currentMemory>
++  <blkiotune>
++    <weight>800</weight>
++  </blkiotune>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index af5ce56..96260c0 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -489,6 +489,9 @@ mymain(int argc, char **argv)
+     DO_TEST("cpu-exact2", 0, false);
+     DO_TEST("cpu-strict1", 0, false);
+ 
++    DO_TEST("memtune", QEMUD_CMD_FLAG_NAME, false);
++    DO_TEST("blkiotune", QEMUD_CMD_FLAG_NAME, false);
++
+     free(driver.stateDir);
+     virCapabilitiesFree(driver.caps);
+ 
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index dad91d4..15d94b7 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -182,6 +182,7 @@ mymain(int argc, char **argv)
+ 
+     DO_TEST("encrypted-disk");
+     DO_TEST("memtune");
++    DO_TEST("blkiotune");
+ 
+     DO_TEST("smp");
+ 
+-- 
+1.7.4
+

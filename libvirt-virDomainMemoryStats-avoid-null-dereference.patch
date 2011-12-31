@@ -1,0 +1,52 @@
+From 3658e48ee986f1d918d95a13ba2edf85167d4fbc Mon Sep 17 00:00:00 2001
+Message-Id: <3658e48ee986f1d918d95a13ba2edf85167d4fbc.1297957056.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 15 Feb 2011 11:20:21 -0700
+Subject: [PATCH] virDomainMemoryStats: avoid null dereference
+
+https://bugzilla.redhat.com/show_bug.cgi?id=677484
+
+* src/libvirt.c (virDomainMemoryStats): Check domain before flags.
+(cherry picked from commit ae891f956ed3d28740f310447c890299586325c4)
+
+Conflicts:
+
+	src/libvirt.c - intentionally avoiding a backport of
+upstream commit 19d931d2
+---
+ src/libvirt.c |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 15c2912..fed246c 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -4627,12 +4627,6 @@ int virDomainMemoryStats (virDomainPtr dom, virDomainMemoryStatPtr stats,
+ 
+     VIR_DOMAIN_DEBUG(dom, "stats=%p, nr_stats=%u", stats, nr_stats);
+ 
+-    if (flags != 0) {
+-        virLibDomainError (dom, VIR_ERR_INVALID_ARG,
+-                           _("flags must be zero"));
+-        goto error;
+-    }
+-
+     virResetLastError();
+ 
+     if (!VIR_IS_CONNECTED_DOMAIN (dom)) {
+@@ -4640,6 +4634,12 @@ int virDomainMemoryStats (virDomainPtr dom, virDomainMemoryStatPtr stats,
+         virDispatchError(NULL);
+         return -1;
+     }
++    if (flags != 0) {
++        virLibDomainError(dom, VIR_ERR_INVALID_ARG,
++                           _("flags must be zero"));
++        goto error;
++    }
++
+     if (!stats || nr_stats == 0)
+         return 0;
+ 
+-- 
+1.7.4.1
+

@@ -1,0 +1,114 @@
+From 3c063e3831a53b38403f7ee8882da97b83eef6d5 Mon Sep 17 00:00:00 2001
+Message-Id: <3c063e3831a53b38403f7ee8882da97b83eef6d5.1299776672.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:58 -0700
+Subject: [PATCH] audit: also audit cgroup controller path
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+Although the cgroup device ACL controller path can be worked out
+by researching the code, it is more efficient to include that
+information directly in the audit message.
+
+* src/util/cgroup.h (virCgroupPathOfController): New prototype.
+* src/util/cgroup.c (virCgroupPathOfController): Export.
+* src/libvirt_private.syms: Likewise.
+* src/qemu/qemu_audit.c (qemuAuditCgroup): Use it.
+(cherry picked from commit f2512684ad5d68aba322d202e735d0992327a8f3)
+---
+ src/libvirt_private.syms |    1 +
+ src/qemu/qemu_audit.c    |   15 ++++++++++++---
+ src/util/cgroup.c        |    8 ++++----
+ src/util/cgroup.h        |    5 +++++
+ 4 files changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 786dd75..8d3c53d 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -75,6 +75,7 @@ virCgroupGetMemorySoftLimit;
+ virCgroupGetMemoryUsage;
+ virCgroupGetSwapHardLimit;
+ virCgroupMounted;
++virCgroupPathOfController;
+ virCgroupRemove;
+ virCgroupSetBlkioWeight;
+ virCgroupSetCpuShares;
+diff --git a/src/qemu/qemu_audit.c b/src/qemu/qemu_audit.c
+index 43e903a..7a8d3ee 100644
+--- a/src/qemu/qemu_audit.c
++++ b/src/qemu/qemu_audit.c
+@@ -213,11 +213,13 @@ cleanup:
+  * Log an audit message about an attempted cgroup device ACL change.
+  */
+ void
+-qemuAuditCgroup(virDomainObjPtr vm, virCgroupPtr cgroup ATTRIBUTE_UNUSED,
++qemuAuditCgroup(virDomainObjPtr vm, virCgroupPtr cgroup,
+                 const char *reason, const char *extra, bool success)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *vmname;
++    char *controller = NULL;
++    char *detail;
+ 
+     virUUIDFormat(vm->def->uuid, uuidstr);
+     if (!(vmname = virAuditEncode("vm", vm->def->name))) {
+@@ -225,11 +227,18 @@ qemuAuditCgroup(virDomainObjPtr vm, virCgroupPtr cgroup ATTRIBUTE_UNUSED,
+         return;
+     }
+ 
++    virCgroupPathOfController(cgroup, VIR_CGROUP_CONTROLLER_DEVICES,
++                              NULL, &controller);
++    detail = virAuditEncode("cgroup", VIR_AUDIT_STR(controller));
++
+     VIR_AUDIT(VIR_AUDIT_RECORD_RESOURCE, success,
+-              "resrc=cgroup reason=%s %s uuid=%s class=%s",
+-              reason, vmname, uuidstr, extra);
++              "resrc=cgroup reason=%s %s uuid=%s %s class=%s",
++              reason, vmname, uuidstr,
++              detail ? detail : "cgroup=?", extra);
+ 
+     VIR_FREE(vmname);
++    VIR_FREE(controller);
++    VIR_FREE(detail);
+ }
+ 
+ /**
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index 00c555b..07b5d3d 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -253,10 +253,10 @@ static int virCgroupDetect(virCgroupPtr group)
+ #endif
+ 
+ 
+-static int virCgroupPathOfController(virCgroupPtr group,
+-                                     int controller,
+-                                     const char *key,
+-                                     char **path)
++int virCgroupPathOfController(virCgroupPtr group,
++                              int controller,
++                              const char *key,
++                              char **path)
+ {
+     if (group->controllers[controller].mountPoint == NULL)
+         return -ENOENT;
+diff --git a/src/util/cgroup.h b/src/util/cgroup.h
+index f1bdd0f..56916c5 100644
+--- a/src/util/cgroup.h
++++ b/src/util/cgroup.h
+@@ -40,6 +40,11 @@ int virCgroupForDomain(virCgroupPtr driver,
+                        virCgroupPtr *group,
+                        int create);
+ 
++int virCgroupPathOfController(virCgroupPtr group,
++                              int controller,
++                              const char *key,
++                              char **path);
++
+ int virCgroupAddTask(virCgroupPtr group, pid_t pid);
+ 
+ int virCgroupSetBlkioWeight(virCgroupPtr group, unsigned int weight);
+-- 
+1.7.4.1
+

@@ -1,0 +1,38 @@
+From c4604a17bf8eab0d30a4498fea928aeafd4fda61 Mon Sep 17 00:00:00 2001
+Message-Id: <c4604a17bf8eab0d30a4498fea928aeafd4fda61.1302097026.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Wed, 6 Apr 2011 10:54:22 +0100
+Subject: [PATCH] Fix typo in systemtap tapset directory name
+
+For
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=693701
+
+The systemtap directory for tapsets is called
+
+  /usr/share/systemtap/tapset
+
+Not
+
+ /usr/share/systemtap/tapsets
+
+* daemon/Makefile.am,libvirt.spec.in: s/tapsets/tapset/
+(cherry picked from commit a7e80bde110d2dfc19c41cf805a5f555d204b849)
+---
+ daemon/Makefile.am |    2 +-
+ libvirt.spec.in    |    2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/daemon/Makefile.am b/daemon/Makefile.am
+index cdf0f75..397332e 100644
+--- a/daemon/Makefile.am
++++ b/daemon/Makefile.am
+@@ -170,7 +170,7 @@ nodist_libvirtd_SOURCES = probes.h
+ 
+ BUILT_SOURCES += probes.h
+ 
+-tapsetdir = $(datadir)/systemtap/tapsets
++tapsetdir = $(datadir)/systemtap/tapset
+ tapset_DATA = libvirtd.stp
+ 
+ probes.h: probes.d

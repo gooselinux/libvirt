@@ -1,0 +1,69 @@
+From 2ffdf211c73e1eaa50d91032a09a7f013a3d86bc Mon Sep 17 00:00:00 2001
+Message-Id: <2ffdf211c73e1eaa50d91032a09a7f013a3d86bc.1295285119.git.jdenemar@redhat.com>
+From: Richard W.M. Jones <rjones@redhat.com>
+Date: Tue, 11 Jan 2011 13:37:52 +0000
+Subject: [PATCH] qemu: Watchdog IB700 is not a PCI device
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=667091
+
+Skip IB700 when assigning PCI slots.
+
+Note: the I6300ESB watchdog _is_ a PCI device.
+
+To test this: I applied this patch to libvirt-0.8.3-2.fc14 (rebasing
+it slightly: qemu_command.c didn't exist in that version) and
+installed this on my machine, then tested that I could successfully
+add an ib700 watchdog device to a guest, start the guest, and the
+ib700 was available to the guest.  I also added an i6300esb (PCI)
+watchdog to another guest, and verified that libvirt assigned a PCI
+device to it, that the guest could be started, and that i6300esb was
+present in the guest.
+
+Note that if you previously had a domain with a ib700 watchdog, it
+would have had an <address type='pci' .../> clause added to it in the
+libvirt configuration.  This patch does not attempt to remove this.
+You cannot start such a domain -- qemu gives an error if you try.
+With this patch you are able to remove the bogus address element
+without libvirt adding it back.
+
+Signed-off-by: Richard W.M. Jones <rjones@redhat.com>
+(cherry picked from commit feddaf1dc8c14590d957ad353fc9263a80d96236)
+---
+ src/qemu/qemu_command.c                            |    5 +++--
+ .../qemuxml2argv-watchdog-device.args              |    2 +-
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 54131eb..00be069 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -863,7 +863,7 @@ int qemuDomainPCIAddressSetNextAddr(qemuDomainPCIAddressSetPtr addrs,
+  *  - VirtIO block
+  *  - VirtIO balloon
+  *  - Host device passthrough
+- *  - Watchdog
++ *  - Watchdog (not IB700)
+  *
+  * Prior to this function being invoked, qemuCollectPCIAddress() will have
+  * added all existing PCI addresses from the 'def' to 'addrs'. Thus this
+@@ -1017,8 +1017,9 @@ qemuAssignDevicePCISlots(virDomainDefPtr def, qemuDomainPCIAddressSetPtr addrs)
+             goto error;
+     }
+ 
+-    /* A watchdog */
++    /* A watchdog - skip IB700, it is not a PCI device */
+     if (def->watchdog &&
++        def->watchdog->model != VIR_DOMAIN_WATCHDOG_MODEL_IB700 &&
+         def->watchdog->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE) {
+         if (qemuDomainPCIAddressSetNextAddr(addrs, &def->watchdog->info) < 0)
+             goto error;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.args b/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.args
+index 2eaea46..a4cbeb7 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-watchdog-device.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -device ib700,id=watchdog0,bus=pci.0,addr=0x3 -watchdog-action poweroff -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -device ib700,id=watchdog0 -watchdog-action poweroff -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+-- 
+1.7.4.rc2
+

@@ -1,0 +1,230 @@
+From a44e000248ba6ea48abb957287a049cc03717f49 Mon Sep 17 00:00:00 2001
+Message-Id: <a44e000248ba6ea48abb957287a049cc03717f49.1297440281.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 11 Feb 2011 14:24:47 +0000
+Subject: [PATCH] Imprint all logs with version + package build information
+
+For
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=673226
+
+NB, this changes the RPM specfile which will need manual copying
+to the CVS RPM specfile
+
+The logging functions are enhanced so that immediately prior to
+the first log message being printed to any output channel, the
+libvirt package version will be printed.
+
+eg
+
+ $ LIBVIRT_DEBUG=1 virsh
+ 18:13:28.013: 17536: info : libvirt version: 0.8.7
+ 18:13:28.013: 17536: debug : virInitialize:361 : register drivers
+ ...
+
+The 'configure' script gains two new arguments which can be
+used as
+
+   --with-packager="Fedora Project, x86-01.phx2.fedoraproject.org, 01-27-2011-18:00:10"
+   --with-packager-version="1.fc14"
+
+to allow distros to append a custom string with package specific
+data.
+
+The RPM specfile is modified so that it appends the RPM version,
+the build host, the build date and the packager name.
+
+eg
+
+ $ LIBVIRT_DEBUG=1 virsh
+ 18:14:52.086: 17551: info : libvirt version: 0.8.7, package: 1.fc13 (Fedora Project, x86-01.phx2.fedoraproject.org, 01-27-2011-18:00:10)
+ 18:14:52.086: 17551: debug : virInitialize:361 : register drivers
+
+Thus when distro packagers receive bug reports they can clearly
+see what version was in use, even if the bug reporter mistakenly
+or intentionally lies about version/builds
+
+* src/util/logging.c: Output version data prior to first log message
+* libvirt.spec.in: Include RPM release, date, hostname & packager
+* configure.ac: Add --with-packager & --with-packager-version args
+(cherry picked from commit cee61fc2987a00c4133f11055db942466b971c5b)
+---
+ configure.ac       |   19 +++++++++++
+ libvirt.spec.in    |    9 +++++
+ src/util/logging.c |   91 +++++++++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 104 insertions(+), 15 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index acd30d9..19e9588 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -28,6 +28,25 @@ AC_SUBST([LIBVIRT_VERSION])
+ AC_SUBST([LIBVIRT_VERSION_INFO])
+ AC_SUBST([LIBVIRT_VERSION_NUMBER])
+ 
++AC_ARG_WITH([packager],
++            [AS_HELP_STRING([--with-packager],
++                            [Extra packager name])],
++            [],[])
++AC_ARG_WITH([packager-version],
++            [AS_HELP_STRING([--with-packager-version],
++                            [Extra packager version])],
++            [],[])
++if test "x$with_packager" != "xno"
++then
++  AC_DEFINE_UNQUOTED([PACKAGER], ["$with_packager"],
++                     [Extra package name])
++fi
++if test "x$with_packager_version" != "xno"
++then
++  AC_DEFINE_UNQUOTED([PACKAGER_VERSION], ["$with_packager_version"],
++                     [Extra package version])
++fi
++
+ dnl Required minimum versions of all libs we depend on
+ LIBXML_REQUIRED="2.6.0"
+ GNUTLS_REQUIRED="1.0.25"
+diff --git a/src/util/logging.c b/src/util/logging.c
+index 83cc358..94ab82c 100644
+--- a/src/util/logging.c
++++ b/src/util/logging.c
+@@ -108,6 +108,7 @@ static int virLogNbFilters = 0;
+  * after filtering, multiple output can be used simultaneously
+  */
+ struct _virLogOutput {
++    bool logVersion;
+     void *data;
+     virLogOutputFunc f;
+     virLogCloseFunc c;
+@@ -490,6 +491,7 @@ int virLogDefineOutput(virLogOutputFunc f, virLogCloseFunc c, void *data,
+         goto cleanup;
+     }
+     ret = virLogNbOutputs++;
++    virLogOutputs[ret].logVersion = true;
+     virLogOutputs[ret].f = f;
+     virLogOutputs[ret].c = c;
+     virLogOutputs[ret].data = data;
+@@ -501,6 +503,55 @@ cleanup:
+     return(ret);
+ }
+ 
++static int
++virLogFormatString(char **msg,
++                   const char *funcname,
++                   long long linenr,
++                   struct tm *time_info,
++                   struct timeval *cur_time,
++                   int priority,
++                   const char *str)
++{
++    int ret;
++    if ((funcname != NULL)) {
++        ret = virAsprintf(msg, "%02d:%02d:%02d.%03d: %d: %s : %s:%lld : %s\n",
++                          time_info->tm_hour, time_info->tm_min,
++                          time_info->tm_sec, (int) cur_time->tv_usec / 1000,
++                          virThreadSelfID(),
++                          virLogPriorityString(priority), funcname, linenr, str);
++    } else {
++        ret = virAsprintf(msg, "%02d:%02d:%02d.%03d: %d: %s : %s\n",
++                          time_info->tm_hour, time_info->tm_min,
++                          time_info->tm_sec, (int) cur_time->tv_usec / 1000,
++                          virThreadSelfID(),
++                          virLogPriorityString(priority), str);
++    }
++    return ret;
++}
++
++static int
++virLogVersionString(char **msg,
++                    struct tm *time_info,
++                    struct timeval *cur_time)
++{
++#ifdef PACKAGER_VERSION
++# ifdef PACKAGER
++#  define LOG_VERSION_STRING \
++    "libvirt version: " VERSION ", package: " PACKAGER_VERSION " (" PACKAGER ")"
++# else
++#  define LOG_VERSION_STRING \
++    "libvirt version: " VERSION ", package: " PACKAGER_VERSION
++# endif
++#else
++# define LOG_VERSION_STRING  \
++    "libvirt version: " VERSION
++#endif
++
++    return virLogFormatString(msg, NULL, 0,
++                              time_info, cur_time,
++                              VIR_LOG_INFO, LOG_VERSION_STRING);
++}
++
+ /**
+  * virLogMessage:
+  * @category: where is that message coming from
+@@ -516,6 +567,7 @@ cleanup:
+  */
+ void virLogMessage(const char *category, int priority, const char *funcname,
+                    long long linenr, int flags, const char *fmt, ...) {
++    static bool logVersionStderr = true;
+     char *str = NULL;
+     char *msg;
+     struct timeval cur_time;
+@@ -547,19 +599,9 @@ void virLogMessage(const char *category, int priority, const char *funcname,
+     gettimeofday(&cur_time, NULL);
+     localtime_r(&cur_time.tv_sec, &time_info);
+ 
+-    if ((funcname != NULL)) {
+-        ret = virAsprintf(&msg, "%02d:%02d:%02d.%03d: %d: %s : %s:%lld : %s\n",
+-                          time_info.tm_hour, time_info.tm_min,
+-                          time_info.tm_sec, (int) cur_time.tv_usec / 1000,
+-                          virThreadSelfID(),
+-                          virLogPriorityString(priority), funcname, linenr, str);
+-    } else {
+-        ret = virAsprintf(&msg, "%02d:%02d:%02d.%03d: %d: %s : %s\n",
+-                          time_info.tm_hour, time_info.tm_min,
+-                          time_info.tm_sec, (int) cur_time.tv_usec / 1000,
+-                          virThreadSelfID(),
+-                          virLogPriorityString(priority), str);
+-    }
++    ret = virLogFormatString(&msg, funcname, linenr,
++                             &time_info, &cur_time,
++                             priority, str);
+     VIR_FREE(str);
+     if (ret < 0) {
+         /* apparently we're running out of memory */
+@@ -578,12 +620,31 @@ void virLogMessage(const char *category, int priority, const char *funcname,
+     virLogStr(msg, len);
+     virLogLock();
+     for (i = 0; i < virLogNbOutputs;i++) {
+-        if (priority >= virLogOutputs[i].priority)
++        if (priority >= virLogOutputs[i].priority) {
++            if (virLogOutputs[i].logVersion) {
++                char *ver = NULL;
++                if (virLogVersionString(&ver, &time_info, &cur_time) >= 0)
++                    virLogOutputs[i].f(category, VIR_LOG_INFO, __func__, __LINE__,
++                                       ver, strlen(ver),
++                                       virLogOutputs[i].data);
++                VIR_FREE(ver);
++                virLogOutputs[i].logVersion = false;
++            }
+             virLogOutputs[i].f(category, priority, funcname, linenr,
+                                msg, len, virLogOutputs[i].data);
++        }
+     }
+-    if ((virLogNbOutputs == 0) && (flags != 1))
++    if ((virLogNbOutputs == 0) && (flags != 1)) {
++        if (logVersionStderr) {
++            char *ver = NULL;
++            if (virLogVersionString(&ver, &time_info, &cur_time) >= 0)
++                ignore_value (safewrite(STDERR_FILENO,
++                                        ver, strlen(ver)));
++            VIR_FREE(ver);
++            logVersionStderr = false;
++        }
+         ignore_value (safewrite(STDERR_FILENO, msg, len));
++    }
+     virLogUnlock();
+ 
+     VIR_FREE(msg);
+-- 
+1.7.4
+

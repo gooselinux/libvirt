@@ -1,0 +1,53 @@
+From 06148f8b6f7b885747bd279a7d7d911e07e3b88f Mon Sep 17 00:00:00 2001
+Message-Id: <06148f8b6f7b885747bd279a7d7d911e07e3b88f.1295522811.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 18 Jan 2011 18:44:49 +0800
+Subject: [PATCH] conf: Report error if invalid type specified for character device
+
+If invalid type is specified, e.g.
+<serial type='foo'>
+    <target port='0'/>
+</serial>
+
+We replace 'foo' with "null" type implicitly, without reporting an
+error message to tell the user, and "start" or "edit" the domain
+will be success.
+
+It's not good to guess what the user wants, This patch is to fix
+the problem.
+
+BZ# 638968
+
+https://bugzilla.redhat.com/show_bug.cgi?id=638968
+
+* src/conf/domain_conf.c
+(cherry picked from commit 92d653010606a45a69ea6edd55ba689bffca0b44)
+---
+ src/conf/domain_conf.c |   10 +++++++---
+ 1 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 13716ec..376bbd6 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -2916,10 +2916,14 @@ virDomainChrDefParseXML(virCapsPtr caps,
+     }
+ 
+     type = virXMLPropString(node, "type");
+-    if (type == NULL)
++    if (type == NULL) {
+         def->type = VIR_DOMAIN_CHR_TYPE_PTY;
+-    else if ((def->type = virDomainChrTypeFromString(type)) < 0)
+-        def->type = VIR_DOMAIN_CHR_TYPE_NULL;
++    } else if ((def->type = virDomainChrTypeFromString(type)) < 0) {
++        virDomainReportError(VIR_ERR_XML_ERROR,
++                             _("unknown type presented to host for character device: %s"),
++                             type);
++        goto error;
++    }
+ 
+     nodeName = (const char *) node->name;
+     if ((def->deviceType = virDomainChrDeviceTypeFromString(nodeName)) < 0) {
+-- 
+1.7.4.rc2
+

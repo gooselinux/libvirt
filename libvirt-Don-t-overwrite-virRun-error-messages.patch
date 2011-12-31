@@ -1,0 +1,286 @@
+From b83616166075e05b06f2e8d953d7c2361945ca12 Mon Sep 17 00:00:00 2001
+Message-Id: <b83616166075e05b06f2e8d953d7c2361945ca12.1299776671.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Thu, 10 Mar 2011 16:15:03 +0100
+Subject: [PATCH] Don't overwrite virRun error messages
+
+Taken to avoid conflict in the next patch for
+https://bugzilla.redhat.com/show_bug.cgi?id=589076
+
+Also this patch is a good to have in general.
+
+virRun gives pretty useful error output, let's not overwrite it unless there
+is a good reason. Some places were providing more information about what
+the commands were _attempting_ to do, however that's usually less useful from
+a debugging POV than what actually happened.
+(cherry picked from commit 91893014266027735abb342d74e3701cea4e309e)
+
+Conflicts:
+
+	src/lxc/veth.c - DEBUG/VIR_DEBUG context conflict
+---
+ src/lxc/veth.c                        |   45 +++------------------------------
+ src/openvz/openvz_driver.c            |   20 --------------
+ src/qemu/qemu_driver.c                |    4 ---
+ src/storage/storage_backend.c         |    3 --
+ src/storage/storage_backend_logical.c |    3 --
+ src/vmware/vmware_driver.c            |    2 -
+ 6 files changed, 4 insertions(+), 73 deletions(-)
+
+diff --git a/src/lxc/veth.c b/src/lxc/veth.c
+index 14cfaa2..71ea655 100644
+--- a/src/lxc/veth.c
++++ b/src/lxc/veth.c
+@@ -95,7 +95,6 @@ int vethCreate(char** veth1, char** veth2)
+     const char *argv[] = {
+         "ip", "link", "add", NULL, "type", "veth", "peer", "name", NULL, NULL
+     };
+-    int cmdResult = 0;
+     int vethDev = 0;
+     bool veth1_alloc = false;
+ 
+@@ -123,13 +122,7 @@ int vethCreate(char** veth1, char** veth2)
+     argv[8] = *veth2;
+ 
+     DEBUG("veth1: %s veth2: %s", *veth1, *veth2);
+-    rc = virRun(argv, &cmdResult);
+-
+-    if (rc != 0 ||
+-        (WIFEXITED(cmdResult) && WEXITSTATUS(cmdResult) != 0)) {
+-        vethError(VIR_ERR_INTERNAL_ERROR,
+-                  _("Failed to create veth device pair '%s', '%s': %d"),
+-                  *veth1, *veth2, WEXITSTATUS(cmdResult));
++    if (virRun(argv, NULL) < 0) {
+         if (veth1_alloc)
+             VIR_FREE(*veth1);
+         VIR_FREE(*veth2);
+@@ -234,7 +227,6 @@ int moveInterfaceToNetNs(const char* iface, int pidInNs)
+     const char *argv[] = {
+         "ip", "link", "set", iface, "netns", NULL, NULL
+     };
+-    int cmdResult = 0;
+ 
+     if (virAsprintf(&pid, "%d", pidInNs) == -1) {
+         virReportOOMError();
+@@ -242,14 +234,7 @@ int moveInterfaceToNetNs(const char* iface, int pidInNs)
+     }
+ 
+     argv[5] = pid;
+-    rc = virRun(argv, &cmdResult);
+-    if (rc != 0 ||
+-        (WIFEXITED(cmdResult) && WEXITSTATUS(cmdResult) != 0)) {
+-        vethError(VIR_ERR_INTERNAL_ERROR,
+-                  _("Failed to move '%s' into NS(pid=%d) (%d)"),
+-                  iface, pidInNs, WEXITSTATUS(cmdResult));
+-        rc = -1;
+-    }
++    rc = virRun(argv, NULL);
+ 
+     VIR_FREE(pid);
+     return rc;
+@@ -268,22 +253,11 @@ int moveInterfaceToNetNs(const char* iface, int pidInNs)
+  */
+ int setMacAddr(const char* iface, const char* macaddr)
+ {
+-    int rc;
+     const char *argv[] = {
+         "ip", "link", "set", iface, "address", macaddr, NULL
+     };
+-    int cmdResult = 0;
+ 
+-    rc = virRun(argv, &cmdResult);
+-    if (rc != 0 ||
+-        (WIFEXITED(cmdResult) && WEXITSTATUS(cmdResult) != 0)) {
+-        vethError(VIR_ERR_INTERNAL_ERROR,
+-                  _("Failed to set '%s' to '%s' (%d)"),
+-                  macaddr, iface, WEXITSTATUS(cmdResult));
+-        rc = -1;
+-    }
+-
+-    return rc;
++    return virRun(argv, NULL);
+ }
+ 
+ /**
+@@ -299,20 +273,9 @@ int setMacAddr(const char* iface, const char* macaddr)
+  */
+ int setInterfaceName(const char* iface, const char* new)
+ {
+-    int rc;
+     const char *argv[] = {
+         "ip", "link", "set", iface, "name", new, NULL
+     };
+-    int cmdResult = 0;
+ 
+-    rc = virRun(argv, &cmdResult);
+-    if (rc != 0 ||
+-        (WIFEXITED(cmdResult) && WEXITSTATUS(cmdResult) != 0)) {
+-        vethError(VIR_ERR_INTERNAL_ERROR,
+-                  _("Failed to set '%s' to '%s' (%d)"),
+-                  new, iface, WEXITSTATUS(cmdResult));
+-        rc = -1;
+-    }
+-
+-    return rc;
++    return virRun(argv, NULL);
+ }
+diff --git a/src/openvz/openvz_driver.c b/src/openvz/openvz_driver.c
+index 7728981..8518361 100644
+--- a/src/openvz/openvz_driver.c
++++ b/src/openvz/openvz_driver.c
+@@ -216,8 +216,6 @@ static int openvzSetInitialConfig(virDomainDefPtr vmdef)
+         }
+ 
+         if (virRun(prog, NULL) < 0) {
+-            openvzError(VIR_ERR_INTERNAL_ERROR,
+-                        _("Could not exec %s"), VZCTL);
+             goto cleanup;
+         }
+     }
+@@ -495,8 +493,6 @@ static int openvzDomainSuspend(virDomainPtr dom) {
+     if (vm->state != VIR_DOMAIN_PAUSED) {
+         openvzSetProgramSentinal(prog, vm->def->name);
+         if (virRun(prog, NULL) < 0) {
+-            openvzError(VIR_ERR_OPERATION_FAILED, "%s",
+-                        _("Suspend operation failed"));
+             goto cleanup;
+         }
+         vm->state = VIR_DOMAIN_PAUSED;
+@@ -535,8 +531,6 @@ static int openvzDomainResume(virDomainPtr dom) {
+   if (vm->state == VIR_DOMAIN_PAUSED) {
+       openvzSetProgramSentinal(prog, vm->def->name);
+       if (virRun(prog, NULL) < 0) {
+-          openvzError(VIR_ERR_OPERATION_FAILED, "%s",
+-                      _("Resume operation failed"));
+           goto cleanup;
+       }
+       vm->state = VIR_DOMAIN_RUNNING;
+@@ -775,8 +769,6 @@ openvzDomainSetNetwork(virConnectPtr conn, const char *vpsid,
+     if (prog[0] != NULL) {
+         ADD_ARG_LIT("--save");
+         if (virRun(prog, NULL) < 0) {
+-           openvzError(VIR_ERR_INTERNAL_ERROR,
+-                       _("Could not exec %s"), VZCTL);
+            rc = -1;
+            goto exit;
+         }
+@@ -982,8 +974,6 @@ openvzDomainCreateXML(virConnectPtr conn, const char *xml,
+     openvzSetProgramSentinal(progstart, vm->def->name);
+ 
+     if (virRun(progstart, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                   _("Could not exec %s"), VZCTL);
+         goto cleanup;
+     }
+ 
+@@ -1039,8 +1029,6 @@ openvzDomainCreateWithFlags(virDomainPtr dom, unsigned int flags)
+ 
+     openvzSetProgramSentinal(prog, vm->def->name);
+     if (virRun(prog, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                    _("Could not exec %s"), VZCTL);
+         goto cleanup;
+     }
+ 
+@@ -1086,8 +1074,6 @@ openvzDomainUndefine(virDomainPtr dom)
+ 
+     openvzSetProgramSentinal(prog, vm->def->name);
+     if (virRun(prog, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                    _("Could not exec %s"), VZCTL);
+         goto cleanup;
+     }
+ 
+@@ -1124,8 +1110,6 @@ openvzDomainSetAutostart(virDomainPtr dom, int autostart)
+ 
+     openvzSetProgramSentinal(prog, vm->def->name);
+     if (virRun(prog, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                    _("Could not exec %s"), VZCTL);
+         goto cleanup;
+     }
+     ret = 0;
+@@ -1216,8 +1200,6 @@ static int openvzDomainSetVcpusInternal(virDomainObjPtr vm,
+ 
+     openvzSetProgramSentinal(prog, vm->def->name);
+     if (virRun(prog, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                    _("Could not exec %s"), VZCTL);
+         return -1;
+     }
+ 
+@@ -1551,8 +1533,6 @@ openvzDomainSetMemoryInternal(virDomainObjPtr vm,
+ 
+     openvzSetProgramSentinal(prog, vm->def->name);
+     if (virRun(prog, NULL) < 0) {
+-        openvzError(VIR_ERR_INTERNAL_ERROR,
+-                    _("Could not exec %s"), VZCTL);
+         goto cleanup;
+     }
+ 
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index f5b259e..ae1505a 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10180,10 +10180,6 @@ static virDomainSnapshotPtr qemuDomainSnapshotCreateXML(virDomainPtr domain,
+                 qemuimgarg[4] = vm->def->disks[i]->src;
+ 
+                 if (virRun(qemuimgarg, NULL) < 0) {
+-                    virReportSystemError(errno,
+-                                         _("Failed to run '%s' to create snapshot '%s' from disk '%s'"),
+-                                         qemuimgarg[0], snap->def->name,
+-                                         vm->def->disks[i]->src);
+                     goto cleanup;
+                 }
+             }
+diff --git a/src/storage/storage_backend.c b/src/storage/storage_backend.c
+index 3466912..99f4ff6 100644
+--- a/src/storage/storage_backend.c
++++ b/src/storage/storage_backend.c
+@@ -534,9 +534,6 @@ static int virStorageBackendCreateExecCommand(virStoragePoolObjPtr pool,
+     }
+     if (!filecreated) {
+         if (virRun(cmdargv, NULL) < 0) {
+-            virReportSystemError(errno,
+-                                 _("Cannot run %s to create %s"),
+-                                 cmdargv[0], vol->target.path);
+             return -1;
+         }
+         if (stat(vol->target.path, &st) < 0) {
+diff --git a/src/storage/storage_backend_logical.c b/src/storage/storage_backend_logical.c
+index 389ecd7..4aec06a 100644
+--- a/src/storage/storage_backend_logical.c
++++ b/src/storage/storage_backend_logical.c
+@@ -558,9 +558,6 @@ virStorageBackendLogicalDeletePool(virConnectPtr conn ATTRIBUTE_UNUSED,
+         pvargv[1] = pool->def->source.devices[i].path;
+         if (virRun(pvargv, NULL) < 0) {
+             error = -1;
+-            virReportSystemError(errno,
+-                                 _("cannot remove PV device '%s'"),
+-                                 pool->def->source.devices[i].path);
+             break;
+         }
+     }
+diff --git a/src/vmware/vmware_driver.c b/src/vmware/vmware_driver.c
+index 47314f8..64690ba 100644
+--- a/src/vmware/vmware_driver.c
++++ b/src/vmware/vmware_driver.c
+@@ -187,7 +187,6 @@ vmwareStopVM(struct vmware_driver *driver, virDomainObjPtr vm)
+     vmwareSetSentinal(cmd, ((vmwareDomainPtr) vm->privateData)->vmxPath);
+ 
+     if (virRun(cmd, NULL) < 0) {
+-        vmwareError(VIR_ERR_INTERNAL_ERROR, _("Could not exec %s"), VMRUN);
+         return -1;
+     }
+ 
+@@ -220,7 +219,6 @@ vmwareStartVM(struct vmware_driver *driver, virDomainObjPtr vm)
+         vmwareSetSentinal(cmd, NULL);
+ 
+     if (virRun(cmd, NULL) < 0) {
+-        vmwareError(VIR_ERR_INTERNAL_ERROR, _("Could not exec %s"), VMRUN);
+         return -1;
+     }
+ 
+-- 
+1.7.4.1
+

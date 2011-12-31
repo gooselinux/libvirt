@@ -1,0 +1,63 @@
+From ca7d6a2a9744c3d8ebdef8d3bf115520466d840f Mon Sep 17 00:00:00 2001
+Message-Id: <ca7d6a2a9744c3d8ebdef8d3bf115520466d840f.1296819816.git.jdenemar@redhat.com>
+From: Jim Fehlig <jfehlig@novell.com>
+Date: Wed, 2 Feb 2011 08:40:39 -0700
+Subject: [PATCH] qemu: Retry JSON monitor cont cmd on MigrationExpected error
+
+https://bugzilla.redhat.com/show_bug.cgi?id=670278
+
+When restoring a saved qemu instance via JSON monitor, the vm is
+left in a paused state.  Turns out the 'cont' cmd was failing with
+"MigrationExpected" error class and "An incoming migration is
+expected before this command can be executed" error description
+due to migration (restore) not yet complete.
+
+Detect if 'cont' cmd fails with "MigrationExpecte" error class and
+retry 'cont' cmd.
+
+V2: Fix potential double-free noted by Laine Stump
+(cherry picked from commit 4301b95af7f554700de8e69ecf3f3bb3148b1d44)
+---
+ src/qemu/qemu_monitor_json.c |   22 +++++++++++++++++++---
+ 1 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index c76f5e3..86cc7e0 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -741,13 +741,29 @@ qemuMonitorJSONStartCPUs(qemuMonitorPtr mon,
+     int ret;
+     virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("cont", NULL);
+     virJSONValuePtr reply = NULL;
++    int i = 0, timeout = 3;
+     if (!cmd)
+         return -1;
+ 
+-    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++    do {
++        ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+-    if (ret == 0)
+-        ret = qemuMonitorJSONCheckError(cmd, reply);
++        if (ret != 0)
++            break;
++
++        /* If no error, we're done */
++        if ((ret = qemuMonitorJSONCheckError(cmd, reply)) == 0)
++            break;
++
++        /* If error class is not MigrationExpected, we're done.
++         * Otherwise try 'cont' cmd again */
++        if (!qemuMonitorJSONHasError(reply, "MigrationExpected"))
++            break;
++
++        virJSONValueFree(reply);
++        reply = NULL;
++        usleep(250000);
++    } while (++i <= timeout);
+ 
+     virJSONValueFree(cmd);
+     virJSONValueFree(reply);
+-- 
+1.7.4
+

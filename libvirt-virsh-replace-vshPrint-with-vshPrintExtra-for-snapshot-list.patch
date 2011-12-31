@@ -1,0 +1,36 @@
+From 585a9ef8f821abd44121427ef7bf4aae38cf68de Mon Sep 17 00:00:00 2001
+Message-Id: <585a9ef8f821abd44121427ef7bf4aae38cf68de.1298580376.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 22 Feb 2011 10:21:02 +0800
+Subject: [PATCH] virsh: replace vshPrint with vshPrintExtra for snapshot list
+
+Otherwise extra information will be printed even if "--quiet"
+is specified.
+
+BZ# 678833
+https://bugzilla.redhat.com/show_bug.cgi?id=678833
+
+* tools/virsh.c
+(cherry picked from commit 8fcc76a6e248860162654d8a11254de0364146cc)
+---
+ tools/virsh.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 3d8f6ed..c696cec 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -9938,8 +9938,8 @@ cmdSnapshotList(vshControl *ctl, const vshCmd *cmd)
+     if (numsnaps < 0)
+         goto cleanup;
+ 
+-    vshPrint(ctl, " %-20s %-25s %s\n", _("Name"), _("Creation Time"), _("State"));
+-    vshPrint(ctl, "---------------------------------------------------\n");
++    vshPrintExtra(ctl, " %-20s %-25s %s\n", _("Name"), _("Creation Time"), _("State"));
++    vshPrintExtra(ctl, "---------------------------------------------------\n");
+ 
+     if (numsnaps) {
+         if (VIR_ALLOC_N(names, numsnaps) < 0)
+-- 
+1.7.4.1
+

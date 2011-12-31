@@ -1,0 +1,135 @@
+From a0ad2a96c635d5018d2cda8d152ab7781e5a7758 Mon Sep 17 00:00:00 2001
+Message-Id: <a0ad2a96c635d5018d2cda8d152ab7781e5a7758.1296819816.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 28 Jan 2011 10:29:08 -0700
+Subject: [PATCH] qemu aio: enable support
+
+qemu allows the user to choose what io storage api should be used,
+either the default (threads) or native (linux aio) which in the latter
+case can result in better performance.
+
+Based on a patch originally by Matthias Dahl.
+
+Red Hat Bugzilla #591703
+https://bugzilla.redhat.com/show_bug.cgi?id=591703
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 819269c4f0aa8a3117d30cd12d01eb401bdf585a)
+---
+ src/qemu/qemu_command.c                           |   17 +++++++++++
+ tests/qemuxml2argvdata/qemuxml2argv-disk-aio.args |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-disk-aio.xml  |   33 +++++++++++++++++++++
+ tests/qemuxml2argvtest.c                          |    2 +
+ tests/qemuxml2xmltest.c                           |    1 +
+ 5 files changed, 54 insertions(+), 0 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-disk-aio.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-disk-aio.xml
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 3d2bd94..863caff 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1328,6 +1328,18 @@ qemuBuildDriveStr(virDomainDiskDefPtr disk,
+         }
+     }
+ 
++    if (disk->iomode) {
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_DRIVE_AIO) {
++            virBufferVSprintf(&opt, ",aio=%s",
++                              virDomainDiskIoTypeToString(disk->iomode));
++        } else {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                            _("disk aio mode not supported with this "
++                              "QEMU binary"));
++            goto error;
++        }
++    }
++
+     if (virBufferError(&opt)) {
+         virReportOOMError();
+         goto error;
+@@ -4554,6 +4566,11 @@ qemuParseCommandLineDisk(virCapsPtr caps,
+         } else if (STREQ(keywords[i], "readonly")) {
+             if ((values[i] == NULL) || STREQ(values[i], "on"))
+                 def->readonly = 1;
++        } else if (STREQ(keywords[i], "aio")) {
++            if ((def->iomode = virDomainDiskIoTypeFromString(values[i])) < 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                _("cannot parse io mode '%s'"), values[i]);
++            }
+         }
+     }
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.args b/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.args
+new file mode 100644
+index 0000000..15d2a1b
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -drive file=/dev/HostVG/QEMUGuest1,if=ide,bus=0,unit=0,format=qcow2,cache=none,aio=native -drive file=/dev/HostVG/QEMUGuest2,if=ide,media=cdrom,bus=1,unit=0,format=raw,aio=threads -net none -serial none -parallel none -usb
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.xml
+new file mode 100644
+index 0000000..d893736
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-aio.xml
+@@ -0,0 +1,33 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none' io='native'/>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <disk type='block' device='cdrom'>
++      <driver name='qemu' type='raw' io='threads'/>
++      <source dev='/dev/HostVG/QEMUGuest2'/>
++      <target dev='hdc' bus='ide'/>
++      <readonly/>
++      <address type='drive' controller='0' bus='1' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 72915ec..ddea010 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -321,6 +321,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_NODEFCONFIG, false);
+     DO_TEST("disk-scsi-device-auto", QEMUD_CMD_FLAG_DRIVE |
+             QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_NODEFCONFIG, false);
++    DO_TEST("disk-aio", QEMUD_CMD_FLAG_DRIVE | QEMUD_CMD_FLAG_DRIVE_AIO |
++            QEMUD_CMD_FLAG_DRIVE_CACHE_V2 | QEMUD_CMD_FLAG_DRIVE_FORMAT, false);
+     DO_TEST("graphics-vnc", 0, false);
+     DO_TEST("graphics-vnc-socket", 0, false);
+ 
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 3572605..52debb3 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -132,6 +132,7 @@ mymain(int argc, char **argv)
+     DO_TEST("clock-utc");
+     DO_TEST("clock-localtime");
+     DO_TEST("hugepages");
++    DO_TEST("disk-aio");
+     DO_TEST("disk-cdrom");
+     DO_TEST("disk-floppy");
+     DO_TEST("disk-many");
+-- 
+1.7.4
+

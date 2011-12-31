@@ -1,0 +1,42 @@
+From 5bbc88b9448ef856fd8088021b0b3819f6e3906a Mon Sep 17 00:00:00 2001
+Message-Id: <5bbc88b9448ef856fd8088021b0b3819f6e3906a.1294615754.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 17 Dec 2010 14:55:27 +0100
+Subject: [PATCH] Turn on JSON mode and -netdev usage for RHEL6 binary
+
+RHEL-6 only, no upstream
+
+The RHEL6 KVM lives in /usr/libexec. We use this as an indication
+that we can prematurely turn on JSON & -netdev usage for QEMU
+
+* src/qemu/qemu_conf.c: Turn on JSON mode and -netdev usage for
+  RHEL6 binary
+---
+ src/qemu/qemu_capabilities.c |   11 +++++++++++
+ 1 files changed, 11 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 3d10b42..77a028d 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1174,6 +1174,17 @@ int qemuCapsExtractVersionInfo(const char *qemu,
+                              &version, &is_kvm, &kvm_version) == -1)
+         goto cleanup2;
+ 
++    /*
++     * RHEL-6 specific hack to enable some features that were backported
++     * Only RHEL-6 puts KVM in /usr/libexec, so we hook off that since
++     * version numbers don't place nice with backports
++     */
++    if (STREQ(qemu, "/usr/libexec/qemu-kvm") &&
++        version >= 12000) {
++        flags |= QEMUD_CMD_FLAG_MONITOR_JSON;
++        flags |= QEMUD_CMD_FLAG_NETDEV;
++    }
++
+     if (flags & QEMUD_CMD_FLAG_DEVICE)
+         qemuCapsParsePCIDeviceStrs(qemu, &flags);
+ 
+-- 
+1.7.4.rc1
+

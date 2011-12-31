@@ -1,0 +1,47 @@
+From 93494721858ac7636a1e309ed74a1175b8a67ce9 Mon Sep 17 00:00:00 2001
+Message-Id: <93494721858ac7636a1e309ed74a1175b8a67ce9.1296819816.git.jdenemar@redhat.com>
+From: Hu Tao <hutao@cn.fujitsu.com>
+Date: Thu, 3 Feb 2011 17:02:58 -0700
+Subject: [PATCH] qemu: Report more accurate error on failure to attach device.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=675030
+
+When attaching device from a xml file and the device is mis-configured,
+virsh gives mis-leading message "out of memory". This patch fixes this.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit cdbba1c4960a22b5f8c034dd9257bec2d5fa38d6)
+---
+ src/qemu/qemu_command.c |    3 +++
+ src/qemu/qemu_hotplug.c |    1 -
+ 2 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 863caff..f2c86c2 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1508,6 +1508,9 @@ qemuBuildControllerDevStr(virDomainControllerDefPtr def)
+     /* We always get an IDE controller, whether we want it or not. */
+     case VIR_DOMAIN_CONTROLLER_TYPE_IDE:
+     default:
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("Unknown controller type: %s"),
++                        virDomainControllerTypeToString(def->type));
+         goto error;
+     }
+ 
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 67008fb..d3a9c2e 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -270,7 +270,6 @@ int qemuDomainAttachPciControllerDevice(struct qemud_driver *driver,
+             goto cleanup;
+ 
+         if (!(devstr = qemuBuildControllerDevStr(controller))) {
+-            virReportOOMError();
+             goto cleanup;
+         }
+     }
+-- 
+1.7.4
+

@@ -1,0 +1,39 @@
+From 20a4dcd180d2abe8699454fd3186e33b6b2380e4 Mon Sep 17 00:00:00 2001
+Message-Id: <20a4dcd180d2abe8699454fd3186e33b6b2380e4.1300223308.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Mon, 14 Mar 2011 15:25:17 +0800
+Subject: [PATCH] virsh: Free stream when shutdown console
+
+Otherwise connection of hypervisor driver will be leaked when
+one shutdown the guest in console. e.g.
+
+[root@localhost]# init 0
+......
+init: Re-executing /sbin/init
+Halting system...
+Power down.
+
+error: Failed to disconnect from the hypervisor, 1 leaked reference(s)
+(cherry picked from commit abfa97a2259e4b9cc8843b164e94c0e4aa26ec57)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=682741
+---
+ tools/console.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/tools/console.c b/tools/console.c
+index e126320..444e901 100644
+--- a/tools/console.c
++++ b/tools/console.c
+@@ -93,6 +93,8 @@ virConsoleShutdown(virConsolePtr con)
+ {
+     con->quit = true;
+     virStreamEventRemoveCallback(con->st);
++    if (con->st)
++        virStreamFree(con->st);
+     if (con->stdinWatch != -1)
+         virEventRemoveHandleImpl(con->stdinWatch);
+     if (con->stdinWatch != -1)
+-- 
+1.7.4.1
+

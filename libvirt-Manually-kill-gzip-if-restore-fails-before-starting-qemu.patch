@@ -1,0 +1,49 @@
+From 1344023df2cbce0ff35f7cc62a3f8fd3c6b20fbe Mon Sep 17 00:00:00 2001
+Message-Id: <1344023df2cbce0ff35f7cc62a3f8fd3c6b20fbe.1296166858.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Wed, 26 Jan 2011 16:22:09 -0500
+Subject: [PATCH] Manually kill gzip if restore fails before starting qemu
+
+This patch is a direct cherry-pick of upstream commit
+c9c794b52bea18d998e9affa0c166c6bcf475348
+and was encountered while fixing:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=667756
+
+If a guest image is saved in compressed format, and the restore fails
+in some way after the intermediate process used to uncompress the
+image has been started, but before qemu has been started to hook up to
+the uncompressor, libvirt will endlessly wait for the uncompressor to
+finish, but it never will because it's still waiting to have something
+hooked up to drain its output.
+
+The solution is to close the pipes on both sides of the uncompressor,
+then send a SIGTERM before calling waitpid on it (only if the restore
+has failed, of course).
+---
+ src/qemu/qemu_driver.c |    9 +++++++++
+ 1 files changed, 9 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index c7e425c..4072171 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6187,6 +6187,15 @@ qemudDomainSaveImageStartVM(virConnectPtr conn,
+                              VIR_VM_OP_RESTORE);
+ 
+     if (intermediate_pid != -1) {
++        if (ret < 0) {
++            /* if there was an error setting up qemu, the intermediate process will
++             * wait forever to write to stdout, so we must manually kill it.
++             */
++            VIR_FORCE_CLOSE(intermediatefd);
++            VIR_FORCE_CLOSE(fd);
++            kill(intermediate_pid, SIGTERM);
++        }
++
+         /* Wait for intermediate process to exit */
+         while (waitpid(intermediate_pid, &childstat, 0) == -1 &&
+                errno == EINTR) {
+-- 
+1.7.4.rc3
+

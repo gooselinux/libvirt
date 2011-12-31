@@ -1,0 +1,132 @@
+From f5af14fc481588fede3b5d25203b03964dc9d22d Mon Sep 17 00:00:00 2001
+Message-Id: <f5af14fc481588fede3b5d25203b03964dc9d22d.1300791642.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 21 Mar 2011 11:34:46 -0600
+Subject: [PATCH] qemu: simplify PCI configfd handling in monitor
+
+https://bugzilla.redhat.com/show_bug.cgi?id=687993
+
+This is also a bug fix - on the error path, qemu_hotplug would
+leave the configfd file leaked into qemu.  At least the next
+attempt to hotplug a PCI device would reuse the same fdname,
+and when the qemu getfd monitor command gets a new fd by the
+same name as an earlier one, it closes the earlier one, so there
+is no risk of qemu running out of fds.
+
+* src/qemu/qemu_monitor.h (qemuMonitorAddDeviceWithFd): New
+prototype.
+* src/qemu/qemu_monitor.c (qemuMonitorAddDevice): Move guts...
+(qemuMonitorAddDeviceWithFd): ...to new function, and add support
+for fd passing.
+* src/qemu/qemu_hotplug.c (qemuDomainAttachHostPciDevice): Use it
+to simplify code.
+Suggested by Daniel P. Berrange.
+(cherry picked from commit 098312391e4fba8a783877d223b502328cc67429)
+
+Conflicts:
+
+	src/qemu/qemu_monitor.c - DEBUG was renamed to VIR_DEBUG in upstream 994e756
+---
+ src/qemu/qemu_hotplug.c |   11 ++---------
+ src/qemu/qemu_monitor.c |   24 +++++++++++++++++++++---
+ src/qemu/qemu_monitor.h |    5 +++++
+ 3 files changed, 28 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 566e998..2301eb0 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -838,14 +838,6 @@ int qemuDomainAttachHostPciDevice(struct qemud_driver *driver,
+                     virReportOOMError();
+                     goto error;
+                 }
+-
+-                qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-                if (qemuMonitorSendFileHandle(priv->mon, configfd_name,
+-                                              configfd) < 0) {
+-                    qemuDomainObjExitMonitorWithDriver(driver, vm);
+-                    goto error;
+-                }
+-                qemuDomainObjExitMonitorWithDriver(driver, vm);
+             }
+         }
+ 
+@@ -860,7 +852,8 @@ int qemuDomainAttachHostPciDevice(struct qemud_driver *driver,
+             goto error;
+ 
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-        ret = qemuMonitorAddDevice(priv->mon, devstr);
++        ret = qemuMonitorAddDeviceWithFd(priv->mon, devstr,
++                                         configfd, configfd_name);
+         qemuDomainObjExitMonitorWithDriver(driver, vm);
+     } else {
+         virDomainDevicePCIAddress guestAddr;
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index fd629b8..a20fa06 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1904,10 +1904,13 @@ int qemuMonitorDelDevice(qemuMonitorPtr mon,
+ }
+ 
+ 
+-int qemuMonitorAddDevice(qemuMonitorPtr mon,
+-                         const char *devicestr)
++int qemuMonitorAddDeviceWithFd(qemuMonitorPtr mon,
++                               const char *devicestr,
++                               int fd,
++                               const char *fdname)
+ {
+-    DEBUG("mon=%p device=%s", mon, devicestr);
++    VIR_DEBUG("mon=%p device=%s fd=%d fdname=%s", mon, devicestr, fd,
++              NULLSTR(fdname));
+     int ret;
+ 
+     if (!mon) {
+@@ -1916,13 +1919,28 @@ int qemuMonitorAddDevice(qemuMonitorPtr mon,
+         return -1;
+     }
+ 
++    if (fd >= 0 && qemuMonitorSendFileHandle(mon, fdname, fd) < 0)
++        return -1;
++
+     if (mon->json)
+         ret = qemuMonitorJSONAddDevice(mon, devicestr);
+     else
+         ret = qemuMonitorTextAddDevice(mon, devicestr);
++
++    if (ret < 0 && fd >= 0) {
++        if (qemuMonitorCloseFileHandle(mon, fdname) < 0)
++            VIR_WARN("failed to close device handle '%s'", fdname);
++    }
++
+     return ret;
+ }
+ 
++int qemuMonitorAddDevice(qemuMonitorPtr mon,
++                         const char *devicestr)
++{
++    return qemuMonitorAddDeviceWithFd(mon, devicestr, -1, NULL);
++}
++
+ int qemuMonitorAddDrive(qemuMonitorPtr mon,
+                         const char *drivestr)
+ {
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 5ec9830..8a80fdb 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -390,6 +390,11 @@ int qemuMonitorGetAllPCIAddresses(qemuMonitorPtr mon,
+ int qemuMonitorAddDevice(qemuMonitorPtr mon,
+                          const char *devicestr);
+ 
++int qemuMonitorAddDeviceWithFd(qemuMonitorPtr mon,
++                               const char *devicestr,
++                               int fd,
++                               const char *fdname);
++
+ int qemuMonitorDelDevice(qemuMonitorPtr mon,
+                          const char *devalias);
+ 
+-- 
+1.7.4.1
+

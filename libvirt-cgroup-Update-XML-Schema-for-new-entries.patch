@@ -1,0 +1,68 @@
+From cbfd1dd9077dcc217b29e0fccc0e7924dfed120e Mon Sep 17 00:00:00 2001
+Message-Id: <cbfd1dd9077dcc217b29e0fccc0e7924dfed120e.1297440281.git.jdenemar@redhat.com>
+From: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+Date: Tue, 8 Feb 2011 14:58:25 +0800
+Subject: [PATCH] cgroup: Update XML Schema for new entries.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=632492
+
+Update XML Schema for new entries.
+
+Signed-off-by: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+(cherry picked from commit 7c8c183e247ba1b917e66293a199be2b3c6cdf88)
+---
+ docs/schemas/domain.rng |   22 +++++++++++++++++++++-
+ 1 files changed, 21 insertions(+), 1 deletions(-)
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index e430348..0f57866 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -311,6 +311,18 @@
+         </element>
+       </optional>
+ 
++      <!-- The Blkio cgroup related tunables would go in the blkiotune -->
++      <optional>
++        <element name="blkiotune">
++          <!-- I/O weight the VM can use -->
++          <optional>
++            <element name="weight">
++              <ref name="weight"/>
++            </element>
++          </optional>
++        </element>
++      </optional>
++
+       <!-- All the memory/swap related tunables would go in the memtune -->
+       <optional>
+         <element name="memtune">
+@@ -2140,9 +2152,10 @@
+        Type library
+ 
+        Our unsignedInt doesn't allow a leading '+' in its lexical form
+-       A domain name shoul be made of ascii, numbers, _-+ and is non-empty
++       A domain name should be made of ascii, numbers, _-+ and is non-empty
+        UUID currently allows only the 32 characters strict syntax
+        memoryKB request at least 4Mbytes though Xen will grow bigger if too low
++       weight currently is in range [100, 1000]
+     -->
+   <define name="unsignedInt">
+     <data type="unsignedInt">
+@@ -2175,6 +2188,13 @@
+       <param name="minInclusive">-1</param>
+     </data>
+   </define>
++  <define name="weight">
++    <data type="unsignedInt">
++      <param name="pattern">[0-9]+</param>
++      <param name="minInclusive">100</param>
++      <param name="maxInclusive">1000</param>
++    </data>
++  </define>
+   <define name="memoryKB">
+     <data type="unsignedInt">
+       <param name="pattern">[0-9]+</param>
+-- 
+1.7.4
+

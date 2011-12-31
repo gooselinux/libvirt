@@ -1,0 +1,378 @@
+From 9f2f7b30d3b6ab8512d09868ec9350757a655d0a Mon Sep 17 00:00:00 2001
+Message-Id: <9f2f7b30d3b6ab8512d09868ec9350757a655d0a.1296838266.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 3 Feb 2011 22:54:35 -0700
+Subject: [PATCH] spicevmc: support new qemu chardev
+
+https://bugzilla.redhat.com/show_bug.cgi?id=591703
+
+Inspired by https://bugzilla.redhat.com/show_bug.cgi?id=615757
+
+Add a new character device backend for virtio serial channels that
+activates the QEMU spice agent on the main channel using the vdagent
+spicevmc connection.  The <target> must be type='virtio', and supports
+an optional name that specifies how the guest will see the channel
+(for now, name must be com.redhat.spice.0).
+
+<channel type='spicevmc'>
+  <target type='virtio'/>
+  <address type='virtio-serial' controller='1' bus='0' port='3'/>
+</channel>
+
+* docs/schemas/domain.rng: Support new XML.
+* docs/formatdomain.html.in: Document it.
+* src/conf/domain_conf.h (virDomainChrType): New enum value.
+* src/conf/domain_conf.c (virDomainChr): Add spicevmc.
+(virDomainChrDefParseXML, virDomainChrSourceDefParseXML)
+(virDomainChrDefParseTargetXML): Parse and enforce proper use.
+(virDomainChrSourceDefFormat, virDomainChrDefFormat): Format.
+* src/qemu/qemu_command.c (qemuBuildChrChardevStr)
+(qemuBuildCommandLine): Add qemu support.
+* tests/qemuxml2argvtest.c (domain): New test.
+* tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml: New
+file.
+* tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args:
+Likewise.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+
+(cherry picked from commit be87a1236eef208d11196627b159fdf41f1d8a67)
+---
+ docs/formatdomain.html.in                          |   17 +++++++
+ docs/schemas/domain.rng                            |    3 +-
+ src/conf/domain_conf.c                             |   18 +++++++-
+ src/conf/domain_conf.h                             |    2 +
+ src/qemu/qemu_command.c                            |   47 ++++++++++++++++---
+ .../qemuxml2argv-channel-spicevmc.args             |    9 ++++
+ .../qemuxml2argv-channel-spicevmc.xml              |   34 ++++++++++++++
+ tests/qemuxml2argvtest.c                           |    3 +
+ 8 files changed, 123 insertions(+), 10 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 9caed2b..edca651 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1652,6 +1652,9 @@ qemu-kvm -net nic,model=? /dev/null
+     &lt;channel type='pty'&gt;
+       &lt;target type='virtio' name='arbitrary.virtio.serial.port.name'/&gt;
+     &lt;/channel&gt;
++    &lt;channel type='spicevmc'&gt;
++      &lt;target type='virtio' name='com.redhat.spice.0'/&gt;
++    &lt;/channel&gt;
+   &lt;/devices&gt;
+   ...</pre>
+ 
+@@ -1677,6 +1680,20 @@ qemu-kvm -net nic,model=? /dev/null
+         optional element <code>address</code> can tie the channel to a
+         particular <code>type='virtio-serial'</code> controller.
+         <span class="since">Since 0.7.7</span></dd>
++
++      <dt><code>spicevmc</code></dt>
++      <dd>Paravirtualized SPICE channel. The domain must also have a
++        SPICE server as a <a href="#elementsGraphics">graphics
++        device</a>, at which point the host piggy-backs messages
++        across the <code>main</code> channel.  The <code>target</code>
++        element must be present, with
++        attribute <code>type='virtio'</code>; an optional
++        attribute <code>name</code> controls how the guest will have
++        access to the channel, and defaults
++        to <code>name='com.redhat.spice.0'</code>.  The
++        optional <code>address</code> element can tie the channel to a
++        particular <code>type='virtio-serial'</code> controller.
++        <span class="since">Since 0.8.8</span></dd>
+     </dl>
+ 
+     <h5><a name="elementsCharHostInterface">Host interface</a></h5>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 325be6e..22124df 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1475,6 +1475,7 @@
+         <value>stdio</value>
+         <value>vc</value>
+         <value>pty</value>
++        <value>spicevmc</value>
+       </choice>
+     </attribute>
+   </define>
+@@ -1604,7 +1605,7 @@
+   <define name="virtioTarget">
+     <element name="target">
+       <attribute name="type">
+-          <value>virtio</value>
++        <value>virtio</value>
+       </attribute>
+       <optional>
+         <attribute name="name"/>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index e592c62..477cf38 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -225,7 +225,8 @@ VIR_ENUM_IMPL(virDomainChr, VIR_DOMAIN_CHR_TYPE_LAST,
+               "stdio",
+               "udp",
+               "tcp",
+-              "unix")
++              "unix",
++              "spicevmc")
+ 
+ VIR_ENUM_IMPL(virDomainChrTcpProtocol, VIR_DOMAIN_CHR_TCP_PROTOCOL_LAST,
+               "raw",
+@@ -3064,6 +3065,7 @@ virDomainChrSourceDefParseXML(virDomainChrSourceDefPtr def,
+         break;
+ 
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
++    case VIR_DOMAIN_CHR_TYPE_SPICEVMC:
+         /* Nada */
+         break;
+ 
+@@ -3253,6 +3255,13 @@ virDomainChrDefParseXML(virCapsPtr caps,
+         }
+     }
+ 
++    if (def->source.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC &&
++        def->targetType != VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO) {
++        virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                             _("spicevmc device type only supports virtio"));
++        goto error;
++    }
++
+     if (virDomainDeviceInfoParseXML(node, &def->info, flags) < 0)
+         goto error;
+ 
+@@ -3360,6 +3369,12 @@ virDomainSmartcardDefParseXML(xmlNodePtr node,
+         cur = node->children;
+         if (virDomainChrSourceDefParseXML(&def->data.passthru, cur) < 0)
+             goto error;
++
++        if (def->data.passthru.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC) {
++            virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                 _("smartcard spicevmc device not supported"));
++            goto error;
++        }
+         break;
+ 
+     default:
+@@ -6842,6 +6857,7 @@ virDomainChrSourceDefFormat(virBufferPtr buf,
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+     case VIR_DOMAIN_CHR_TYPE_VC:
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
++    case VIR_DOMAIN_CHR_TYPE_SPICEVMC:
+         /* nada */
+         break;
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 5ccdbef..726d83a 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -413,6 +413,7 @@ enum virDomainChrType {
+     VIR_DOMAIN_CHR_TYPE_UDP,
+     VIR_DOMAIN_CHR_TYPE_TCP,
+     VIR_DOMAIN_CHR_TYPE_UNIX,
++    VIR_DOMAIN_CHR_TYPE_SPICEVMC,
+ 
+     VIR_DOMAIN_CHR_TYPE_LAST,
+ };
+@@ -432,6 +433,7 @@ typedef virDomainChrSourceDef *virDomainChrSourceDefPtr;
+ struct _virDomainChrSourceDef {
+     int type; /* virDomainChrType */
+     union {
++        /* no <source> for null, vc, stdio, spicevmc */
+         struct {
+             char *path;
+         } file; /* pty, file, pipe, or device */
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 83b7a15..f03f2eb 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2006,7 +2006,8 @@ qemuBuildUSBHostdevUsbDevStr(virDomainHostdevDefPtr dev)
+ /* This function outputs a -chardev command line option which describes only the
+  * host side of the character device */
+ static char *
+-qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
++qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias,
++                       unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     bool telnet;
+@@ -2072,6 +2073,21 @@ qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias)
+                           dev->data.nix.path,
+                           dev->data.nix.listen ? ",server,nowait" : "");
+         break;
++
++    case VIR_DOMAIN_CHR_TYPE_SPICEVMC:
++        if (!(qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV_SPICEVMC)) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            _("spicevmc not supported in this QEMU binary"));
++            goto error;
++        }
++        virBufferVSprintf(&buf, "spicevmc,id=char%s,name=vdagent", alias);
++        break;
++
++    default:
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("unsupported chardev '%s'"),
++                        virDomainChrTypeToString(dev->type));
++        goto error;
+     }
+ 
+     if (virBufferError(&buf)) {
+@@ -2196,6 +2212,14 @@ qemuBuildVirtioSerialPortDevStr(virDomainChrDefPtr dev)
+ 
+     virBufferVSprintf(&buf, ",chardev=char%s,id=%s",
+                       dev->info.alias, dev->info.alias);
++    if (dev->source.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC &&
++        dev->target.name &&
++        STRNEQ(dev->target.name, "com.redhat.spice.0")) {
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("Unsupported spicevmc target name '%s'"),
++                        dev->target.name);
++        goto error;
++    }
+     if (dev->target.name) {
+         virBufferVSprintf(&buf, ",name=%s", dev->target.name);
+     }
+@@ -2825,7 +2849,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+         if (qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) {
+ 
+             virCommandAddArg(cmd, "-chardev");
+-            if (!(chrdev = qemuBuildChrChardevStr(monitor_chr, "monitor")))
++            if (!(chrdev = qemuBuildChrChardevStr(monitor_chr, "monitor",
++                                                  qemuCmdFlags)))
+                 goto error;
+             virCommandAddArg(cmd, chrdev);
+             VIR_FREE(chrdev);
+@@ -3523,7 +3548,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+             virCommandAddArg(cmd, "-chardev");
+             if (!(devstr = qemuBuildChrChardevStr(&smartcard->data.passthru,
+-                                                  smartcard->info.alias))) {
++                                                  smartcard->info.alias,
++                                                  qemuCmdFlags))) {
+                 virBufferFreeAndReset(&opt);
+                 goto error;
+             }
+@@ -3560,7 +3586,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+                 virCommandAddArg(cmd, "-chardev");
+                 if (!(devstr = qemuBuildChrChardevStr(&serial->source,
+-                                                      serial->info.alias)))
++                                                      serial->info.alias,
++                                                      qemuCmdFlags)))
+                     goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3592,7 +3619,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+                 virCommandAddArg(cmd, "-chardev");
+                 if (!(devstr = qemuBuildChrChardevStr(&parallel->source,
+-                                                      parallel->info.alias)))
++                                                      parallel->info.alias,
++                                                      qemuCmdFlags)))
+                     goto error;
+                 virCommandAddArg(cmd, devstr);
+                 VIR_FREE(devstr);
+@@ -3626,7 +3654,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+             virCommandAddArg(cmd, "-chardev");
+             if (!(devstr = qemuBuildChrChardevStr(&channel->source,
+-                                                  channel->info.alias)))
++                                                  channel->info.alias,
++                                                  qemuCmdFlags)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+@@ -3653,7 +3682,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+             virCommandAddArg(cmd, "-chardev");
+             if (!(devstr = qemuBuildChrChardevStr(&channel->source,
+-                                                  channel->info.alias)))
++                                                  channel->info.alias,
++                                                  qemuCmdFlags)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+@@ -3682,7 +3712,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+             virCommandAddArg(cmd, "-chardev");
+             if (!(devstr = qemuBuildChrChardevStr(&console->source,
+-                                                  console->info.alias)))
++                                                  console->info.alias,
++                                                  qemuCmdFlags)))
+                 goto error;
+             virCommandAddArg(cmd, devstr);
+             VIR_FREE(devstr);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+new file mode 100644
+index 0000000..681f7c2
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.args
+@@ -0,0 +1,9 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice \
++/usr/bin/qemu -S -M pc -m 214 -smp 1 -nodefconfig -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device \
++virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -hda \
++/dev/HostVG/QEMUGuest1 -chardev spicevmc,id=charchannel0,name=vdagent -device \
++virtserialport,bus=virtio-serial1.0,nr=3,chardev=charchannel0,id=channel0\
++,name=com.redhat.spice.0 -usb -spice port=5903,tls-port=5904,addr=127.0.0.1,\
++x509-dir=/etc/pki/libvirt-spice,tls-channel=main -device \
++virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+new file mode 100644
+index 0000000..0e82394
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-spicevmc.xml
+@@ -0,0 +1,34 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <vcpu cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <graphics type='spice' port='5903' tlsPort='5904' autoport='no' listen='127.0.0.1'>
++      <channel name='main' mode='secure'/>
++    </graphics>
++    <channel type='spicevmc'>
++      <target type='virtio' name='com.redhat.spice.0'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 0b4bfeb..0726130 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -407,6 +407,9 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NODEFCONFIG, false);
+     DO_TEST("console-virtio", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG, false);
++    DO_TEST("channel-spicevmc", QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_SPICE |
++            QEMUD_CMD_FLAG_CHARDEV_SPICEVMC, false);
+ 
+     DO_TEST("smartcard-host",
+             QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
+-- 
+1.7.4
+

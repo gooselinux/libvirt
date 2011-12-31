@@ -1,0 +1,51 @@
+From 529635954f2a8b66ef6d2b9aa4044457b7a049a8 Mon Sep 17 00:00:00 2001
+Message-Id: <529635954f2a8b66ef6d2b9aa4044457b7a049a8.1297957055.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Mon, 14 Feb 2011 09:35:47 +0000
+Subject: [PATCH] Fix cleanup on VM state after failed QEMU startup
+
+This fixes a bug in a patch for
+    https://bugzilla.redhat.com/show_bug.cgi?id=673588
+
+Commit 9962e406c664ed5521f5aca500c860a331cb3979 introduced a
+problem where if the VM failed to startup, it would not be
+correctly cleaned up. Amongst other things the SELinux
+security label would not be removed, which prevents the VM
+from ever starting again.
+
+The virDomainIsActive() check at the start of qemudShutdownVMDaemon
+checks for vm->def->id not being -1. By moving the assignment of the
+VM id to the start of qemudStartVMDaemon, we can ensure cleanup will
+occur on failure
+
+* src/qemu/qemu_driver.c: Move initialization of 'vm->def->id'
+  so that qemudShutdownVMDaemon() will process the shutdown
+(cherry picked from commit 41f551e25eaaf6a978ffcf4edd1e441a4fb96cd9)
+---
+ src/qemu/qemu_driver.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 4c1f066..3cdb462 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3046,6 +3046,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     if (virDomainObjSetDefTransient(driver->caps, vm, true) < 0)
+         goto cleanup;
+ 
++    vm->def->id = driver->nextvmid++;
++
+     /* Must be run before security labelling */
+     DEBUG0("Preparing host devices");
+     if (qemuPrepareHostDevices(driver, vm->def) < 0)
+@@ -3220,7 +3222,6 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     }
+ 
+     DEBUG0("Building emulator command line");
+-    vm->def->id = driver->nextvmid++;
+     if (!(cmd = qemuBuildCommandLine(conn, driver, vm->def, priv->monConfig,
+                                      priv->monJSON != 0, qemuCmdFlags,
+                                      migrateFrom, stdin_fd,
+-- 
+1.7.4.1
+

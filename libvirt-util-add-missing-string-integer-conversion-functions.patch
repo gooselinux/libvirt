@@ -1,0 +1,253 @@
+From 875d1875b5f0b1afbdc304735afd857cc57617cd Mon Sep 17 00:00:00 2001
+Message-Id: <875d1875b5f0b1afbdc304735afd857cc57617cd.1295285119.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 14 Jan 2011 15:06:09 -0500
+Subject: [PATCH] util: add missing string->integer conversion functions
+
+Upstream libvirt commit 1ff03b28e938dd0cbde076aa0875f46d0ce52d30
+
+NOTE: This patch is a prerequisite for Patch 3/3 (Enable tuning of
+qemu network tap device "sndbuf" size), which addresses:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=665293
+It was awkward having only int conversion in the virStrToLong family,
+but only long conversion in the virXPath family.  Make both families
+support both types.
+
+* src/util/util.h (virStrToLong_l, virStrToLong_ul): New
+prototypes.
+* src/util/xml.h (virXPathInt, virXPathUInt): Likewise.
+* src/util/util.c (virStrToLong_l, virStrToLong_ul): New
+functions.
+* src/util/xml.c (virXPathInt, virXPathUInt): Likewise.
+* src/libvirt_private.syms (util.h, xml.h): Export them.
+---
+ src/libvirt_private.syms |    4 +++
+ src/util/util.c          |   40 +++++++++++++++++++++++++++++-
+ src/util/util.h          |    8 ++++++
+ src/util/xml.c           |   60 +++++++++++++++++++++++++++++++++++++++++++++-
+ src/util/xml.h           |   12 +++++++--
+ 5 files changed, 119 insertions(+), 5 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index d684531..a1a384c 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -866,8 +866,10 @@ virSetUIDGID;
+ virSkipSpaces;
+ virStrToDouble;
+ virStrToLong_i;
++virStrToLong_l;
+ virStrToLong_ll;
+ virStrToLong_ui;
++virStrToLong_ul;
+ virStrToLong_ull;
+ virStrcpy;
+ virStrncpy;
+@@ -907,6 +909,7 @@ virStrerror;
+ virXMLParseStrHelper;
+ virXMLPropString;
+ virXPathBoolean;
++virXPathInt;
+ virXPathLong;
+ virXPathLongHex;
+ virXPathLongLong;
+@@ -915,6 +918,7 @@ virXPathNodeSet;
+ virXPathNumber;
+ virXPathString;
+ virXPathStringLimit;
++virXPathUInt;
+ virXPathULong;
+ virXPathULongHex;
+ virXPathULongLong;
+diff --git a/src/util/util.c b/src/util/util.c
+index 60feb79..6d63732 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -2064,7 +2064,45 @@ virStrToLong_ui(char const *s, char **end_ptr, int base, unsigned int *result)
+     return 0;
+ }
+ 
+-/* Just like virStrToLong_i, above, but produce an "long long" value.  */
++/* Just like virStrToLong_i, above, but produce a "long" value.  */
++int
++virStrToLong_l(char const *s, char **end_ptr, int base, long *result)
++{
++    long int val;
++    char *p;
++    int err;
++
++    errno = 0;
++    val = strtol(s, &p, base);
++    err = (errno || (!end_ptr && *p) || p == s);
++    if (end_ptr)
++        *end_ptr = p;
++    if (err)
++        return -1;
++    *result = val;
++    return 0;
++}
++
++/* Just like virStrToLong_i, above, but produce an "unsigned long" value.  */
++int
++virStrToLong_ul(char const *s, char **end_ptr, int base, unsigned long *result)
++{
++    unsigned long int val;
++    char *p;
++    int err;
++
++    errno = 0;
++    val = strtoul(s, &p, base);
++    err = (errno || (!end_ptr && *p) || p == s);
++    if (end_ptr)
++        *end_ptr = p;
++    if (err)
++        return -1;
++    *result = val;
++    return 0;
++}
++
++/* Just like virStrToLong_i, above, but produce a "long long" value.  */
+ int
+ virStrToLong_ll(char const *s, char **end_ptr, int base, long long *result)
+ {
+diff --git a/src/util/util.h b/src/util/util.h
+index 989962f..195f06f 100644
+--- a/src/util/util.h
++++ b/src/util/util.h
+@@ -187,6 +187,14 @@ int virStrToLong_ui(char const *s,
+                     char **end_ptr,
+                     int base,
+                     unsigned int *result);
++int virStrToLong_l(char const *s,
++                   char **end_ptr,
++                   int base,
++                   long *result);
++int virStrToLong_ul(char const *s,
++                    char **end_ptr,
++                    int base,
++                    unsigned long *result);
+ int virStrToLong_ll(char const *s,
+                     char **end_ptr,
+                     int base,
+diff --git a/src/util/xml.c b/src/util/xml.c
+index e2c2c6c..de5e9de 100644
+--- a/src/util/xml.c
++++ b/src/util/xml.c
+@@ -1,7 +1,7 @@
+ /*
+  * xml.c: XML based interfaces for the libvir library
+  *
+- * Copyright (C) 2005, 2007-2010 Red Hat, Inc.
++ * Copyright (C) 2005, 2007-2011 Red Hat, Inc.
+  *
+  * See COPYING.LIB for the License of this software
+  *
+@@ -195,6 +195,35 @@ virXPathLongBase(const char *xpath,
+ }
+ 
+ /**
++ * virXPathInt:
++ * @xpath: the XPath string to evaluate
++ * @ctxt: an XPath context
++ * @value: the returned int value
++ *
++ * Convenience function to evaluate an XPath number
++ *
++ * Returns 0 in case of success in which case @value is set,
++ *         or -1 if the XPath evaluation failed or -2 if the
++ *         value doesn't have an int format.
++ */
++int
++virXPathInt(const char *xpath,
++            xmlXPathContextPtr ctxt,
++            int *value)
++{
++    long tmp;
++    int ret;
++
++    ret = virXPathLongBase(xpath, ctxt, 10, &tmp);
++    if (ret < 0)
++        return ret;
++    if ((int) tmp != tmp)
++        return -2;
++    *value = tmp;
++    return 0;
++}
++
++/**
+  * virXPathLong:
+  * @xpath: the XPath string to evaluate
+  * @ctxt: an XPath context
+@@ -279,6 +308,35 @@ virXPathULongBase(const char *xpath,
+ }
+ 
+ /**
++ * virXPathUInt:
++ * @xpath: the XPath string to evaluate
++ * @ctxt: an XPath context
++ * @value: the returned int value
++ *
++ * Convenience function to evaluate an XPath number
++ *
++ * Returns 0 in case of success in which case @value is set,
++ *         or -1 if the XPath evaluation failed or -2 if the
++ *         value doesn't have an int format.
++ */
++int
++virXPathUInt(const char *xpath,
++             xmlXPathContextPtr ctxt,
++             unsigned int *value)
++{
++    unsigned long tmp;
++    int ret;
++
++    ret = virXPathULongBase(xpath, ctxt, 10, &tmp);
++    if (ret < 0)
++        return ret;
++    if ((unsigned int) tmp != tmp)
++        return -2;
++    *value = tmp;
++    return 0;
++}
++
++/**
+  * virXPathULong:
+  * @xpath: the XPath string to evaluate
+  * @ctxt: an XPath context
+diff --git a/src/util/xml.h b/src/util/xml.h
+index b1da741..b342e83 100644
+--- a/src/util/xml.h
++++ b/src/util/xml.h
+@@ -21,19 +21,25 @@ char *       virXPathStringLimit(const char *xpath,
+ int               virXPathNumber(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  double *value);
++int                  virXPathInt(const char *xpath,
++                                 xmlXPathContextPtr ctxt,
++                                 int *value);
++int                 virXPathUInt(const char *xpath,
++                                 xmlXPathContextPtr ctxt,
++                                 unsigned int *value);
+ int                 virXPathLong(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  long *value);
+-int                 virXPathULong(const char *xpath,
++int                virXPathULong(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  unsigned long *value);
+ int            virXPathULongLong(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  unsigned long long *value);
+-int	        virXPathLongLong(const char *xpath,
++int             virXPathLongLong(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  long long *value);
+-int		virXPathLongHex	(const char *xpath,
++int              virXPathLongHex(const char *xpath,
+                                  xmlXPathContextPtr ctxt,
+                                  long *value);
+ int             virXPathULongHex(const char *xpath,
+-- 
+1.7.4.rc2
+

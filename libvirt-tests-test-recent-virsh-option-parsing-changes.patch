@@ -1,0 +1,112 @@
+From 0bc476fbd5ce51b3e14cc3e27c7e0a41dd7a2897 Mon Sep 17 00:00:00 2001
+Message-Id: <0bc476fbd5ce51b3e14cc3e27c7e0a41dd7a2897.1303134272.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 15 Apr 2011 16:57:23 -0600
+Subject: [PATCH] tests: test recent virsh option parsing changes
+
+Tests for changes introduced by
+https://bugzilla.redhat.com/show_bug.cgi?id=693963
+
+* tests/virsh-optparse: New file.
+* tests/Makefile.am (test_scripts): Use it.
+(cherry picked from commit c2d92f6a9e2b19fb20f6a3b6b1838871a355d166)
+---
+ libvirt.spec.in      |    2 +
+ tests/Makefile.am    |    1 +
+ tests/virsh-optparse |   72 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 75 insertions(+), 0 deletions(-)
+ create mode 100755 tests/virsh-optparse
+
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 345cf46..0401556 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -148,6 +148,7 @@ test_scripts +=				\
+ 	undefine			\
+ 	vcpupin				\
+ 	virsh-all			\
++	virsh-optparse			\
+ 	virsh-schedinfo			\
+ 	virsh-synopsis
+ endif
+diff --git a/tests/virsh-optparse b/tests/virsh-optparse
+new file mode 100755
+index 0000000..092e80d
+--- /dev/null
++++ b/tests/virsh-optparse
+@@ -0,0 +1,72 @@
++#!/bin/sh
++# Ensure that virsh option parsing doesn't regress
++
++# Copyright (C) 2011 Red Hat, Inc.
++
++# This program is free software: you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation, either version 2 of the License, or
++# (at your option) any later version.
++
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++: ${srcdir=$(pwd)}
++: ${abs_top_srcdir=$(pwd)/..}
++: ${abs_top_builddir=$(pwd)/..}
++
++# If $abs_top_builddir/tools is not early in $PATH, put it there,
++# so that we can safely invoke "virsh" simply with its name.
++case $PATH in
++  $abs_top_builddir/tools/src:$abs_top_builddir/tools:*) ;;
++  $abs_top_builddir/tools:*) ;;
++  *) PATH=$abs_top_builddir/tools:$PATH; export PATH ;;
++esac
++
++if test "$VERBOSE" = yes; then
++  set -x
++  virsh --version
++fi
++
++. "$srcdir/test-lib.sh"
++
++cat <<\EOF > exp-out || framework_failure
++
++setvcpus: <domain> trying as domain NAME
++setvcpus: count(optdata): 2
++setvcpus: domain(optdata): test
++setvcpus: found option <domain>: test
++EOF
++
++fail=0
++
++test_url=test:///default
++
++for args in \
++    'test 2' \
++    '--domain test 2' \
++    '--domain=test 2' \
++    'test --count 2' \
++    'test --count=2' \
++    '--domain test --count 2' \
++    '--domain=test --count 2' \
++    '--domain test --count=2' \
++    '--domain=test --count=2' \
++    '--count 2 --domain test' \
++    '--count 2 --domain=test' \
++    '--count=2 --domain test' \
++    '--count=2 --domain=test' \
++    '--count 2 test' \
++    '--count=2 test' \
++; do
++  virsh -d5 -c $test_url setvcpus $args >out 2>>err || fail=1
++  LC_ALL=C sort out | compare - exp-out || fail=1
++done
++test -s err && fail=1
++
++(exit $fail); exit $fail
+-- 
+1.7.5.rc1
+

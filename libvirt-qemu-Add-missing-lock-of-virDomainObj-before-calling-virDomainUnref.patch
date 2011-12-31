@@ -1,0 +1,61 @@
+From ad3900d0f0611b90aa8e1549f31b02fa20627378 Mon Sep 17 00:00:00 2001
+Message-Id: <ad3900d0f0611b90aa8e1549f31b02fa20627378.1299265003.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Fri, 4 Mar 2011 08:29:15 -0500
+Subject: [PATCH] qemu: Add missing lock of virDomainObj before calling virDomainUnref
+
+This was found while researching the root cause of:
+
+    https://bugzilla.redhat.com/show_bug.cgi?id=670848
+
+and has been commited in upstream libvirt as:
+
+    commit e570ca1246667a72517357be7e8f75d217065880
+    Date:   Thu Mar 3 11:54:08 2011 -0500
+
+The RHEL6.1 version of the patch couldn't be cherry-picked because the
+code has been moved around too much, but the fix is identical.
+
+virDomainUnref should only be called with the lock held for the
+virDomainObj in question. However, when a transient qemu domain gets
+EOF on its monitor socket, it queues an event which frees the monitor,
+which unref's the virDomainObj without first locking it. If another
+thread has already locked the virDomainObj, the modification of the
+refcount could potentially be corrupted. In an extreme case, it could
+also be potentially unlocked by virDomainObjFree, thus left open to
+modification by anyone else who would have otherwise waited for the
+lock (not to mention the fact that they would be accessing freed
+data!).
+
+The solution is to have qemuMonitorFree lock the domain object right
+before unrefing it. Since the caller to qemuMonitorFree doesn't expect
+this lock to be held, if the refcount doesn't go all the way to 0,
+qemuMonitorFree must unlock it after the unref.
+---
+ src/qemu/qemu_driver.c |    8 ++++++--
+ 1 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a7e7205..8e40903 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1222,10 +1222,14 @@ no_memory:
+ static void qemuHandleMonitorDestroy(qemuMonitorPtr mon,
+                                      virDomainObjPtr vm)
+ {
+-    qemuDomainObjPrivatePtr priv = vm->privateData;
++    qemuDomainObjPrivatePtr priv;
++
++    virDomainObjLock(vm);
++    priv = vm->privateData;
+     if (priv->mon == mon)
+         priv->mon = NULL;
+-    virDomainObjUnref(vm);
++    if (virDomainObjUnref(vm) > 0)
++       virDomainObjUnlock(vm);
+ }
+ 
+ static qemuMonitorCallbacks monitorCallbacks = {
+-- 
+1.7.4.1
+

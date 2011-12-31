@@ -1,0 +1,63 @@
+From 12cb0d513784d5ac12e9bfbccbbc4eb0003a444e Mon Sep 17 00:00:00 2001
+Message-Id: <12cb0d513784d5ac12e9bfbccbbc4eb0003a444e.1297440281.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 11 Feb 2011 12:39:31 +0100
+Subject: [PATCH] cgroup: Enable cgroup hierarchy for blkio cgroup
+
+https://bugzilla.redhat.com/show_bug.cgi?id=632492
+
+Enable cgroup hierarchy for blkio cgroup
+
+Acked-by: Daniel P. Berrange <berrange@redhat.com>
+Signed-off-by: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+(cherry picked from commit b58241a6902285a598acde6387274658bbcce4ad)
+
+Conflicts:
+
+	AUTHORS
+---
+ AUTHORS           |    1 +
+ src/util/cgroup.c |    2 +-
+ src/util/cgroup.h |    1 +
+ 3 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 436c131..3988177 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -145,6 +145,7 @@ Patches have also been contributed by:
+   Kay Schubert         <kayegypt@web.de>
+   Matthias Dahl        <mdvirt@designassembly.de>
+   Niels de Vos         <ndevos@redhat.com>
++  Gui Jianfeng         <guijianfeng@cn.fujitsu.com>
+ 
+   [....send patches to get your name here....]
+ 
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index cd9caba..309f4e9 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -37,7 +37,7 @@
+ 
+ VIR_ENUM_IMPL(virCgroupController, VIR_CGROUP_CONTROLLER_LAST,
+               "cpu", "cpuacct", "cpuset", "memory", "devices",
+-              "freezer");
++              "freezer", "blkio");
+ 
+ struct virCgroupController {
+     int type;
+diff --git a/src/util/cgroup.h b/src/util/cgroup.h
+index 964da7a..67b1299 100644
+--- a/src/util/cgroup.h
++++ b/src/util/cgroup.h
+@@ -22,6 +22,7 @@ enum {
+     VIR_CGROUP_CONTROLLER_MEMORY,
+     VIR_CGROUP_CONTROLLER_DEVICES,
+     VIR_CGROUP_CONTROLLER_FREEZER,
++    VIR_CGROUP_CONTROLLER_BLKIO,
+ 
+     VIR_CGROUP_CONTROLLER_LAST
+ };
+-- 
+1.7.4
+

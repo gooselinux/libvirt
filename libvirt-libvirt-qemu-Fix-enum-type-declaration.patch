@@ -1,0 +1,31 @@
+From 01543a5fcc677a8a08ac2786ab117a8ff14c512c Mon Sep 17 00:00:00 2001
+Message-Id: <01543a5fcc677a8a08ac2786ab117a8ff14c512c.1297957055.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Mon, 14 Feb 2011 12:04:00 +0100
+Subject: [PATCH] libvirt-qemu: Fix enum type declaration
+
+This fixes a bug in the original patch for BZ:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=628940
+
+(cherry picked from commit 3ed18372a3531f7cd2ccb5a55f48744f8ace4916)
+---
+ include/libvirt/libvirt-qemu.h |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/include/libvirt/libvirt-qemu.h b/include/libvirt/libvirt-qemu.h
+index 9257c2f..f172eff 100644
+--- a/include/libvirt/libvirt-qemu.h
++++ b/include/libvirt/libvirt-qemu.h
+@@ -20,7 +20,7 @@
+ extern "C" {
+ # endif
+ 
+-enum {
++typedef enum {
+     VIR_DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT = 0,
+     VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP     = (1 << 0), /* cmd is in HMP */
+ } virDomainQemuMonitorCommandFlags;
+-- 
+1.7.4.1
+

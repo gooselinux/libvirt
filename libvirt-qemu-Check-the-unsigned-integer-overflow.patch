@@ -1,0 +1,51 @@
+From 2e4da16781fa6822f4cbd4038d7ba81db0980f33 Mon Sep 17 00:00:00 2001
+Message-Id: <2e4da16781fa6822f4cbd4038d7ba81db0980f33.1300223309.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 15 Mar 2011 12:15:47 +0800
+Subject: [PATCH] qemu: Check the unsigned integer overflow
+
+As perhaps other hypervisor drivers use different capacity units,
+do the checking in qemu driver instead of in conf/domain_conf.c.
+
+Cherry pick from acacced812b9402aa099baf10416eb37e34ad779
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673578
+---
+ src/qemu/qemu_command.c |   14 ++++++++++++++
+ 1 files changed, 14 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index adc6e22..ae665cf 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1902,6 +1902,13 @@ qemuBuildVideoDevStr(virDomainVideoDefPtr video,
+     virBufferVSprintf(&buf, ",id=%s", video->info.alias);
+ 
+     if (video->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
++        if (video->vram > (UINT_MAX / 1024)) {
++            qemuReportError(VIR_ERR_INVALID_ARG,
++                            _("value for 'vram' must be less than '%u'"),
++                            UINT_MAX / 1024);
++            goto error;
++        }
++
+         /* QEMU accepts bytes for vram_size. */
+         virBufferVSprintf(&buf, ",vram_size=%u", video->vram * 1024);
+     }
+@@ -4012,6 +4019,13 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 if (def->videos[0]->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
+                     if (def->videos[0]->vram &&
+                         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++                        if (def->videos[0]->vram > (UINT_MAX / 1024)) {
++                            qemuReportError(VIR_ERR_INVALID_ARG,
++                                            _("value for 'vram' must be less than '%u'"),
++                                            UINT_MAX / 1024);
++                            goto error;
++                        }
++
+                         virCommandAddArg(cmd, "-global");
+                         if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE_QXL_VGA)
+                             virCommandAddArgFormat(cmd, "qxl-vga.vram_size=%u",
+-- 
+1.7.4.1
+

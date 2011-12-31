@@ -1,0 +1,48 @@
+From e25d4e47a7b6e70116e37db7c00f64951dfaffa2 Mon Sep 17 00:00:00 2001
+Message-Id: <e25d4e47a7b6e70116e37db7c00f64951dfaffa2.1300791642.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 18 Mar 2011 12:02:31 -0600
+Subject: [PATCH] Add a little more debugging for async events
+
+https://bugzilla.redhat.com/show_bug.cgi?id=624252
+
+To make it easier to investigate problems with async event
+delivery, add two more debugging lines
+
+* daemon/remote.c: Debug when an event is queued for dispatch
+* src/remote/remote_driver.c: Debug when an event is received
+  for processing
+(cherry picked from commit 2222bd245979a85bcea1a39e8bb0baa1f88af035)
+---
+ daemon/remote.c            |    2 ++
+ src/remote/remote_driver.c |    1 +
+ 2 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/daemon/remote.c b/daemon/remote.c
+index 9dba325..6303e8c 100644
+--- a/daemon/remote.c
++++ b/daemon/remote.c
+@@ -5670,6 +5670,8 @@ remoteDispatchDomainEventSend (struct qemud_client *client,
+     msg->async = 1;
+     msg->bufferLength = len;
+     msg->bufferOffset = 0;
++
++    VIR_DEBUG("Queue event %d %d", procnr, msg->bufferLength);
+     qemudClientMessageQueuePush(&client->tx, msg);
+     qemudUpdateClientEvent(client);
+ 
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index 6199ab1..0c65068 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -9871,6 +9871,7 @@ processCallDispatch(virConnectPtr conn, struct private_data *priv,
+         break;
+ 
+     case REMOTE_MESSAGE: /* Async notifications */
++        VIR_DEBUG("Dispatch event %d %d", hdr.proc, priv->bufferLength);
+         rv = processCallDispatchMessage(conn, priv, flags & REMOTE_CALL_IN_OPEN,
+                                         &hdr, &xdr);
+         break;
+-- 
+1.7.4.1
+

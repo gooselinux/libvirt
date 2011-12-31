@@ -1,0 +1,289 @@
+From ce5edd10f3cdbf41d8eb615db72d92e4f55bf830 Mon Sep 17 00:00:00 2001
+Message-Id: <ce5edd10f3cdbf41d8eb615db72d92e4f55bf830.1296819816.git.jdenemar@redhat.com>
+From: Nikunj A. Dadhania <nikunj@linux.vnet.ibm.com>
+Date: Thu, 3 Feb 2011 23:04:39 -0700
+Subject: [PATCH] memtune: Let virsh know the unlimited value for memory tunables
+
+https://bugzilla.redhat.com/show_bug.cgi?id=669069
+
+Display or set unlimited values for memory parameters. Unlimited is
+represented by INT64_MAX in memory cgroup.
+
+Signed-off-by: Nikunj A. Dadhania <nikunj@linux.vnet.ibm.com>
+Reported-by: Justin Clift <jclift@redhat.com>
+(cherry picked from commit d94a14f89d2e421597c3d38e5e5e1c613629af06)
+---
+ include/libvirt/libvirt.h.in |    1 +
+ src/lxc/lxc_driver.c         |    2 +-
+ src/qemu/qemu_driver.c       |    2 +-
+ src/util/cgroup.c            |   78 +++++++++++++++++++++++++++++-------------
+ src/util/cgroup.h            |   14 ++++----
+ tools/virsh.c                |   11 +++++-
+ 6 files changed, 73 insertions(+), 35 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 3c6a54a..055eb2e 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -696,6 +696,7 @@ typedef enum {
+  */
+ 
+ #define VIR_DOMAIN_MEMORY_FIELD_LENGTH 80
++#define VIR_DOMAIN_MEMORY_PARAM_UNLIMITED (INT64_MAX >> 10)
+ 
+ /**
+  * VIR_DOMAIN_MEMORY_HARD_LIMIT:
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index 5eaccf8..821cdf2 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -815,7 +815,7 @@ static int lxcDomainGetMemoryParameters(virDomainPtr dom,
+     int i;
+     virCgroupPtr cgroup = NULL;
+     virDomainObjPtr vm = NULL;
+-    unsigned long val;
++    unsigned long long val;
+     int ret = -1;
+     int rc;
+ 
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ecf4c4b..709af80 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -7519,7 +7519,7 @@ static int qemuDomainGetMemoryParameters(virDomainPtr dom,
+     int i;
+     virCgroupPtr group = NULL;
+     virDomainObjPtr vm = NULL;
+-    unsigned long val;
++    unsigned long long val;
+     int ret = -1;
+     int rc;
+ 
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index 3ba6325..cd9caba 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -355,8 +355,6 @@ static int virCgroupSetValueU64(virCgroupPtr group,
+ }
+ 
+ 
+-#if 0
+-/* This is included for completeness, but not yet used */
+ 
+ static int virCgroupSetValueI64(virCgroupPtr group,
+                                 int controller,
+@@ -376,6 +374,8 @@ static int virCgroupSetValueI64(virCgroupPtr group,
+     return rc;
+ }
+ 
++#if 0
++/* This is included for completeness, but not yet used */
+ static int virCgroupGetValueI64(virCgroupPtr group,
+                                 int controller,
+                                 const char *key,
+@@ -858,12 +858,22 @@ int virCgroupForDomain(virCgroupPtr driver ATTRIBUTE_UNUSED,
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupSetMemory(virCgroupPtr group, unsigned long kb)
++int virCgroupSetMemory(virCgroupPtr group, unsigned long long kb)
+ {
+-    return virCgroupSetValueU64(group,
+-                                VIR_CGROUP_CONTROLLER_MEMORY,
+-                                "memory.limit_in_bytes",
+-                                kb << 10);
++    unsigned long long maxkb = VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
++
++    if (kb > maxkb)
++        return -EINVAL;
++    else if (kb == maxkb)
++        return virCgroupSetValueI64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.limit_in_bytes",
++                                    -1);
++    else
++        return virCgroupSetValueU64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.limit_in_bytes",
++                                    kb << 10);
+ }
+ 
+ /**
+@@ -894,7 +904,7 @@ int virCgroupGetMemoryUsage(virCgroupPtr group, unsigned long *kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupSetMemoryHardLimit(virCgroupPtr group, unsigned long kb)
++int virCgroupSetMemoryHardLimit(virCgroupPtr group, unsigned long long kb)
+ {
+     return virCgroupSetMemory(group, kb);
+ }
+@@ -907,7 +917,7 @@ int virCgroupSetMemoryHardLimit(virCgroupPtr group, unsigned long kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long *kb)
++int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long long *kb)
+ {
+     long long unsigned int limit_in_bytes;
+     int ret;
+@@ -915,7 +925,7 @@ int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long *kb)
+                                VIR_CGROUP_CONTROLLER_MEMORY,
+                                "memory.limit_in_bytes", &limit_in_bytes);
+     if (ret == 0)
+-        *kb = (unsigned long) limit_in_bytes >> 10;
++        *kb = limit_in_bytes >> 10;
+     return ret;
+ }
+ 
+@@ -927,12 +937,22 @@ int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long *kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupSetMemorySoftLimit(virCgroupPtr group, unsigned long kb)
++int virCgroupSetMemorySoftLimit(virCgroupPtr group, unsigned long long kb)
+ {
+-    return virCgroupSetValueU64(group,
+-                                VIR_CGROUP_CONTROLLER_MEMORY,
+-                                "memory.soft_limit_in_bytes",
+-                                kb << 10);
++    unsigned long long maxkb = VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
++
++    if (kb > maxkb)
++        return -EINVAL;
++    else if (kb == maxkb)
++        return virCgroupSetValueI64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.soft_limit_in_bytes",
++                                    -1);
++    else
++        return virCgroupSetValueU64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.soft_limit_in_bytes",
++                                    kb << 10);
+ }
+ 
+ 
+@@ -944,7 +964,7 @@ int virCgroupSetMemorySoftLimit(virCgroupPtr group, unsigned long kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long *kb)
++int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long long *kb)
+ {
+     long long unsigned int limit_in_bytes;
+     int ret;
+@@ -952,7 +972,7 @@ int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long *kb)
+                                VIR_CGROUP_CONTROLLER_MEMORY,
+                                "memory.soft_limit_in_bytes", &limit_in_bytes);
+     if (ret == 0)
+-        *kb = (unsigned long) limit_in_bytes >> 10;
++        *kb = limit_in_bytes >> 10;
+     return ret;
+ }
+ 
+@@ -964,12 +984,22 @@ int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long *kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupSetSwapHardLimit(virCgroupPtr group, unsigned long kb)
++int virCgroupSetSwapHardLimit(virCgroupPtr group, unsigned long long kb)
+ {
+-    return virCgroupSetValueU64(group,
+-                                VIR_CGROUP_CONTROLLER_MEMORY,
+-                                "memory.memsw.limit_in_bytes",
+-                                kb << 10);
++    unsigned long long maxkb = VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
++
++    if (kb > maxkb)
++        return -EINVAL;
++    else if (kb == maxkb)
++        return virCgroupSetValueI64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.memsw.limit_in_bytes",
++                                    -1);
++    else
++        return virCgroupSetValueU64(group,
++                                    VIR_CGROUP_CONTROLLER_MEMORY,
++                                    "memory.memsw.limit_in_bytes",
++                                    kb << 10);
+ }
+ 
+ /**
+@@ -980,7 +1010,7 @@ int virCgroupSetSwapHardLimit(virCgroupPtr group, unsigned long kb)
+  *
+  * Returns: 0 on success
+  */
+-int virCgroupGetSwapHardLimit(virCgroupPtr group, unsigned long *kb)
++int virCgroupGetSwapHardLimit(virCgroupPtr group, unsigned long long *kb)
+ {
+     long long unsigned int limit_in_bytes;
+     int ret;
+@@ -988,7 +1018,7 @@ int virCgroupGetSwapHardLimit(virCgroupPtr group, unsigned long *kb)
+                                VIR_CGROUP_CONTROLLER_MEMORY,
+                                "memory.memsw.limit_in_bytes", &limit_in_bytes);
+     if (ret == 0)
+-        *kb = (unsigned long) limit_in_bytes >> 10;
++        *kb = limit_in_bytes >> 10;
+     return ret;
+ }
+ 
+diff --git a/src/util/cgroup.h b/src/util/cgroup.h
+index 9e1c61f..964da7a 100644
+--- a/src/util/cgroup.h
++++ b/src/util/cgroup.h
+@@ -40,15 +40,15 @@ int virCgroupForDomain(virCgroupPtr driver,
+ 
+ int virCgroupAddTask(virCgroupPtr group, pid_t pid);
+ 
+-int virCgroupSetMemory(virCgroupPtr group, unsigned long kb);
++int virCgroupSetMemory(virCgroupPtr group, unsigned long long kb);
+ int virCgroupGetMemoryUsage(virCgroupPtr group, unsigned long *kb);
+ 
+-int virCgroupSetMemoryHardLimit(virCgroupPtr group, unsigned long kb);
+-int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long *kb);
+-int virCgroupSetMemorySoftLimit(virCgroupPtr group, unsigned long kb);
+-int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long *kb);
+-int virCgroupSetSwapHardLimit(virCgroupPtr group, unsigned long kb);
+-int virCgroupGetSwapHardLimit(virCgroupPtr group, unsigned long *kb);
++int virCgroupSetMemoryHardLimit(virCgroupPtr group, unsigned long long kb);
++int virCgroupGetMemoryHardLimit(virCgroupPtr group, unsigned long long *kb);
++int virCgroupSetMemorySoftLimit(virCgroupPtr group, unsigned long long kb);
++int virCgroupGetMemorySoftLimit(virCgroupPtr group, unsigned long long *kb);
++int virCgroupSetSwapHardLimit(virCgroupPtr group, unsigned long long kb);
++int virCgroupGetSwapHardLimit(virCgroupPtr group, unsigned long long *kb);
+ 
+ int virCgroupDenyAllDevices(virCgroupPtr group);
+ 
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 0772ff0..af28076 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -2998,8 +2998,11 @@ cmdMemtune(vshControl * ctl, const vshCmd * cmd)
+                              params[i].value.l);
+                     break;
+                 case VIR_DOMAIN_MEMORY_PARAM_ULLONG:
+-                    vshPrint(ctl, "%-15s: %llu\n", params[i].field,
+-                             params[i].value.ul);
++                    if (params[i].value.ul == VIR_DOMAIN_MEMORY_PARAM_UNLIMITED)
++                        vshPrint(ctl, "%-15s: unlimited\n", params[i].field);
++                    else
++                        vshPrint(ctl, "%-15s: %llu kB\n", params[i].field,
++                                 params[i].value.ul);
+                     break;
+                 case VIR_DOMAIN_MEMORY_PARAM_DOUBLE:
+                     vshPrint(ctl, "%-15s: %f\n", params[i].field,
+@@ -3050,6 +3053,10 @@ cmdMemtune(vshControl * ctl, const vshCmd * cmd)
+                         sizeof(temp->field));
+                 min_guarantee = 0;
+             }
++
++            /* If the user has passed -1, we interpret it as unlimited */
++            if (temp->value.ul == -1)
++                temp->value.ul = VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
+         }
+         if (virDomainSetMemoryParameters(dom, params, nparams, 0) != 0)
+             vshError(ctl, "%s", _("Unable to change memory parameters"));
+-- 
+1.7.4
+

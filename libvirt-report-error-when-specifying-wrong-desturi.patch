@@ -1,0 +1,56 @@
+From 57071f1c2d776957d2b0295719863a00312f0148 Mon Sep 17 00:00:00 2001
+Message-Id: <57071f1c2d776957d2b0295719863a00312f0148.1296819815.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 12 Jan 2011 14:12:29 +0800
+Subject: [PATCH] report error when specifying wrong desturi
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673434
+
+When we do peer2peer migration, the dest uri is an address of the
+target host as seen from the source machine. So we must specify
+the ip or hostname of target host in dest uri. If we do not specify
+it, report an error to the user.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit 59d13aae329ce7d4153e5f8a7d7ec94b779a610b)
+---
+ src/libvirt.c |   17 +++++++++++++++++
+ 1 files changed, 17 insertions(+), 0 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 89b37c5..15c2912 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -3571,12 +3571,29 @@ virDomainMigratePeer2Peer (virDomainPtr domain,
+                            const char *uri,
+                            unsigned long bandwidth)
+ {
++    xmlURIPtr tempuri = NULL;
++
+     if (!domain->conn->driver->domainMigratePerform) {
+         virLibConnError (domain->conn, VIR_ERR_NO_SUPPORT, __FUNCTION__);
+         virDispatchError(domain->conn);
+         return -1;
+     }
+ 
++    tempuri = xmlParseURI(uri);
++    if (!tempuri) {
++        virLibConnError (domain->conn, VIR_ERR_INVALID_ARG, __FUNCTION__);
++        virDispatchError(domain->conn);
++        return -1;
++    }
++
++    if (!tempuri->server || STRPREFIX(tempuri->server, "localhost")) {
++        virLibConnError(domain->conn, VIR_ERR_INVALID_ARG, __FUNCTION__);
++        virDispatchError(domain->conn);
++        xmlFreeURI(tempuri);
++        return -1;
++    }
++    xmlFreeURI(tempuri);
++
+     /* Perform the migration.  The driver isn't supposed to return
+      * until the migration is complete.
+      */
+-- 
+1.7.4
+

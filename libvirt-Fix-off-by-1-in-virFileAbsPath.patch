@@ -1,0 +1,62 @@
+From 6685814138fcf4ef51a5d880162ad5ea60076bbe Mon Sep 17 00:00:00 2001
+Message-Id: <6685814138fcf4ef51a5d880162ad5ea60076bbe.1298585339.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 24 Feb 2011 15:07:28 -0700
+Subject: [PATCH] Fix off-by-1 in virFileAbsPath.
+
+RHEL 6.1: https://bugzilla.redhat.com/show_bug.cgi?id=680281
+
+The virFileAbsPath was not taking into account the '/' directory
+separator when allocating memory for combining cwd + path. Convert
+to use virAsprintf to avoid this type of bug completely.
+
+* src/util/util.c: Convert virFileAbsPath to use virAsprintf
+(cherry picked from commit 9f5bbe3b926b52c6490346fd3c026546caadaefd)
+---
+ src/util/util.c |   20 ++++++--------------
+ 1 files changed, 6 insertions(+), 14 deletions(-)
+
+diff --git a/src/util/util.c b/src/util/util.c
+index 5e6c792..0fd1c8d 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -1963,30 +1963,22 @@ cleanup:
+ int virFileAbsPath(const char *path, char **abspath)
+ {
+     char *buf;
+-    int cwdlen;
+ 
+     if (path[0] == '/') {
+-        buf = strdup(path);
+-        if (buf == NULL)
+-            return(-1);
++        if (!(*abspath = strdup(path)))
++            return -1;
+     } else {
+         buf = getcwd(NULL, 0);
+         if (buf == NULL)
+-            return(-1);
++            return -1;
+ 
+-        cwdlen = strlen(buf);
+-        /* cwdlen includes the null terminator */
+-        if (VIR_REALLOC_N(buf, cwdlen + strlen(path) + 1) < 0) {
++        if (virAsprintf(abspath, "%s/%s", buf, path) < 0) {
+             VIR_FREE(buf);
+-            errno = ENOMEM;
+-            return(-1);
++            return -1;
+         }
+-
+-        buf[cwdlen] = '/';
+-        strcpy(&buf[cwdlen + 1], path);
++        VIR_FREE(buf);
+     }
+ 
+-    *abspath = buf;
+     return 0;
+ }
+ 
+-- 
+1.7.4.1
+

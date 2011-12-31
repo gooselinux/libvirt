@@ -1,0 +1,39 @@
+From 9841481d36bc25eed3c9479fa2861035a46329e8 Mon Sep 17 00:00:00 2001
+Message-Id: <9841481d36bc25eed3c9479fa2861035a46329e8.1296166858.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 27 Jan 2011 17:16:07 +0800
+Subject: [PATCH] qemu: report more proper error for unsupported graphics
+
+Report VIR_ERR_CONFIG_UNSUPPORTED instead of VIR_ERR_INTERNAL_ERROR,
+as it's valid in our domain schema, just unsupported by hypervisor
+here.
+
+BZ# 671319
+https://bugzilla.redhat.com/show_bug.cgi?id=671319
+
+* src/qemu/qemu_command.c
+(cherry picked from commit af268f2a36be381d2fef79d89ef542425fd2dc7c)
+---
+ src/qemu/qemu_command.c |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 85abc53..139224b 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3750,9 +3750,9 @@ qemuBuildCommandLine(virConnectPtr conn,
+         virCommandAddEnvString(cmd, "QEMU_AUDIO_DRV=spice");
+ 
+     } else if ((def->ngraphics == 1)) {
+-        qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                    _("unsupported graphics type '%s'"),
+-                    virDomainGraphicsTypeToString(def->graphics[0]->type));
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("unsupported graphics type '%s'"),
++                        virDomainGraphicsTypeToString(def->graphics[0]->type));
+         goto error;
+     }
+ 
+-- 
+1.7.4.rc3
+

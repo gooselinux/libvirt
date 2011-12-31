@@ -1,0 +1,66 @@
+From ec37e153bb551d6598ac693f60d31bb8ee397449 Mon Sep 17 00:00:00 2001
+Message-Id: <ec37e153bb551d6598ac693f60d31bb8ee397449.1297957056.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 17 Feb 2011 11:27:37 +0800
+Subject: [PATCH] qemu: Error prompt when saving a shutoff domain
+
+"qemudDomainSaveFlag" goto wrong label "endjob", which will cause
+error when security manager trying to restore label (regression).
+
+As it's more reasonable to check if vm is shutoff immediately, and
+return right away if it is, remove the checking in "qemudDomainSaveFlag",
+and add checking in "qemudDomainSave".
+
+BZ# 677547 (regression)
+https://bugzilla.redhat.com/show_bug.cgi?id=677547
+
+* src/qemu/qemu_driver.c
+(cherry picked from commit cd951ad2ec00f4a6a6f237d85eb0ee7e90207749)
+---
+ src/qemu/qemu_driver.c |   16 +++++++++-------
+ 1 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e2a301a..73f00d4 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4686,7 +4686,9 @@ endjob:
+     return ret;
+ }
+ 
+-/* this internal function expects the driver lock to already be held on entry */
++/* This internal function expects the driver lock to already be held on
++ * entry and the vm must be active.
++ */
+ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+                                virDomainObjPtr vm, const char *path,
+                                int compressed)
+@@ -4715,12 +4717,6 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+     if (qemuDomainObjBeginJobWithDriver(driver, vm) < 0)
+         goto cleanup;
+ 
+-    if (!virDomainObjIsActive(vm)) {
+-        qemuReportError(VIR_ERR_OPERATION_INVALID,
+-                        "%s", _("domain is not running"));
+-        goto endjob;
+-    }
+-
+     priv->jobActive = QEMU_JOB_SAVE;
+ 
+     memset(&priv->jobInfo, 0, sizeof(priv->jobInfo));
+@@ -5045,6 +5041,12 @@ static int qemudDomainSave(virDomainPtr dom, const char *path)
+         goto cleanup;
+     }
+ 
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_OPERATION_INVALID,
++                        "%s", _("domain is not running"));
++        goto cleanup;
++    }
++
+     ret = qemudDomainSaveFlag(driver, dom, vm, path, compressed);
+ 
+ cleanup:
+-- 
+1.7.4.1
+

@@ -1,0 +1,179 @@
+From bd15b3a9f54ec24dd6bb629816534df783b17885 Mon Sep 17 00:00:00 2001
+Message-Id: <bd15b3a9f54ec24dd6bb629816534df783b17885.1298580376.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Thu, 17 Feb 2011 15:26:33 -0500
+Subject: [PATCH] Restructure domain struct interface "driver" data for easier expansion
+
+This patch is a pure cherry-pick of upstream:
+
+  commit b670a41206701f6e1365b83dd5be704864aec9a7
+  Author: Laine Stump <laine@laine.org>
+  Date:   Thu Feb 3 13:52:08 2011 -0500
+
+It is a prerequisite patch to the patch that resolves:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=629662
+
+When the <driver> element (and its "name" attribute) was added to the
+domain XML's interface element, a "backend" enum was simply added to
+the toplevel of the virDomainNetDef struct.
+
+Ignoring the naming inconsistency ("name" vs. "backend"), this is fine
+when there's only a single item contained in the driver element of the
+XML, but doesn't scale well as we add more attributes that apply to
+the backend of the virtio-net driver, or add attributes applicable to
+other drivers.
+
+This patch changes virDomainNetDef in three ways:
+
+1) Rename the item in the struct from "backend" to "name", so that
+   it's the same in the XML and in the struct, hopefully avoiding
+   confusion for someone unfamiliar with the function of the
+   attribute.
+
+2) Create a "driver" union within virDomainNetDef, and a "virtio"
+   struct in that struct, which contains the "name" enum value.
+
+3) Move around the virDomainNetParse and virDomainNetFormat functions
+   to allow for simple plugin of new attributes without disturbing
+   existing code. (you'll note that this results in a seemingly
+   redundant if() in the format function, but that will no longer be
+   the case as soon as a 2nd attribute is added).
+
+In the future, new attributes for the virtio driver backend can be
+added to the "virtio" struct, and any other network device backend that
+needs an attribute will have its own struct added to the "driver"
+union.
+---
+ src/conf/domain_conf.c  |   35 +++++++++++++++++++++--------------
+ src/conf/domain_conf.h  |    6 +++++-
+ src/qemu/qemu_command.c |   12 ++++++------
+ 3 files changed, 32 insertions(+), 21 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 712c198..b3d1f94 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -2755,19 +2755,21 @@ virDomainNetDefParseXML(virCapsPtr caps,
+         model = NULL;
+     }
+ 
+-    if ((backend != NULL) &&
+-        (def->model && STREQ(def->model, "virtio"))) {
+-        int b;
+-        if (((b = virDomainNetBackendTypeFromString(backend)) < 0) ||
+-            (b == VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT)) {
+-            virDomainReportError(VIR_ERR_INTERNAL_ERROR,
+-                                 _("Unknown interface <driver name='%s'> "
+-                                   "has been specified"),
+-                                 backend);
+-            goto error;
++    if (def->model && STREQ(def->model, "virtio")) {
++        if (backend != NULL) {
++            int name;
++            if (((name = virDomainNetBackendTypeFromString(backend)) < 0) ||
++                (name == VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT)) {
++                virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                     _("Unknown interface <driver name='%s'> "
++                                       "has been specified"),
++                                     backend);
++                goto error;
++            }
++            def->driver.virtio.name = name;
+         }
+-        def->backend = b;
+     }
++
+     if (filter != NULL) {
+         switch (def->type) {
+         case VIR_DOMAIN_NET_TYPE_ETHERNET:
+@@ -6813,9 +6815,14 @@ virDomainNetDefFormat(virBufferPtr buf,
+     if (def->model) {
+         virBufferEscapeString(buf, "      <model type='%s'/>\n",
+                               def->model);
+-        if (STREQ(def->model, "virtio") && def->backend) {
+-            virBufferVSprintf(buf, "      <driver name='%s'/>\n",
+-                              virDomainNetBackendTypeToString(def->backend));
++        if (STREQ(def->model, "virtio") &&
++            def->driver.virtio.name) {
++            virBufferAddLit(buf, "      <driver");
++            if (def->driver.virtio.name) {
++                virBufferVSprintf(buf, " name='%s'",
++                                  virDomainNetBackendTypeToString(def->driver.virtio.name));
++            }
++            virBufferAddLit(buf, "/>\n");
+         }
+     }
+     if (def->filter) {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 1503ebb..45e1dc4 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -338,7 +338,11 @@ struct _virDomainNetDef {
+     enum virDomainNetType type;
+     unsigned char mac[VIR_MAC_BUFLEN];
+     char *model;
+-    enum virDomainNetBackendType backend;
++    union {
++        struct {
++            enum virDomainNetBackendType name; /* which driver backend to use */
++        } virtio;
++    } driver;
+     union {
+         struct {
+             char *dev;
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index e5357c7..4429490 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -311,7 +311,7 @@ qemuOpenVhostNet(virDomainNetDefPtr net,
+     *vhostfd = -1;   /* assume we won't use vhost */
+ 
+     /* If the config says explicitly to not use vhost, return now */
+-    if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_QEMU) {
++    if (net->driver.virtio.name == VIR_DOMAIN_NET_BACKEND_TYPE_QEMU) {
+        return 0;
+     }
+ 
+@@ -321,7 +321,7 @@ qemuOpenVhostNet(virDomainNetDefPtr net,
+     if (!(qemuCmdFlags & QEMUD_CMD_FLAG_VNET_HOST &&
+           qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV &&
+           qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+-        if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
++        if (net->driver.virtio.name == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
+             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             "%s", _("vhost-net is not supported with "
+                                     "this QEMU binary"));
+@@ -332,7 +332,7 @@ qemuOpenVhostNet(virDomainNetDefPtr net,
+ 
+     /* If the nic model isn't virtio, don't try to open. */
+     if (!(net->model && STREQ(net->model, "virtio"))) {
+-        if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
++        if (net->driver.virtio.name == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
+             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             "%s", _("vhost-net is only supported for "
+                                     "virtio network interfaces"));
+@@ -347,7 +347,7 @@ qemuOpenVhostNet(virDomainNetDefPtr net,
+      * report an error.
+      */
+     if ((*vhostfd < 0) &&
+-        (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST)) {
++        (net->driver.virtio.name == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST)) {
+         qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                         "%s", _("vhost-net was requested for an interface, "
+                                 "but is unavailable"));
+@@ -5018,9 +5018,9 @@ qemuParseCommandLineNet(virCapsPtr caps,
+             values[i] = NULL;
+         } else if (STREQ(keywords[i], "vhost")) {
+             if ((values[i] == NULL) || STREQ(values[i], "on")) {
+-                def->backend = VIR_DOMAIN_NET_BACKEND_TYPE_VHOST;
++                def->driver.virtio.name = VIR_DOMAIN_NET_BACKEND_TYPE_VHOST;
+             } else if (STREQ(keywords[i], "off")) {
+-                def->backend = VIR_DOMAIN_NET_BACKEND_TYPE_QEMU;
++                def->driver.virtio.name = VIR_DOMAIN_NET_BACKEND_TYPE_QEMU;
+             }
+         } else if (STREQ(keywords[i], "sndbuf") && values[i]) {
+             if (virStrToLong_ul(values[i], NULL, 10, &def->tune.sndbuf) < 0) {
+-- 
+1.7.4.1
+

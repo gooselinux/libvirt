@@ -1,0 +1,36 @@
+From d1e967c50a58a79690e111b3bd6ea03d47f92ebc Mon Sep 17 00:00:00 2001
+Message-Id: <d1e967c50a58a79690e111b3bd6ea03d47f92ebc.1296819816.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 28 Jan 2011 13:30:22 -0700
+Subject: [PATCH] Remove double close of qemu monitor
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673588
+
+When qemuMonitorSetCapabilities() fails, there is no need to
+call qemuMonitorClose(), because the caller will already see
+the error code and tear down the entire VM. The extra call to
+qemuMonitorClose resulted in a double-free due to it removing
+a ref count prematurely.
+
+* src/qemu/qemu_driver.c: Remove premature close of monitor
+(cherry picked from commit e85247e7c3a9ee2697b49ca5bbcabd3d2d493f95)
+---
+ src/qemu/qemu_driver.c |    2 --
+ 1 files changed, 0 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a926b6d..d26df73 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1288,8 +1288,6 @@ qemuConnectMonitor(struct qemud_driver *driver, virDomainObjPtr vm)
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+ error:
+-    if (ret < 0)
+-        qemuMonitorClose(priv->mon);
+ 
+     return ret;
+ }
+-- 
+1.7.4
+

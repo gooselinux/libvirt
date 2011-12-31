@@ -1,0 +1,53 @@
+From 02094811786e05d4731ed101c8ecff56ecf58c07 Mon Sep 17 00:00:00 2001
+Message-Id: <02094811786e05d4731ed101c8ecff56ecf58c07.1302097026.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 5 Apr 2011 14:47:12 +0200
+Subject: [PATCH] qemu: Ignore unusable binaries
+
+https://bugzilla.redhat.com/show_bug.cgi?id=676563
+
+When initializing qemu guest capabilities, we should ignore qemu
+binaries that we are not able to extract version/help info from since
+they will be unusable for creating domains anyway. Ignoring them is also
+much better than letting initialization of qemu driver fail.
+(cherry picked from commit ef264e82eeee72bea4e6d1332e0dd8bb9afa06ec)
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c - qemuCmdFlags refactoring
+---
+ src/qemu/qemu_capabilities.c |   11 ++++++++---
+ 1 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 34697d5..96eabe7 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -485,6 +485,12 @@ qemuCapsInitGuest(virCapsPtr caps,
+     if (!binary)
+         return 0;
+ 
++    /* Ignore binary if extracting version info fails */
++    if (qemuCapsExtractVersionInfo(binary, info->arch, NULL, &qemuCmdFlags) < 0) {
++        ret = 0;
++        goto cleanup;
++    }
++
+     if (stat(binary, &st) == 0) {
+         binary_mtime = st.st_mtime;
+     } else {
+@@ -549,9 +555,8 @@ qemuCapsInitGuest(virCapsPtr caps,
+         !virCapabilitiesAddGuestFeature(guest, "cpuselection", 1, 0))
+         goto error;
+ 
+-    if (qemuCapsExtractVersionInfo(binary, info->arch, NULL, &qemuCmdFlags) < 0 ||
+-        ((qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX) &&
+-         !virCapabilitiesAddGuestFeature(guest, "deviceboot", 1, 0)))
++    if ((qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX) &&
++        !virCapabilitiesAddGuestFeature(guest, "deviceboot", 1, 0))
+         goto error;
+ 
+     if (hvm) {
+-- 
+1.7.4.1
+

@@ -1,0 +1,90 @@
+From 3a234749d3c8544acf2e04e3d6af5a1d3f7b2b23 Mon Sep 17 00:00:00 2001
+Message-Id: <3a234749d3c8544acf2e04e3d6af5a1d3f7b2b23.1298580376.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Thu, 17 Feb 2011 15:41:51 -0500
+Subject: [PATCH] Allow brAddTap to create a tap device that is down
+
+This is a pure cherry-pick of upstream:
+
+   commit 13ae7a02b313b49fac90aed052fc7fc12d346400
+   Author: Laine Stump <laine@laine.org>
+   Date:   Wed Feb 9 01:20:39 2011 -0500
+
+Together with PATCH 2/2, it resolves:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=609463
+
+An upcoming patch has a use for a tap device to be created that
+doesn't need to be actually put into the "up" state, and keeping it
+"down" keeps the output of ifconfig from being unnecessarily cluttered
+(ifconfig won't show down interfaces unless you add "-a").
+
+bridge.[ch]: add "up" as an arg to brAddTap()
+uml_conf.c, qemu_command.c: add "up" (set to "true") to brAddTap() call.
+---
+ src/qemu/qemu_command.c |    1 +
+ src/uml/uml_conf.c      |    1 +
+ src/util/bridge.c       |    3 ++-
+ src/util/bridge.h       |    1 +
+ 4 files changed, 5 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 6755618..8c8591d 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -252,6 +252,7 @@ qemuNetworkIfaceConnect(virConnectPtr conn,
+                         &net->ifname,
+                         tapmac,
+                         vnet_hdr,
++                        true,
+                         &tapfd))) {
+         if (err == ENOTSUP) {
+             /* In this particular case, give a better diagnostic. */
+diff --git a/src/uml/uml_conf.c b/src/uml/uml_conf.c
+index e5dbed9..7c8fb16 100644
+--- a/src/uml/uml_conf.c
++++ b/src/uml/uml_conf.c
+@@ -143,6 +143,7 @@ umlConnectTapDevice(virConnectPtr conn,
+                         &net->ifname,
+                         tapmac,
+                         0,
++                        true,
+                         NULL))) {
+         if (err == ENOTSUP) {
+             /* In this particular case, give a better diagnostic. */
+diff --git a/src/util/bridge.c b/src/util/bridge.c
+index e53fce5..3ed71be 100644
+--- a/src/util/bridge.c
++++ b/src/util/bridge.c
+@@ -484,6 +484,7 @@ brAddTap(brControl *ctl,
+          char **ifname,
+          const unsigned char *macaddr,
+          int vnet_hdr,
++         bool up,
+          int *tapfd)
+ {
+     int fd;
+@@ -530,7 +531,7 @@ brAddTap(brControl *ctl,
+         goto error;
+     if ((errno = brAddInterface(ctl, bridge, ifr.ifr_name)))
+         goto error;
+-    if ((errno = brSetInterfaceUp(ctl, ifr.ifr_name, 1)))
++    if (up && ((errno = brSetInterfaceUp(ctl, ifr.ifr_name, 1))))
+         goto error;
+     if (!tapfd &&
+         (errno = ioctl(fd, TUNSETPERSIST, 1)))
+diff --git a/src/util/bridge.h b/src/util/bridge.h
+index e8e7eca..93f0b33 100644
+--- a/src/util/bridge.h
++++ b/src/util/bridge.h
+@@ -71,6 +71,7 @@ int     brAddTap                (brControl *ctl,
+                                  char **ifname,
+                                  const unsigned char *macaddr,
+                                  int vnet_hdr,
++                                 bool up,
+                                  int *tapfd);
+ 
+ int     brDeleteTap             (brControl *ctl,
+-- 
+1.7.4.1
+

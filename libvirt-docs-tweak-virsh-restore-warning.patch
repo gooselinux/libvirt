@@ -1,0 +1,57 @@
+From 4972959ec749e55c2acc70f767b7d3fe496e1aeb Mon Sep 17 00:00:00 2001
+Message-Id: <4972959ec749e55c2acc70f767b7d3fe496e1aeb.1302705457.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 11 Apr 2011 15:14:42 -0600
+Subject: [PATCH] docs: tweak virsh restore warning
+
+https://bugzilla.redhat.com/show_bug.cgi?id=692998
+
+* tools/virsh.pod: Fix grammar, and clarify wording.
+* src/qemu/qemu_driver.c (qemudDomainObjStart): Drop redundant
+condition.
+(cherry picked from commit 5bc22e129b2ea62443605f614b47d46da80c9106)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split affected context
+---
+ src/qemu/qemu_driver.c |    2 +-
+ tools/virsh.pod        |    7 ++++---
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ce772a5..19b430c 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6700,7 +6700,7 @@ static int qemudDomainObjStart(virConnectPtr conn,
+     if (!managed_save)
+         goto cleanup;
+ 
+-    if ((managed_save) && (virFileExists(managed_save))) {
++    if (virFileExists(managed_save)) {
+         ret = qemudDomainObjRestore(conn, driver, vm, managed_save);
+ 
+         if ((ret == 0) && (unlink(managed_save) < 0))
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 728fda4..7988a8d 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -541,11 +541,12 @@ I<on_reboot> parameter in the domain's XML definition.
+ 
+ =item B<restore> I<state-file>
+ 
+-Restores a domain from an B<virsh save> state file. See I<save> for more info.
++Restores a domain from a B<virsh save> state file. See I<save> for more info.
+ 
+ B<Note>: To avoid corrupting file system contents within the domain, you
+-should not reuse the saved state file to B<restore> unless you are convinced
+-with reverting the domain to the previous state.
++should not reuse the saved state file for a second B<restore> unless you
++have also reverted all storage volumes back to the same contents as when
++the state file was created.
+ 
+ =item B<save> I<domain-id> I<state-file>
+ 
+-- 
+1.7.5.rc1
+

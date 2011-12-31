@@ -1,0 +1,53 @@
+From cae3a6c6a75a80c954d19c913f4fe2a79fc99dff Mon Sep 17 00:00:00 2001
+Message-Id: <cae3a6c6a75a80c954d19c913f4fe2a79fc99dff.1300791642.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Fri, 18 Mar 2011 15:09:45 -0400
+Subject: [PATCH] network driver: log error and abort network startup when radvd isn't found
+
+This resolves:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=688957
+
+This patch is a direct cherry-pick from upstream:
+
+  commit b538cdd5a92e3a798ccba105dc410462911dde86
+  Author: Laine Stump <laine@laine.org>
+  Date:   Fri Mar 18 13:05:08 2011 -0400
+
+  network driver: log error and abort network startup when radvd isn't found
+
+Since radvd is executed by daemonizing it, the attempt to exec the
+radvd binary doesn't happen until after libvirtd has already received
+an exit code from the intermediate forked process, so no error is
+detected or logged by __virExec().
+
+We can't require radvd as a prerequisite for the libvirt package (many
+installations don't use IPv6, so they don't need it), so instead we
+add in a check to verify there is an executable radvd binary prior to
+trying to exec it.
+---
+ src/network/bridge_driver.c |    8 ++++++++
+ 1 files changed, 8 insertions(+), 0 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 855c4d6..20c3ddc 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -682,6 +682,14 @@ networkStartRadvd(virNetworkObjPtr network)
+ 
+     network->radvdPid = -1;
+ 
++    if (access(RADVD, X_OK) < 0) {
++        virReportSystemError(errno,
++                             _("Cannot find %s - "
++                               "Possibly the package isn't installed"),
++                             RADVD);
++        goto cleanup;
++    }
++
+     if ((err = virFileMakePath(NETWORK_PID_DIR)) != 0) {
+         virReportSystemError(err,
+                              _("cannot create directory %s"),
+-- 
+1.7.4.1
+

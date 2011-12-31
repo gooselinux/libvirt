@@ -1,0 +1,116 @@
+From 9be2eaa42a563f80ae71ccd2bdee8314f413f735 Mon Sep 17 00:00:00 2001
+Message-Id: <9be2eaa42a563f80ae71ccd2bdee8314f413f735.1300282281.git.jdenemar@redhat.com>
+From: Daniel Veillard <veillard@redhat.com>
+Date: Mon, 14 Mar 2011 17:38:06 +0800
+Subject: [PATCH] Add missing checks for read only connections
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CVE-2011-1146: https://bugzilla.redhat.com/show_bug.cgi?id=683650
+
+Based on the following upstream commit
+
+    commit 71753cb7f7a16ff800381c0b5ee4e99eea92fed3
+    Author: Guido Günther <agx@sigxcpu.org>
+    Date:   Mon Mar 14 10:56:28 2011 +0800
+
+As pointed on CVE-2011-1146, some API forgot to check the read-only
+status of the connection for entry point which modify the state
+of the system or may lead to a remote execution using user data.
+The entry points concerned are:
+  - virConnectDomainXMLToNative
+  - virNodeDeviceDettach
+  - virNodeDeviceReAttach
+  - virNodeDeviceReset
+  - virDomainRevertToSnapshot
+  - virDomainSnapshotDelete
+
+* src/libvirt.c: fix the above set of entry points to error on read-only
+                 connections
+
+Rebased to 0.8.2 of RHEL-5, mostly changed the call of the error routines
+to add an extra first argument, either the connection or the domain.
+This shoudl apply and build cleanly on the RHEL-5_6-Z branch too
+
+Daniel
+---
+ src/libvirt.c |   27 +++++++++++++++++++++++++++
+ 1 files changed, 27 insertions(+), 0 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index fed246c..a676bc1 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -3368,6 +3368,10 @@ char *virConnectDomainXMLToNative(virConnectPtr conn,
+         virDispatchError(NULL);
+         return (NULL);
+     }
++    if (conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(NULL, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
+ 
+     if (nativeFormat == NULL || domainXml == NULL) {
+         virLibConnError(conn, VIR_ERR_INVALID_ARG, __FUNCTION__);
+@@ -9788,6 +9792,11 @@ virNodeDeviceDettach(virNodeDevicePtr dev)
+         return (-1);
+     }
+ 
++    if (dev->conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(dev->conn, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
++
+     if (dev->conn->driver->nodeDeviceDettach) {
+         int ret;
+         ret = dev->conn->driver->nodeDeviceDettach (dev);
+@@ -9831,6 +9840,11 @@ virNodeDeviceReAttach(virNodeDevicePtr dev)
+         return (-1);
+     }
+ 
++    if (dev->conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(dev->conn, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
++
+     if (dev->conn->driver->nodeDeviceReAttach) {
+         int ret;
+         ret = dev->conn->driver->nodeDeviceReAttach (dev);
+@@ -9876,6 +9890,11 @@ virNodeDeviceReset(virNodeDevicePtr dev)
+         return (-1);
+     }
+ 
++    if (dev->conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(dev->conn, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
++
+     if (dev->conn->driver->nodeDeviceReset) {
+         int ret;
+         ret = dev->conn->driver->nodeDeviceReset (dev);
+@@ -13171,6 +13190,10 @@ virDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+     }
+ 
+     conn = snapshot->domain->conn;
++    if (conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(conn, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
+ 
+     if (conn->driver->domainRevertToSnapshot) {
+         int ret = conn->driver->domainRevertToSnapshot(snapshot, flags);
+@@ -13217,6 +13240,10 @@ virDomainSnapshotDelete(virDomainSnapshotPtr snapshot,
+     }
+ 
+     conn = snapshot->domain->conn;
++    if (conn->flags & VIR_CONNECT_RO) {
++        virLibConnError(conn, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
++        goto error;
++    }
+ 
+     if (conn->driver->domainSnapshotDelete) {
+         int ret = conn->driver->domainSnapshotDelete(snapshot, flags);
+-- 
+1.7.4.1
+

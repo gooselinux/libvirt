@@ -1,0 +1,66 @@
+From d2f248e7f451b26dae8eef5f50c0f7688d1dd722 Mon Sep 17 00:00:00 2001
+Message-Id: <d2f248e7f451b26dae8eef5f50c0f7688d1dd722.1300791642.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 21 Mar 2011 11:05:54 -0600
+Subject: [PATCH] udev: fix regression with qemu:///session
+
+https://bugzilla.redhat.com/show_bug.cgi?id=684655 points out
+a regression introduced in commit 2215050edd - non-root users
+can't connect to qemu:///session because libvirtd dies when
+it can't use pciaccess initialization.
+
+* src/node_device/node_device_udev.c (udevDeviceMonitorStartup):
+Don't abort udev driver (and libvirtd overall) if non-root user
+can't use pciaccess.
+(cherry picked from commit 4c7508b4decbade955ad1b6d28dad7f03cdb482b)
+---
+ src/node_device/node_device_udev.c |   19 ++++++++++++-------
+ 1 files changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/src/node_device/node_device_udev.c b/src/node_device/node_device_udev.c
+index be6a371..44df16e 100644
+--- a/src/node_device/node_device_udev.c
++++ b/src/node_device/node_device_udev.c
+@@ -1,7 +1,7 @@
+ /*
+  * node_device_udev.c: node device enumeration - libudev implementation
+  *
+- * Copyright (C) 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2009-2011 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -1589,7 +1589,7 @@ out:
+     return ret;
+ }
+ 
+-static int udevDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
++static int udevDeviceMonitorStartup(int privileged)
+ {
+     udevPrivate *priv = NULL;
+     struct udev *udev = NULL;
+@@ -1597,11 +1597,16 @@ static int udevDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
+     int pciret;
+ 
+     if ((pciret = pci_system_init()) != 0) {
+-        char ebuf[256];
+-        VIR_ERROR(_("Failed to initialize libpciaccess: %s"),
+-                  virStrerror(pciret, ebuf, sizeof ebuf));
+-        ret = -1;
+-        goto out;
++        /* Ignore failure as non-root; udev is not as helpful in that
++         * situation, but a non-privileged user won't benefit much
++         * from udev in the first place.  */
++        if (privileged || errno != EACCES) {
++            char ebuf[256];
++            VIR_ERROR(_("Failed to initialize libpciaccess: %s"),
++                      virStrerror(pciret, ebuf, sizeof ebuf));
++            ret = -1;
++            goto out;
++        }
+     }
+ 
+     if (VIR_ALLOC(priv) < 0) {
+-- 
+1.7.4.1
+

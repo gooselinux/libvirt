@@ -1,0 +1,61 @@
+From 7409b71e9723d394f72417045fb33c6ff54e8c4c Mon Sep 17 00:00:00 2001
+Message-Id: <7409b71e9723d394f72417045fb33c6ff54e8c4c.1300791642.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Fri, 18 Mar 2011 12:42:10 -0600
+Subject: [PATCH] do not unref obj in qemuDomainObjExitMonitor*
+
+https://bugzilla.redhat.com/show_bug.cgi?id=688774
+
+Steps to reproduce this bug:
+  #! /bin/bash -x
+  virsh start domain
+  sleep 5
+  virsh qemu-monitor-command domain 'cpu_set 2 online' --hmp
+
+Then libvirtd will crash.
+
+The reason is that:
+we add a reference of obj when we open the monitor. We will reduce this
+reference when we free the monitor.
+
+If the reference of monitor is 0, we will free monitor automatically and
+the reference of obj is reduced.
+
+But in the function qemuDomainObjExitMonitorWithDriver(), we reduce this
+reference again when the reference of monitor is 0.
+
+It will cause the obj be freed in the function qemuDomainObjEndJob().
+
+Then we start the domain again, and libvirtd will crash in the function
+virDomainObjListSearchName(), because we pass a null pointer(obj->def->name)
+to strcmp().
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit d5df67be3c5d7a70bd2018fa5267733f23b1ae5d)
+---
+ src/qemu/qemu_domain.c |    2 --
+ 1 files changed, 0 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index fa7c8bd..05abc4a 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -531,7 +531,6 @@ void qemuDomainObjExitMonitor(virDomainObjPtr obj)
+     virDomainObjLock(obj);
+ 
+     if (refs == 0) {
+-        virDomainObjUnref(obj);
+         priv->mon = NULL;
+     }
+ }
+@@ -577,7 +576,6 @@ void qemuDomainObjExitMonitorWithDriver(struct qemud_driver *driver,
+     virDomainObjLock(obj);
+ 
+     if (refs == 0) {
+-        virDomainObjUnref(obj);
+         priv->mon = NULL;
+     }
+ }
+-- 
+1.7.4.1
+

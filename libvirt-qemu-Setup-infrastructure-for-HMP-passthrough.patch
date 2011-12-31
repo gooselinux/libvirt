@@ -1,0 +1,236 @@
+From 882150b803ea1a2b08de4698b77c3eb56bbe6ce6 Mon Sep 17 00:00:00 2001
+Message-Id: <882150b803ea1a2b08de4698b77c3eb56bbe6ce6.1299776671.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 9 Mar 2011 21:24:04 +0100
+Subject: [PATCH] qemu: Setup infrastructure for HMP passthrough
+
+https://bugzilla.redhat.com/show_bug.cgi?id=589076
+
+JSON monitor command implementation can now just directly call text
+monitor implementation and it will be automatically encapsulated into
+QMP's human-monitor-command.
+(cherry picked from commit 266265a560cff390aff289a94a8f5010d6dab0ea)
+---
+ src/qemu/qemu_monitor.c      |   12 ++++++
+ src/qemu/qemu_monitor.h      |    8 ++++-
+ src/qemu/qemu_monitor_json.c |   81 +++++++++++++++++++++++++++++-------------
+ src/qemu/qemu_monitor_json.h |    5 +++
+ src/qemu/qemu_monitor_text.c |   18 +++------
+ src/qemu/qemu_monitor_text.h |    5 +++
+ 6 files changed, 91 insertions(+), 38 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 8469252..7a4ac55 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -741,6 +741,18 @@ cleanup:
+ }
+ 
+ 
++int qemuMonitorCommandWithFd(qemuMonitorPtr mon,
++                             const char *cmd,
++                             int scm_fd,
++                             char **reply)
++{
++    if (mon->json)
++        return qemuMonitorJSONHumanCommandWithFd(mon, cmd, scm_fd, reply);
++    else
++        return qemuMonitorTextCommandWithFd(mon, cmd, scm_fd, reply);
++}
++
++
+ int qemuMonitorGetDiskSecret(qemuMonitorPtr mon,
+                              virConnectPtr conn,
+                              const char *path,
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 7cc8704..99f7257 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -133,9 +133,15 @@ void qemuMonitorUnlock(qemuMonitorPtr mon);
+ int qemuMonitorRef(qemuMonitorPtr mon);
+ int qemuMonitorUnref(qemuMonitorPtr mon);
+ 
+-/* This API is for use by the internal Text/JSON monitor impl code only */
++/* These APIs are for use by the internal Text/JSON monitor impl code only */
+ int qemuMonitorSend(qemuMonitorPtr mon,
+                     qemuMonitorMessagePtr msg);
++int qemuMonitorCommandWithFd(qemuMonitorPtr mon,
++                             const char *cmd,
++                             int scm_fd,
++                             char **reply);
++# define qemuMonitorCommand(mon, cmd, reply) \
++    qemuMonitorCommandWithFd(mon, cmd, -1, reply)
+ 
+ /* XXX same comment about virConnectPtr as above */
+ int qemuMonitorGetDiskSecret(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 108707e..11fa618 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -715,6 +715,56 @@ static void qemuMonitorJSONHandleSPICEDisconnect(qemuMonitorPtr mon, virJSONValu
+ 
+ 
+ int
++qemuMonitorJSONHumanCommandWithFd(qemuMonitorPtr mon,
++                                  const char *cmd_str,
++                                  int scm_fd,
++                                  char **reply_str)
++{
++    virJSONValuePtr cmd = NULL;
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr obj;
++    int ret = -1;
++
++    cmd = qemuMonitorJSONMakeCommand("human-monitor-command",
++                                     "s:command-line", cmd_str,
++                                     NULL);
++
++    if (!cmd || qemuMonitorJSONCommandWithFd(mon, cmd, scm_fd, &reply) < 0)
++        goto cleanup;
++
++    if (qemuMonitorJSONCheckError(cmd, reply))
++        goto cleanup;
++
++    if (!(obj = virJSONValueObjectGet(reply, "return"))) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("human monitor command was missing return data"));
++        goto cleanup;
++    }
++
++    if (reply_str) {
++        const char *data;
++
++        if ((data = virJSONValueGetString(obj)))
++            *reply_str = strdup(data);
++        else
++            *reply_str = strdup("");
++
++        if (!*reply_str) {
++            virReportOOMError();
++            goto cleanup;
++        }
++    }
++
++    ret = 0;
++
++cleanup:
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
++int
+ qemuMonitorJSONSetCapabilities(qemuMonitorPtr mon)
+ {
+     int ret;
+@@ -2522,36 +2572,17 @@ int qemuMonitorJSONArbitraryCommand(qemuMonitorPtr mon,
+     virJSONValuePtr reply = NULL;
+     int ret = -1;
+ 
+-    if (!hmp) {
+-        cmd = virJSONValueFromString(cmd_str);
++    if (hmp) {
++        return qemuMonitorJSONHumanCommandWithFd(mon, cmd_str, -1, reply_str);
+     } else {
+-        cmd = qemuMonitorJSONMakeCommand("human-monitor-command",
+-                                         "s:command-line", cmd_str,
+-                                         NULL);
+-    }
+-
+-    if (!cmd)
+-        return -1;
++        if (!(cmd = virJSONValueFromString(cmd_str)))
++            goto cleanup;
+ 
+-    if (qemuMonitorJSONCommand(mon, cmd, &reply) < 0)
+-        goto cleanup;
++        if (qemuMonitorJSONCommand(mon, cmd, &reply) < 0)
++            goto cleanup;
+ 
+-    if (!hmp) {
+         if (!(*reply_str = virJSONValueToString(reply)))
+             goto cleanup;
+-    } else if (qemuMonitorJSONCheckError(cmd, reply)) {
+-        goto cleanup;
+-    } else {
+-        const char *data;
+-        if (!(data = virJSONValueObjectGetString(reply, "return"))) {
+-            qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                            _("human monitor command was missing return data"));
+-            goto cleanup;
+-        }
+-        if (!(*reply_str = strdup(data))) {
+-            virReportOOMError();
+-            goto cleanup;
+-        }
+     }
+ 
+     ret = 0;
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index cc90555..4b14e74 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -34,6 +34,11 @@ int qemuMonitorJSONIOProcess(qemuMonitorPtr mon,
+                              size_t len,
+                              qemuMonitorMessagePtr msg);
+ 
++int qemuMonitorJSONHumanCommandWithFd(qemuMonitorPtr mon,
++                                      const char *cmd,
++                                      int scm_fd,
++                                      char **reply);
++
+ int qemuMonitorJSONSetCapabilities(qemuMonitorPtr mon);
+ 
+ int qemuMonitorJSONStartCPUs(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index 4d2719b..432a790 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -259,21 +259,15 @@ qemuMonitorCommandWithHandler(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
+-static int
+-qemuMonitorCommandWithFd(qemuMonitorPtr mon,
+-                          const char *cmd,
+-                          int scm_fd,
+-                          char **reply) {
++int
++qemuMonitorTextCommandWithFd(qemuMonitorPtr mon,
++                             const char *cmd,
++                             int scm_fd,
++                             char **reply)
++{
+     return qemuMonitorCommandWithHandler(mon, cmd, NULL, NULL, scm_fd, reply);
+ }
+ 
+-static int
+-qemuMonitorCommand(qemuMonitorPtr mon,
+-                    const char *cmd,
+-                    char **reply) {
+-    return qemuMonitorCommandWithFd(mon, cmd, -1, reply);
+-}
+-
+ 
+ static int
+ qemuMonitorSendDiskPassphrase(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 9a2d3f0..6f9dfa3 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -35,6 +35,11 @@ int qemuMonitorTextIOProcess(qemuMonitorPtr mon,
+                              size_t len,
+                              qemuMonitorMessagePtr msg);
+ 
++int qemuMonitorTextCommandWithFd(qemuMonitorPtr mon,
++                                 const char *cmd,
++                                 int scm_fd,
++                                 char **reply);
++
+ int qemuMonitorTextStartCPUs(qemuMonitorPtr mon,
+                              virConnectPtr conn);
+ int qemuMonitorTextStopCPUs(qemuMonitorPtr mon);
+-- 
+1.7.4.1
+

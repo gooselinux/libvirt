@@ -1,0 +1,232 @@
+From 5a4943c7f5a57cf2f84d461ebe8c23c507a69363 Mon Sep 17 00:00:00 2001
+Message-Id: <5a4943c7f5a57cf2f84d461ebe8c23c507a69363.1295285119.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 12 Jan 2011 11:33:34 +0100
+Subject: [PATCH] qemu: Support per-device boot ordering
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+Support for this is included in qemu and seabios from upstream git.
+(cherry picked from commit 3d4403582418562e81dfdd185dc2ec469c0f8c35)
+---
+ src/qemu/qemu_capabilities.c |    9 +++++++++
+ src/qemu/qemu_capabilities.h |    1 +
+ src/qemu/qemu_command.c      |   24 ++++++++++++++++++++----
+ src/qemu/qemu_command.h      |    6 ++++--
+ src/qemu/qemu_driver.c       |    2 ++
+ src/qemu/qemu_hotplug.c      |    8 ++++----
+ 6 files changed, 40 insertions(+), 10 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index eb8e23e..d6e205a 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -431,6 +431,7 @@ qemuCapsInitGuest(virCapsPtr caps,
+     int nmachines = 0;
+     struct stat st;
+     unsigned int ncpus;
++    unsigned long long qemuCmdFlags;
+     int ret = -1;
+ 
+     /* Check for existance of base emulator, or alternate base
+@@ -546,6 +547,11 @@ qemuCapsInitGuest(virCapsPtr caps,
+         !virCapabilitiesAddGuestFeature(guest, "cpuselection", 1, 0))
+         goto error;
+ 
++    if (qemuCapsExtractVersionInfo(binary, NULL, &qemuCmdFlags) < 0 ||
++        ((qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX) &&
++         !virCapabilitiesAddGuestFeature(guest, "deviceboot", 1, 0)))
++        goto error;
++
+     if (hvm) {
+         if (virCapabilitiesAddGuestDomain(guest,
+                                           "qemu",
+@@ -1047,6 +1053,7 @@ qemuCapsExtractDeviceStr(const char *qemu,
+      * '-device ?'.  */
+     cmd = virCommandNewArgList(qemu,
+                                "-device", "pci-assign,?",
++                               "-device", "virtio-blk-pci,?",
+                                NULL);
+     virCommandAddEnvPassCommon(cmd);
+     /* qemu -help goes to stdout, but qemu -device ? goes to stderr.  */
+@@ -1070,6 +1077,8 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+ {
+     if (strstr(str, "pci-assign.configfd"))
+         *flags |= QEMUD_CMD_FLAG_PCI_CONFIGFD;
++    if (strstr(str, "virtio-blk-pci.bootindex"))
++        *flags |= QEMUD_CMD_FLAG_BOOTINDEX;
+ 
+     return 0;
+ }
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index 8057479..e9e2da0 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -83,6 +83,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_SPICE         = (1LL << 46), /* Is -spice avail */
+     QEMUD_CMD_FLAG_VGA_NONE      = (1LL << 47), /* The 'none' arg for '-vga' */
+     QEMUD_CMD_FLAG_MIGRATE_QEMU_FD = (1LL << 48), /* -incoming fd:n */
++    QEMUD_CMD_FLAG_BOOTINDEX     = (1LL << 49), /* -device bootindex property */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 104c219..082b585 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1342,7 +1342,8 @@ error:
+ 
+ 
+ char *
+-qemuBuildDriveDevStr(virDomainDiskDefPtr disk)
++qemuBuildDriveDevStr(virDomainDiskDefPtr disk,
++                     unsigned long long qemuCmdFlags)
+ {
+     virBuffer opt = VIR_BUFFER_INITIALIZER;
+     const char *bus = virDomainDiskQEMUBusTypeToString(disk->bus);
+@@ -1382,6 +1383,8 @@ qemuBuildDriveDevStr(virDomainDiskDefPtr disk)
+     }
+     virBufferVSprintf(&opt, ",drive=%s%s", QEMU_DRIVE_HOST_PREFIX, disk->info.alias);
+     virBufferVSprintf(&opt, ",id=%s", disk->info.alias);
++    if (disk->bootIndex && (qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX))
++        virBufferVSprintf(&opt, ",bootindex=%d", disk->bootIndex);
+ 
+     if (virBufferError(&opt)) {
+         virReportOOMError();
+@@ -1538,7 +1541,9 @@ qemuBuildNicStr(virDomainNetDefPtr net,
+ 
+ 
+ char *
+-qemuBuildNicDevStr(virDomainNetDefPtr net, int vlan)
++qemuBuildNicDevStr(virDomainNetDefPtr net,
++                   int vlan,
++                   unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     const char *nic;
+@@ -1563,6 +1568,8 @@ qemuBuildNicDevStr(virDomainNetDefPtr net, int vlan)
+                       net->mac[4], net->mac[5]);
+     if (qemuBuildDeviceAddressStr(&buf, &net->info) < 0)
+         goto error;
++    if (net->bootIndex && (qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX))
++        virBufferVSprintf(&buf, ",bootindex=%d", net->bootIndex);
+ 
+     if (virBufferError(&buf)) {
+         virReportOOMError();
+@@ -3135,10 +3142,19 @@ qemuBuildCommandLine(virConnectPtr conn,
+                                            disk->info.addr.drive.unit
+                                            ? 'B' : 'A',
+                                            disk->info.alias);
++
++                    if (disk->bootIndex &&
++                        (qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX)) {
++                        virCommandAddArg(cmd, "-global");
++                        virCommandAddArgFormat(cmd, "isa-fdc.bootindex%c=%d",
++                                               disk->info.addr.drive.unit
++                                               ? 'B' : 'A',
++                                               disk->bootIndex);
++                    }
+                 } else {
+                     virCommandAddArg(cmd, "-device");
+ 
+-                    if (!(optstr = qemuBuildDriveDevStr(disk)))
++                    if (!(optstr = qemuBuildDriveDevStr(disk, qemuCmdFlags)))
+                         goto error;
+                     virCommandAddArg(cmd, optstr);
+                     VIR_FREE(optstr);
+@@ -3362,7 +3378,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+             }
+             if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+                 virCommandAddArg(cmd, "-device");
+-                if (!(nic = qemuBuildNicDevStr(net, vlan)))
++                if (!(nic = qemuBuildNicDevStr(net, vlan, qemuCmdFlags)))
+                     goto error;
+                 virCommandAddArg(cmd, nic);
+                 VIR_FREE(nic);
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 5439184..59c8ff2 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -62,7 +62,8 @@ char * qemuBuildNicStr(virDomainNetDefPtr net,
+ 
+ /* Current, best practice */
+ char * qemuBuildNicDevStr(virDomainNetDefPtr net,
+-                          int vlan);
++                          int vlan,
++                          unsigned long long qemuCmdFlags);
+ 
+ char *qemuDeviceDriveHostAlias(virDomainDiskDefPtr disk,
+                                unsigned long long qemuCmdFlags);
+@@ -75,7 +76,8 @@ char *qemuBuildFSStr(virDomainFSDefPtr fs,
+                      unsigned long long qemuCmdFlags);
+ 
+ /* Current, best practice */
+-char * qemuBuildDriveDevStr(virDomainDiskDefPtr disk);
++char * qemuBuildDriveDevStr(virDomainDiskDefPtr disk,
++                            unsigned long long qemuCmdFlags);
+ char * qemuBuildFSDevStr(virDomainFSDefPtr fs);
+ /* Current, best practice */
+ char * qemuBuildControllerDevStr(virDomainControllerDefPtr def);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ca7ddfa..dcba3b9 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6473,6 +6473,7 @@ static char *qemuDomainXMLToNative(virConnectPtr conn,
+      */
+     for (i = 0 ; i < def->nnets ; i++) {
+         virDomainNetDefPtr net = def->nets[i];
++        int bootIndex = net->bootIndex;
+         if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK ||
+             net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+             VIR_FREE(net->data.network.name);
+@@ -6495,6 +6496,7 @@ static char *qemuDomainXMLToNative(virConnectPtr conn,
+             net->data.ethernet.script = script;
+             net->data.ethernet.ipaddr = ipaddr;
+         }
++        net->bootIndex = bootIndex;
+     }
+     for (i = 0 ; i < def->ngraphics ; i++) {
+         if (def->graphics[i]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 0c492b9..67008fb 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -177,7 +177,7 @@ int qemuDomainAttachPciDiskDevice(struct qemud_driver *driver,
+         if (!(drivestr = qemuBuildDriveStr(disk, 0, qemuCmdFlags)))
+             goto error;
+ 
+-        if (!(devstr = qemuBuildDriveDevStr(disk)))
++        if (!(devstr = qemuBuildDriveDevStr(disk, qemuCmdFlags)))
+             goto error;
+     }
+ 
+@@ -392,7 +392,7 @@ int qemuDomainAttachSCSIDisk(struct qemud_driver *driver,
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (qemuAssignDeviceDiskAlias(disk, qemuCmdFlags) < 0)
+             goto error;
+-        if (!(devstr = qemuBuildDriveDevStr(disk)))
++        if (!(devstr = qemuBuildDriveDevStr(disk, qemuCmdFlags)))
+             goto error;
+     }
+ 
+@@ -509,7 +509,7 @@ int qemuDomainAttachUsbMassstorageDevice(struct qemud_driver *driver,
+             goto error;
+         if (!(drivestr = qemuBuildDriveStr(disk, 0, qemuCmdFlags)))
+             goto error;
+-        if (!(devstr = qemuBuildDriveDevStr(disk)))
++        if (!(devstr = qemuBuildDriveDevStr(disk, qemuCmdFlags)))
+             goto error;
+     }
+ 
+@@ -693,7 +693,7 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+     }
+ 
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+-        if (!(nicstr = qemuBuildNicDevStr(net, vlan)))
++        if (!(nicstr = qemuBuildNicDevStr(net, vlan, qemuCmdFlags)))
+             goto try_remove;
+     } else {
+         if (!(nicstr = qemuBuildNicStr(net, NULL, vlan)))
+-- 
+1.7.4.rc2
+

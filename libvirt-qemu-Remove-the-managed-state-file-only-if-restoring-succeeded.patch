@@ -1,0 +1,85 @@
+From 2d445adbaeb267328bd0242b7f8fe16a7763e7c5 Mon Sep 17 00:00:00 2001
+Message-Id: <2d445adbaeb267328bd0242b7f8fe16a7763e7c5.1302705456.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Mon, 11 Apr 2011 15:14:41 -0600
+Subject: [PATCH] qemu: Remove the managed state file only if restoring
+ succeeded
+
+https://bugzilla.redhat.com/show_bug.cgi?id=692998
+
+1) Both "qemuDomainStartWithFlags" and "qemuAutostartDomain" try to
+restore the domain from managedsave'ed image if it exists (by
+invoking "qemuDomainObjRestore"), but it unlinks the image even
+if restoring fails, which causes data loss. (This problem exists
+for "virsh managedsave dom; virsh start dom").
+
+The fix for is to unlink the managed state file only if restoring
+succeeded.
+
+2) For "virsh save dom; virsh restore dom;", it can cause data
+corruption if one reuse the saved state file for restoring. Add
+doc to tell user about it.
+
+3) In "qemuDomainObjStart", if "managed_save" is NULL, we shouldn't
+fallback to start the domain, skipping it to cleanup as a incidental
+fix. Discovered by Eric.
+(cherry picked from commit a73bbfc8be2a795e1adade9034c2197037720470)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split affected context
+---
+ src/qemu/qemu_driver.c |   12 +++++++-----
+ tools/virsh.pod        |    6 +++++-
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 43ba190..ce772a5 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6693,18 +6693,20 @@ static int qemudDomainObjStart(virConnectPtr conn,
+ 
+     /*
+      * If there is a managed saved state restore it instead of starting
+-     * from scratch. In any case the old state is removed.
++     * from scratch. The old state is removed once the restoring succeeded.
+      */
+     managed_save = qemuDomainManagedSavePath(driver, vm);
++
++    if (!managed_save)
++        goto cleanup;
++
+     if ((managed_save) && (virFileExists(managed_save))) {
+         ret = qemudDomainObjRestore(conn, driver, vm, managed_save);
+ 
+-        if (unlink(managed_save) < 0) {
++        if ((ret == 0) && (unlink(managed_save) < 0))
+             VIR_WARN("Failed to remove the managed state %s", managed_save);
+-        }
+ 
+-        if (ret == 0)
+-            goto cleanup;
++        goto cleanup;
+     }
+ 
+     ret = qemudStartVMDaemon(conn, driver, vm, NULL, start_paused, -1, NULL,
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index a4b6b00..728fda4 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -541,7 +541,11 @@ I<on_reboot> parameter in the domain's XML definition.
+ 
+ =item B<restore> I<state-file>
+ 
+-Restores a domain from an B<virsh save> state file.  See I<save> for more info.
++Restores a domain from an B<virsh save> state file. See I<save> for more info.
++
++B<Note>: To avoid corrupting file system contents within the domain, you
++should not reuse the saved state file to B<restore> unless you are convinced
++with reverting the domain to the previous state.
+ 
+ =item B<save> I<domain-id> I<state-file>
+ 
+-- 
+1.7.5.rc1
+

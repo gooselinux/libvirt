@@ -1,0 +1,29 @@
+From 92485897d0f54d473942723a3c066462798a8551 Mon Sep 17 00:00:00 2001
+Message-Id: <92485897d0f54d473942723a3c066462798a8551.1296166858.git.jdenemar@redhat.com>
+From: Justin Clift <jclift@redhat.com>
+Date: Thu, 27 Jan 2011 23:41:07 +1100
+Subject: [PATCH] docs: fix incorrect XML element mentioned by setmem text
+
+https://bugzilla.redhat.com/show_bug.cgi?id=622534
+
+(cherry picked from commit 6014485cdbaecf08f777b68553ae29035cf8ef77)
+---
+ tools/virsh.pod |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index dc2819f..883e96e 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -567,7 +567,7 @@ paravirtualized or running the PV balloon driver.
+ 
+ Note, this command only works on active guest domains.  To change the memory
+ allocation for an inactive guest domain, use the virsh B<edit> command to
+-update the XML <memory> element.
++update the XML <currentMemory> element.
+ 
+ =item B<setmaxmem> I<domain-id> B<kilobytes>
+ 
+-- 
+1.7.4.rc3
+

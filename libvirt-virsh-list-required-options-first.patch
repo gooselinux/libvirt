@@ -1,0 +1,149 @@
+From f77370f5409b4771c828c241b6a7432e5fd0f56a Mon Sep 17 00:00:00 2001
+Message-Id: <f77370f5409b4771c828c241b6a7432e5fd0f56a.1303134271.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 15 Apr 2011 16:57:21 -0600
+Subject: [PATCH] virsh: list required options first
+
+Pre-requisite of
+https://bugzilla.redhat.com/show_bug.cgi?id=693963
+
+The current state of virsh parsing is that:
+
+$ virsh vol-info /path/to/image
+$ virsh vol-info --pool default /path/to/image
+$ virsh vol-info --pool default --vol /path/to/image
+
+all lookup the volume by path (technically, the last two also attempt
+a name lookup within a pool, whereas the first skips that step, but
+the end result is the same); meanwhile:
+
+$ virsh vol-info default /path/to/image
+
+complains about unexpected data.  Why?  Because the --pool option is
+optional, so default was parsed as the --vol argument, and
+/path/to/image.img doesn't match up with any remaining options that
+require an argument.  For proof, note that:
+
+$ virsh vol-info default --vol /path/to/image
+
+complains about looking up 'default' - the parser mis-associated both
+arguments with --vol.  Given the above, the only way to specify pool
+is with an explicit "--pool" argument (you can't specify it
+positionally).  However, named arguments can appear in any order, so:
+
+$ virsh vol-info /path/to/image --pool default
+$ virsh vol-info --vol /path/to/image --pool default
+
+have also always worked.  Therefore, this patch has no functional
+change on vol-info option parsing, but only on 'virsh help vol-info'
+synopsis layout.  However, it also allows the next patch to 1) enforce
+that required options are always first (without this patch, the next
+patch would fail the testsuite), and 2) allow the user to omit the
+"--pool" argument.  That is, the next patch makes it possible to do:
+
+$ virsh vol-info /path/to/image default
+
+which to date was not possible.
+
+* tools/virsh.c (opts_vol_create_from, opts_vol_clone)
+(opts_vol_upload, opts_vol_download, opts_vol_delete)
+(opts_vol_wipe, opts_vol_info, opts_vol_dumpxml, opts_vol_key)
+(opts_vol_path): List optional pool parameter after required
+arguments.
+(cherry picked from commit 6b75a1a5b0d10b42e3fd344b2067a176ee294f46)
+
+Conflicts:
+
+	tools/virsh.c - no vol-upload or vol-download
+---
+ tools/virsh.c |   16 ++++++++--------
+ 1 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index db358a5..27578b3 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -6732,8 +6732,8 @@ static const vshCmdInfo info_vol_create_from[] = {
+ static const vshCmdOptDef opts_vol_create_from[] = {
+     {"pool", VSH_OT_DATA, VSH_OFLAG_REQ, N_("pool name")},
+     {"file", VSH_OT_DATA, VSH_OFLAG_REQ, N_("file containing an XML vol description")},
+-    {"inputpool", VSH_OT_STRING, 0, N_("pool name or uuid of the input volume's pool")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("input vol name or key")},
++    {"inputpool", VSH_OT_STRING, 0, N_("pool name or uuid of the input volume's pool")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -6828,9 +6828,9 @@ static const vshCmdInfo info_vol_clone[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_clone[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("orig vol name or key")},
+     {"newname", VSH_OT_DATA, VSH_OFLAG_REQ, N_("clone name")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -6904,8 +6904,8 @@ static const vshCmdInfo info_vol_delete[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_delete[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol name, key or path")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -6945,8 +6945,8 @@ static const vshCmdInfo info_vol_wipe[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_wipe[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol name, key or path")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -6986,8 +6986,8 @@ static const vshCmdInfo info_vol_info[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_info[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol name, key or path")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -7037,8 +7037,8 @@ static const vshCmdInfo info_vol_dumpxml[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_dumpxml[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("vol name, key or path")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -7450,8 +7450,8 @@ static const vshCmdInfo info_vol_key[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_key[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume name or path")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -7483,8 +7483,8 @@ static const vshCmdInfo info_vol_path[] = {
+ };
+ 
+ static const vshCmdOptDef opts_vol_path[] = {
+-    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {"vol", VSH_OT_DATA, VSH_OFLAG_REQ, N_("volume name or key")},
++    {"pool", VSH_OT_STRING, 0, N_("pool name or uuid")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+-- 
+1.7.5.rc1
+

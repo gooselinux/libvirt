@@ -1,0 +1,33 @@
+From 4b234e4bb2a0d007d1c6d36e6f944467d34546f6 Mon Sep 17 00:00:00 2001
+Message-Id: <4b234e4bb2a0d007d1c6d36e6f944467d34546f6.1296166858.git.jdenemar@redhat.com>
+From: David Allan <dallan@redhat.com>
+Date: Mon, 24 Jan 2011 15:47:52 -0500
+Subject: [PATCH] Do not use virtio-serial port 0 for generic ports
+
+Per the discussion in:
+
+https://bugzilla.redhat.com/show_bug.cgi?id=670394
+
+The port numbering should start from 1, not 0.  We assign maxport + 1,
+so start maxport at 0.
+(cherry picked from commit 8e28c5d40200b4c5d483bd585d237b9d870372e5)
+---
+ src/conf/domain_conf.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index f5c6621..23a6c2b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -5293,7 +5293,7 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+ 
+         if (chr->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
+             chr->info.addr.vioserial.port == 0) {
+-            int maxport = -1;
++            int maxport = 0;
+             int j;
+             for (j = 0 ; j < i ; j++) {
+                 virDomainChrDefPtr thischr = def->channels[j];
+-- 
+1.7.4.rc3
+

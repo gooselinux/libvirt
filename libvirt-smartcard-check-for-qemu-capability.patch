@@ -1,0 +1,476 @@
+From cdb91bdb25109c4a24d3fd874f5ecff6f48cf255 Mon Sep 17 00:00:00 2001
+Message-Id: <cdb91bdb25109c4a24d3fd874f5ecff6f48cf255.1296838266.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:54:32 -0700
+Subject: [PATCH] smartcard: check for qemu capability
+
+https://bugzilla.redhat.com/show_bug.cgi?id=641834
+
+Qemu smartcard/spicevmc support exists on branches (such as
+http://cgit.freedesktop.org/~alon/qemu/commit/?h=usb_ccid.v15&id=024a37b)
+but is not yet upstream.  The added -help output matches a scratch build
+that will be close to the RHEL 6.1 qemu-kvm.
+
+* src/qemu/qemu_capabilities.h (QEMUD_CMD_FLAG_CCID_EMULATED)
+(QEMUD_CMD_FLAG_CCID_PASSTHRU, QEMUD_CMD_FLAG_CHARDEV_SPICEVMC):
+New flags.
+* src/qemu/qemu_capabilities.c (qemuCapsComputeCmdFlags)
+(qemuCapsParseDeviceStr): Check for smartcard capabilities.
+(qemuCapsExtractVersionInfo): Tweak comment.
+* tests/qemuhelptest.c (mymain): New test.
+* tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61: New file.
+* tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device: Likewise.
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c -> context near rhel-specific patch
+
+(cherry picked from commit 7a2f29e4f907c54d54cfc0e7c5d6b973f0d01209)
+---
+ src/qemu/qemu_capabilities.c                       |   17 +-
+ src/qemu/qemu_capabilities.h                       |    3 +
+ tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61        |  229 ++++++++++++++++++++
+ tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device |   74 +++++++
+ tests/qemuhelptest.c                               |   43 ++++
+ 5 files changed, 361 insertions(+), 5 deletions(-)
+ create mode 100644 tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61
+ create mode 100644 tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index bde2422..487a167 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -832,8 +832,11 @@ qemuCapsComputeCmdFlags(const char *help,
+         flags |= QEMUD_CMD_FLAG_PCIDEVICE;
+     if (strstr(help, "-mem-path"))
+         flags |= QEMUD_CMD_FLAG_MEM_PATH;
+-    if (strstr(help, "-chardev"))
++    if (strstr(help, "-chardev")) {
+         flags |= QEMUD_CMD_FLAG_CHARDEV;
++        if (strstr(help, "-chardev spicevmc"))
++            flags |= QEMUD_CMD_FLAG_CHARDEV_SPICEVMC;
++    }
+     if (strstr(help, "-balloon"))
+         flags |= QEMUD_CMD_FLAG_BALLOON;
+     if (strstr(help, "-device")) {
+@@ -1052,10 +1055,10 @@ qemuCapsExtractDeviceStr(const char *qemu,
+      * the output format makes it possible to distinguish what we
+      * need.  With qemu 0.13.0 and later, unrecognized '-device
+      * bogus,?' cause an error in isolation, but are silently ignored
+-     * in combination with '-device ?'.  Qemu 0.12.x doesn't
++     * in combination with '-device ?'.  Upstream qemu 0.12.x doesn't
+      * understand '-device name,?', and always exits with status 1 for
+      * the simpler '-device ?', so this function is really only useful
+-     * for parsing out features added in 0.13.0 or later.  */
++     * if -help includes "device driver,?".  */
+     cmd = virCommandNewArgList(qemu,
+                                "-device", "?",
+                                "-device", "pci-assign,?",
+@@ -1084,6 +1087,10 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+     /* Which devices exist. */
+     if (strstr(str, "name \"hda-duplex\""))
+         *flags |= QEMUD_CMD_FLAG_HDA_DUPLEX;
++    if (strstr(str, "name \"ccid-card-emulated\""))
++        *flags |= QEMUD_CMD_FLAG_CCID_EMULATED;
++    if (strstr(str, "name \"ccid-card-passthru\""))
++        *flags |= QEMUD_CMD_FLAG_CCID_PASSTHRU;
+ 
+     /* Features of given devices. */
+     if (strstr(str, "pci-assign.configfd"))
+@@ -1144,8 +1151,8 @@ int qemuCapsExtractVersionInfo(const char *qemu,
+         flags |= QEMUD_CMD_FLAG_NETDEV;
+     }
+ 
+-    /* Only call qemuCapsExtractDeviceStr for qemu 0.13.0+, since it
+-     * won't set any additional flags for qemu 0.12.x.  */
++    /* qemuCapsExtractDeviceStr will only set additional flags if qemu
++     * understands the 0.13.0+ notion of "-device driver,".  */
+     if ((flags & QEMUD_CMD_FLAG_DEVICE) &&
+         strstr(help, "-device driver,?") &&
+         qemuCapsExtractDeviceStr(qemu, &flags) < 0)
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index c2d09ca..9ee7639 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -88,6 +88,9 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_DRIVE_AIO     = (1LL << 51), /* -drive aio= supported */
+     QEMUD_CMD_FLAG_PCI_MULTIBUS  = (1LL << 52), /* bus=pci.0 vs bus=pci */
+     QEMUD_CMD_FLAG_PCI_BOOTINDEX = (1LL << 53), /* pci-assign.bootindex */
++    QEMUD_CMD_FLAG_CCID_EMULATED = (1LL << 54), /* -device ccid-card-emulated */
++    QEMUD_CMD_FLAG_CCID_PASSTHRU = (1LL << 55), /* -device ccid-card-passthru */
++    QEMUD_CMD_FLAG_CHARDEV_SPICEVMC = (1LL << 56), /* -chardev spicevmc */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61 b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61
+new file mode 100644
+index 0000000..e95c6b1
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61
+@@ -0,0 +1,229 @@
++QEMU PC emulator version 0.12.1 (qemu-kvm-0.12.1.2), Copyright (c) 2003-2008 Fabrice Bellard
++
++WARNING: Direct use of qemu-kvm from the command line is unsupported.
++WARNING: Only use via libvirt.
++WARNING: Some options listed here may not be available in future releases.
++
++usage: qemu [options] [disk_image]
++
++'disk_image' is a raw hard image image for IDE hard disk 0
++
++Standard options:
++-h or -help     display this help and exit
++-version        display version information and exit
++-M machine      select emulated machine (-M ? for list)
++-cpu cpu        select CPU (-cpu ? for list)
++-smp n[,maxcpus=cpus][,cores=cores][,threads=threads][,sockets=sockets]
++                set the number of CPUs to 'n' [default=1]
++                maxcpus= maximum number of total cpus, including
++                  offline CPUs for hotplug etc.
++                cores= number of CPU cores on one socket
++                threads= number of threads on one CPU core
++                sockets= number of discrete sockets in the system
++-numa node[,mem=size][,cpus=cpu[-cpu]][,nodeid=node]
++-fda/-fdb file  use 'file' as floppy disk 0/1 image
++-hda/-hdb file  use 'file' as IDE hard disk 0/1 image
++-hdc/-hdd file  use 'file' as IDE hard disk 2/3 image
++-cdrom file     use 'file' as IDE cdrom image (cdrom is ide1 master)
++-drive [file=file][,if=type][,bus=n][,unit=m][,media=d][,index=i]
++       [,cyls=c,heads=h,secs=s[,trans=t]][,snapshot=on|off]
++       [,cache=writethrough|writeback|none|unsafe][,format=f]
++       [,serial=s][,addr=A][,id=name][,aio=threads|native]
++       [,readonly=on|off]
++                use 'file' as a drive image
++-set group.id.arg=value
++                set <arg> parameter for item <id> of type <group>
++                i.e. -set drive.$id.file=/path/to/image
++-global driver.property=value
++                set a global default for a driver property
++-mtdblock file  use 'file' as on-board Flash memory image
++-sd file        use 'file' as SecureDigital card image
++-pflash file    use 'file' as a parallel flash image
++-boot [order=drives][,once=drives][,menu=on|off]
++                'drives': floppy (a), hard disk (c), CD-ROM (d), network (n)
++-snapshot       write to temporary files instead of disk image files
++-m megs         set virtual RAM size to megs MB [default=128]
++-k language     use keyboard layout (for example 'fr' for French)
++-audio-help     print list of audio drivers and their options
++-soundhw c1,... enable audio support
++                and only specified sound cards (comma separated list)
++                use -soundhw ? to get the list of supported cards
++                use -soundhw all to enable all of them
++-usb            enable the USB driver (will be the default soon)
++-usbdevice name add the host or guest USB device 'name'
++-device driver[,prop[=value][,...]]
++                add device (based on driver)
++                prop=value,... sets driver properties
++                use -device ? to print all possible drivers
++                use -device driver,? to print all possible properties
++-name string1[,process=string2]    set the name of the guest
++            string1 sets the window title and string2 the process name (on Linux)
++-uuid %08x-%04x-%04x-%04x-%012x
++                specify machine UUID
++
++Display options:
++-nographic      disable graphical output and redirect serial I/Os to console
++-spice <args>   enable spice
++-portrait       rotate graphical output 90 deg left (only PXA LCD)
++-vga [std|cirrus|vmware|qxl|xenfb|none]
++                select video card type
++-full-screen    start in full screen
++-vnc display    start a VNC server on display
++
++i386 target only:
++-win2k-hack     use it when installing Windows 2000 to avoid a disk full bug
++-no-fd-bootchk  disable boot signature checking for floppy disks
++-no-acpi        disable ACPI
++-balloon none   disable balloon device
++-balloon virtio[,addr=str]
++                enable virtio balloon device (default)
++-acpitable [sig=str][,rev=n][,oem_id=str][,oem_table_id=str][,oem_rev=n][,asl_compiler_id=str][,asl_compiler_rev=n][,data=file1[:file2]...]
++                ACPI table description
++-smbios file=binary
++                Load SMBIOS entry from binary file
++-smbios type=0[,vendor=str][,version=str][,date=str][,release=%d.%d]
++                Specify SMBIOS type 0 fields
++-smbios type=1[,manufacturer=str][,product=str][,version=str][,serial=str]
++              [,uuid=uuid][,sku=str][,family=str]
++                Specify SMBIOS type 1 fields
++
++Network options:
++-net nic[,vlan=n][,macaddr=mac][,model=type][,name=str][,addr=str][,vectors=v]
++                create a new Network Interface Card and connect it to VLAN 'n'
++-net user[,vlan=n][,name=str][,net=addr[/mask]][,host=addr][,restrict=y|n]
++         [,hostname=host][,dhcpstart=addr][,dns=addr][,tftp=dir][,bootfile=f]
++         [,hostfwd=rule][,guestfwd=rule][,smb=dir[,smbserver=addr]]
++                connect the user mode network stack to VLAN 'n', configure its
++                DHCP server and enabled optional services
++-net tap[,vlan=n][,name=str][,fd=h][,ifname=name][,script=file][,downscript=dfile][,sndbuf=nbytes][,vnet_hdr=on|off][,vhost=on|off][,vhostfd=h]
++                connect the host TAP network interface to VLAN 'n' and use the
++                network scripts 'file' (default=/etc/qemu-ifup)
++                and 'dfile' (default=/etc/qemu-ifdown);
++                use '[down]script=no' to disable script execution;
++                use 'fd=h' to connect to an already opened TAP interface
++                use 'sndbuf=nbytes' to limit the size of the send buffer; the
++                default of 'sndbuf=1048576' can be disabled using 'sndbuf=0'
++                use vnet_hdr=off to avoid enabling the IFF_VNET_HDR tap flag; use
++                vnet_hdr=on to make the lack of IFF_VNET_HDR support an error condition
++                use vhost=on to enable experimental in kernel accelerator
++                use 'vhostfd=h' to connect to an already opened vhost net device
++-net socket[,vlan=n][,name=str][,fd=h][,listen=[host]:port][,connect=host:port]
++                connect the vlan 'n' to another VLAN using a socket connection
++-net socket[,vlan=n][,name=str][,fd=h][,mcast=maddr:port]
++                connect the vlan 'n' to multicast maddr and port
++-net dump[,vlan=n][,file=f][,len=n]
++                dump traffic on vlan 'n' to file 'f' (max n bytes per packet)
++-net none       use it alone to have zero network devices; if no -net option
++                is provided, the default is '-net nic -net user'
++-netdev [user|tap|socket],id=str[,option][,option][,...]
++
++Character device options:
++-chardev null,id=id
++-chardev socket,id=id[,host=host],port=host[,to=to][,ipv4][,ipv6][,nodelay]
++         [,server][,nowait][,telnet] (tcp)
++-chardev socket,id=id,path=path[,server][,nowait][,telnet] (unix)
++-chardev udp,id=id[,host=host],port=port[,localaddr=localaddr]
++         [,localport=localport][,ipv4][,ipv6]
++-chardev msmouse,id=id
++-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]
++-chardev file,id=id,path=path
++-chardev pipe,id=id,path=path
++-chardev pty,id=id
++-chardev stdio,id=id
++-chardev tty,id=id,path=path
++-chardev parport,id=id,path=path
++-chardev spicevmc,id=id,debug=debug,name=name
++
++Bluetooth(R) options:
++-bt hci,null    dumb bluetooth HCI - doesn't respond to commands
++-bt hci,host[:id]
++                use host's HCI with the given name
++-bt hci[,vlan=n]
++                emulate a standard HCI in virtual scatternet 'n'
++-bt vhci[,vlan=n]
++                add host computer to virtual scatternet 'n' using VHCI
++-bt device:dev[,vlan=n]
++                emulate a bluetooth device 'dev' in scatternet 'n'
++
++Linux/Multiboot boot specific:
++-kernel bzImage use 'bzImage' as kernel image
++-append cmdline use 'cmdline' as kernel command line
++-initrd file    use 'file' as initial ram disk
++
++Debug/Expert options:
++-serial dev     redirect the serial port to char device 'dev'
++-parallel dev   redirect the parallel port to char device 'dev'
++-monitor dev    redirect the monitor to char device 'dev'
++-qmp dev        like -monitor but opens in 'control' mode.
++-mon chardev=[name][,mode=readline|control][,default]
++-pidfile file   write PID to 'file'
++-singlestep   always run in singlestep mode
++-S              freeze CPU at startup (use 'c' to start execution)
++-gdb dev        wait for gdb connection on 'dev'
++-s              shorthand for -gdb tcp::1234
++-d item1,...    output log to /tmp/qemu.log (use -d ? for a list of log items)
++-hdachs c,h,s[,t]
++                force hard disk 0 physical geometry and the optional BIOS
++                translation (t=none or lba) (usually qemu can guess them)
++-L path         set the directory for the BIOS, VGA BIOS and keymaps
++-bios file      set the filename for the BIOS
++-enable-kvm     enable KVM full virtualization support
++-no-reboot      exit instead of rebooting
++-no-shutdown    stop before shutdown
++-loadvm [tag|id]
++                start right away with a saved state (loadvm in monitor)
++-daemonize      daemonize QEMU after initializing
++-option-rom rom load a file, rom, into the option ROM space
++-clock          force the use of the given methods for timer alarm.
++                To see what timers are available use -clock ?
++-rtc [base=utc|localtime|date][,clock=host|vm][,driftfix=none|slew]
++                set the RTC base and clock, enable drift fix for clock ticks
++-icount [N|auto]
++                enable virtual instruction counter with 2^N clock ticks per
++                instruction
++-watchdog i6300esb|ib700
++                enable virtual hardware watchdog [default=none]
++-watchdog-action reset|shutdown|poweroff|pause|debug|none
++                action when watchdog fires [default=reset]
++-echr chr       set terminal escape character instead of ctrl-a
++-virtioconsole c
++                set virtio console
++-show-cursor    show cursor
++-tb-size n      set TB size
++-incoming p     prepare for incoming migration, listen on port p
++-nodefaults     don't create default devices.
++-chroot dir     Chroot to dir just before starting the VM.
++-runas user     Change to user id user just before starting the VM.
++-nodefconfig
++                do not load default config files at startup
++-readconfig <file>
++-writeconfig <file>
++                read/write config file
++-no-kvm         disable KVM hardware virtualization
++-no-kvm-irqchip disable KVM kernel mode PIC/IOAPIC/LAPIC
++-no-kvm-pit     disable KVM kernel mode PIT
++-no-kvm-pit-reinjection disable KVM kernel mode PIT interrupt reinjection
++-pcidevice host=bus:dev.func[,dma=none][,name=string]
++                expose a PCI device to the guest OS.
++                dma=none: don't perform any dma translations (default is to use an iommu)
++                'string' is used in log output.
++-enable-nesting enable support for running a VM inside the VM (AMD only)
++-nvram FILE          provide ia64 nvram contents
++-tdf                 enable guest time drift compensation
++-kvm-shadow-memory MEGABYTES
++                     allocate MEGABYTES for kvm mmu shadowing
++-mem-path FILE       provide backing storage for guest RAM
++-mem-prealloc        preallocate guest memory (use with -mempath)
++-redhat-disable-KSM  disable KSM on guest physical memory
++
++During emulation, the following keys are useful:
++ctrl-alt-f      toggle full screen
++ctrl-alt-n      switch to virtual console 'n'
++ctrl-alt        toggle mouse and keyboard grab
++
++When using -nographic, press 'ctrl-a h' to get some help.
++
++WARNING: Direct use of qemu-kvm from the command line is unsupported.
++WARNING: Only use via libvirt.
++WARNING: Some options listed here may not be available in future releases.
++
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
+new file mode 100644
+index 0000000..8a0e528
+--- /dev/null
++++ b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
+@@ -0,0 +1,74 @@
++open /dev/kvm: No such file or directory
++Could not initialize KVM, will disable KVM support
++name "pci-bridge", bus PCI
++name "virtio-balloon-pci", bus PCI
++name "virtio-serial-pci", bus PCI, alias "virtio-serial"
++name "virtio-net-pci", bus PCI
++name "virtio-blk-pci", bus PCI
++name "i82562", bus PCI
++name "i82559er", bus PCI
++name "i82559c", bus PCI
++name "i82559b", bus PCI
++name "i82559a", bus PCI
++name "i82558b", bus PCI
++name "i82558a", bus PCI
++name "i82557c", bus PCI
++name "i82557b", bus PCI
++name "i82557a", bus PCI
++name "i82551", bus PCI
++name "i82550", bus PCI
++name "pcnet", bus PCI
++name "rtl8139", bus PCI
++name "e1000", bus PCI, desc "Intel Gigabit Ethernet"
++name "ide-drive", bus IDE
++name "isa-ide", bus ISA
++name "ES1370", bus PCI, desc "ENSONIQ AudioPCI ES1370"
++name "AC97", bus PCI, desc "Intel 82801AA AC97 Audio"
++name "intel-hda", bus PCI, desc "Intel HD Audio Controller"
++name "hda-duplex", bus HDA, desc "HDA Audio Codec, duplex"
++name "hda-output", bus HDA, desc "HDA Audio Codec, output-only"
++name "VGA", bus PCI
++name "SUNW,fdtwo", bus System
++name "sysbus-fdc", bus System
++name "isa-serial", bus ISA
++name "cirrus-vga", bus PCI, desc "Cirrus CLGD 54xx VGA"
++name "isa-parallel", bus ISA
++name "piix4-usb-uhci", bus PCI
++name "piix3-usb-uhci", bus PCI
++name "vmware-svga", bus PCI
++name "ib700", bus ISA
++name "ne2k_isa", bus ISA
++name "testdev", bus ISA
++name "pci-assign", bus PCI, desc "pass through host pci devices to the guest"
++name "qxl", bus PCI, desc "Spice QXL GPU (secondary)"
++name "qxl-vga", bus PCI, desc "Spice QXL GPU (primary, vga compatible)"
++name "smbus-eeprom", bus I2C
++name "usb-hub", bus USB
++name "usb-host", bus USB
++name "usb-kbd", bus USB
++name "usb-mouse", bus USB
++name "usb-tablet", bus USB
++name "usb-wacom-tablet", bus USB, desc "QEMU PenPartner Tablet"
++name "usb-braille", bus USB
++name "usb-serial", bus USB
++name "usb-net", bus USB
++name "usb-bt-dongle", bus USB
++name "usb-ccid", bus USB, desc "CCID Rev 1.1 smartcard reader"
++name "ccid-card-passthru", bus ccid-bus, desc "passthrough smartcard"
++name "virtserialport", bus virtio-serial-bus
++name "virtconsole", bus virtio-serial-bus
++name "i6300esb", bus PCI
++name "ne2k_pci", bus PCI
++pci-assign.host=pci-hostaddr
++pci-assign.iommu=uint32
++pci-assign.configfd=string
++virtio-blk-pci.class=hex32
++virtio-blk-pci.drive=drive
++virtio-blk-pci.logical_block_size=uint16
++virtio-blk-pci.physical_block_size=uint16
++virtio-blk-pci.min_io_size=uint16
++virtio-blk-pci.opt_io_size=uint32
++virtio-blk-pci.ioeventfd=on/off
++virtio-blk-pci.vectors=uint32
++virtio-blk-pci.indirect_desc=on/off
++virtio-blk-pci.scsi=on/off
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index e9579de..20ec08d 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -437,6 +437,49 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
+             QEMUD_CMD_FLAG_DRIVE_AIO,
+             13000, 1,  0);
++    DO_TEST("qemu-kvm-0.12.1.2-rhel61",
++            QEMUD_CMD_FLAG_VNC_COLON |
++            QEMUD_CMD_FLAG_NO_REBOOT |
++            QEMUD_CMD_FLAG_DRIVE |
++            QEMUD_CMD_FLAG_NAME |
++            QEMUD_CMD_FLAG_UUID |
++            QEMUD_CMD_FLAG_VNET_HDR |
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_TCP |
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC |
++            QEMUD_CMD_FLAG_DRIVE_CACHE_V2 |
++            QEMUD_CMD_FLAG_KVM |
++            QEMUD_CMD_FLAG_DRIVE_FORMAT |
++            QEMUD_CMD_FLAG_DRIVE_SERIAL |
++            QEMUD_CMD_FLAG_DRIVE_READONLY |
++            QEMUD_CMD_FLAG_VGA |
++            QEMUD_CMD_FLAG_0_10 |
++            QEMUD_CMD_FLAG_PCIDEVICE |
++            QEMUD_CMD_FLAG_MEM_PATH |
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_UNIX |
++            QEMUD_CMD_FLAG_CHARDEV |
++            QEMUD_CMD_FLAG_ENABLE_KVM |
++            QEMUD_CMD_FLAG_BALLOON |
++            QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_SMP_TOPOLOGY |
++            QEMUD_CMD_FLAG_RTC |
++            QEMUD_CMD_FLAG_VNET_HOST |
++            QEMUD_CMD_FLAG_NO_KVM_PIT |
++            QEMUD_CMD_FLAG_TDF |
++            QEMUD_CMD_FLAG_PCI_CONFIGFD |
++            QEMUD_CMD_FLAG_NODEFCONFIG |
++            QEMUD_CMD_FLAG_BOOT_MENU |
++            QEMUD_CMD_FLAG_NESTING |
++            QEMUD_CMD_FLAG_NAME_PROCESS |
++            QEMUD_CMD_FLAG_SMBIOS_TYPE |
++            QEMUD_CMD_FLAG_VGA_QXL |
++            QEMUD_CMD_FLAG_SPICE |
++            QEMUD_CMD_FLAG_VGA_NONE |
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
++            QEMUD_CMD_FLAG_HDA_DUPLEX |
++            QEMUD_CMD_FLAG_DRIVE_AIO |
++            QEMUD_CMD_FLAG_CCID_PASSTHRU |
++            QEMUD_CMD_FLAG_CHARDEV_SPICEVMC,
++            12001, 1,  0);
+ 
+     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+ }
+-- 
+1.7.4
+

@@ -1,0 +1,156 @@
+From 57675dcc5c41db21289f5370d986c054c2547ce3 Mon Sep 17 00:00:00 2001
+Message-Id: <57675dcc5c41db21289f5370d986c054c2547ce3.1299776671.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:53 -0700
+Subject: [PATCH] audit: audit qemu memory and vcpu adjusments
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+* src/qemu/qemu_audit.h (qemuDomainMemoryAudit)
+(qemuDomainVcpuAudit): New prototypes.
+* src/qemu/qemu_audit.c (qemuDomainResourceAudit)
+(qemuDomainMemoryAudit, qemuDomainVcpuAudit): New functions.
+(qemuDomainStartAudit): Call as appropriate.
+* src/qemu/qemu_driver.c (qemudDomainSetMemory)
+(qemudDomainHotplugVcpus): Likewise.
+(cherry picked from commit e25f2c74dfa2f4df4261ee637428b2ba021b5014)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split affected context
+---
+ src/qemu/qemu_audit.c  |   56 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_audit.h  |   10 ++++++++
+ src/qemu/qemu_driver.c |    6 ++++-
+ 3 files changed, 71 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_audit.c b/src/qemu/qemu_audit.c
+index 76dacf7..4e24e9a 100644
+--- a/src/qemu/qemu_audit.c
++++ b/src/qemu/qemu_audit.c
+@@ -148,6 +148,59 @@ cleanup:
+ }
+ 
+ 
++/**
++ * qemuDomainResourceAudit:
++ * @vm: domain making an integer resource change
++ * @resource: name of the resource: "mem" or "vcpu"
++ * @oldval: the old value of the resource
++ * @newval: the new value of the resource
++ * @reason: either "start" or "update"
++ * @success: true if the resource change succeeded
++ *
++ * Log an audit message about an attempted resource change.
++ */
++static void
++qemuDomainResourceAudit(virDomainObjPtr vm,
++                        const char *resource,
++                        unsigned long long oldval,
++                        unsigned long long newval,
++                        const char *reason,
++                        bool success)
++{
++    char uuidstr[VIR_UUID_STRING_BUFLEN];
++    char *vmname;
++
++    virUUIDFormat(vm->def->uuid, uuidstr);
++    if (!(vmname = virAuditEncode("vm", vm->def->name))) {
++        VIR_WARN0("OOM while encoding audit message");
++        return;
++    }
++
++    VIR_AUDIT(VIR_AUDIT_RECORD_RESOURCE, success,
++              "resrc=%s reason=%s %s uuid=%s old-%s=%lld new-%s=%lld",
++              resource, reason, vmname, uuidstr,
++              resource, oldval, resource, newval);
++
++    VIR_FREE(vmname);
++}
++
++void
++qemuDomainMemoryAudit(virDomainObjPtr vm,
++                      unsigned long long oldmem, unsigned long long newmem,
++                      const char *reason, bool success)
++{
++    return qemuDomainResourceAudit(vm, "mem", oldmem, newmem, reason, success);
++}
++
++void
++qemuDomainVcpuAudit(virDomainObjPtr vm,
++                    unsigned int oldvcpu, unsigned int newvcpu,
++                    const char *reason, bool success)
++{
++    return qemuDomainResourceAudit(vm, "vcpu", oldvcpu, newvcpu, reason,
++                                   success);
++}
++
+ static void qemuDomainLifecycleAudit(virDomainObjPtr vm,
+                                      const char *op,
+                                      const char *reason,
+@@ -185,6 +238,9 @@ void qemuDomainStartAudit(virDomainObjPtr vm, const char *reason, bool success)
+         qemuDomainNetAudit(vm, NULL, net, "start", true);
+     }
+ 
++    qemuDomainMemoryAudit(vm, 0, vm->def->mem.cur_balloon, "start", true);
++    qemuDomainVcpuAudit(vm, 0, vm->def->vcpus, "start", true);
++
+     qemuDomainLifecycleAudit(vm, "start", reason, success);
+ }
+ 
+diff --git a/src/qemu/qemu_audit.h b/src/qemu/qemu_audit.h
+index da18eb4..fa429f3 100644
+--- a/src/qemu/qemu_audit.h
++++ b/src/qemu/qemu_audit.h
+@@ -45,6 +45,16 @@ void qemuDomainCgroupAudit(virDomainObjPtr vm,
+                            const char *item,
+                            const char *name,
+                            bool success);
++void qemuDomainMemoryAudit(virDomainObjPtr vm,
++                           unsigned long long oldmem,
++                           unsigned long long newmem,
++                           const char *reason,
++                           bool success);
++void qemuDomainVcpuAudit(virDomainObjPtr vm,
++                         unsigned int oldvcpu,
++                         unsigned int newvcpu,
++                         const char *reason,
++                         bool success);
+ void qemuDomainSecurityLabelAudit(virDomainObjPtr vm, bool success);
+ 
+ #endif /* __QEMU_AUDIT_H__ */
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 92973c0..9812180 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4356,6 +4356,8 @@ static int qemudDomainSetMemory(virDomainPtr dom, unsigned long newmem) {
+     qemuDomainObjEnterMonitor(vm);
+     r = qemuMonitorSetBalloon(priv->mon, newmem);
+     qemuDomainObjExitMonitor(vm);
++    qemuDomainMemoryAudit(vm, vm->def->mem.cur_balloon, newmem, "update",
++                          r == 1);
+     if (r < 0)
+         goto endjob;
+ 
+@@ -5446,8 +5448,9 @@ static void processWatchdogEvent(void *data, void *opaque)
+ static int qemudDomainHotplugVcpus(virDomainObjPtr vm, unsigned int nvcpus)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    int i, rc;
++    int i, rc = 1;
+     int ret = -1;
++    int oldvcpus = vm->def->vcpus;
+ 
+     qemuDomainObjEnterMonitor(vm);
+ 
+@@ -5482,6 +5485,7 @@ static int qemudDomainHotplugVcpus(virDomainObjPtr vm, unsigned int nvcpus)
+ 
+ cleanup:
+     qemuDomainObjExitMonitor(vm);
++    qemuDomainVcpuAudit(vm, oldvcpus, nvcpus, "update", rc == 1);
+     return ret;
+ 
+ unsupported:
+-- 
+1.7.4.1
+

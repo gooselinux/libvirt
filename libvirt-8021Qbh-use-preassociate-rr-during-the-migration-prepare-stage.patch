@@ -1,0 +1,72 @@
+From 24ccac94d913e3c4137cb45634ac0d6164c423f6 Mon Sep 17 00:00:00 2001
+Message-Id: <24ccac94d913e3c4137cb45634ac0d6164c423f6.1301393957.git.jdenemar@redhat.com>
+From: Roopa Prabhu <roprabhu@cisco.com>
+Date: Tue, 22 Mar 2011 15:27:01 -0400
+Subject: [PATCH] 8021Qbh: use preassociate-rr during the migration prepare stage
+
+https://bugzilla.redhat.com/show_bug.cgi?id=684870
+
+This helps with restoring network connectivity on source host if
+migration fails during the prepare step on destination host.
+
+This patch introduces PREASSOCIATE-RR during incoming VM migration on the
+destination host. This is similar to the usage of PREASSOCIATE during
+migration in 8021qbg libvirt code today. PREASSOCIATE-RR is a VDP operation.
+With the latest at IEEE, 8021qbh will need to support VDP operations.
+A corresponding enic driver patch to support PREASSOCIATE-RR for 8021qbh
+will be posted for net-next-2.6 inclusion soon.
+(cherry picked from commit 7708da38c7b58034bc792a387527f06a85ef83c7)
+---
+ src/util/macvtap.c |   15 ++++++++++-----
+ 1 files changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/src/util/macvtap.c b/src/util/macvtap.c
+index 066e962..674fd47 100644
+--- a/src/util/macvtap.c
++++ b/src/util/macvtap.c
+@@ -87,6 +87,7 @@ enum virVirtualPortOp {
+     ASSOCIATE = 0x1,
+     DISASSOCIATE = 0x2,
+     PREASSOCIATE = 0x3,
++    PREASSOCIATE_RR = 0x4,
+ };
+ 
+ 
+@@ -1452,6 +1453,7 @@ doPortProfileOp8021Qbh(const char *ifname,
+     }
+ 
+     switch (virtPortOp) {
++    case PREASSOCIATE_RR:
+     case ASSOCIATE:
+         rc = virGetHostUUID(hostuuid);
+         if (rc)
+@@ -1465,7 +1467,9 @@ doPortProfileOp8021Qbh(const char *ifname,
+                                    vm_uuid,
+                                    hostuuid,
+                                    vf,
+-                                   PORT_REQUEST_ASSOCIATE);
++                                   (virtPortOp == PREASSOCIATE_RR) ?
++                                    PORT_REQUEST_PREASSOCIATE_RR
++                                    : PORT_REQUEST_ASSOCIATE);
+         if (rc == -ETIMEDOUT)
+             /* Association timed out, disassociate */
+             doPortProfileOpCommon(nltarget_kernel, NULL, ifindex,
+@@ -1553,10 +1557,11 @@ vpAssociatePortProfileId(const char *macvtap_ifname,
+         break;
+ 
+     case VIR_VIRTUALPORT_8021QBH:
+-        /* avoid associating twice */
+-        if (vmOp != VIR_VM_OP_MIGRATE_IN_FINISH)
+-            rc = doPortProfileOp8021Qbh(linkdev, macvtap_macaddr,
+-                                        virtPort, vmuuid, ASSOCIATE);
++        rc = doPortProfileOp8021Qbh(linkdev, macvtap_macaddr,
++                                    virtPort, vmuuid,
++                                    (vmOp == VIR_VM_OP_MIGRATE_IN_START)
++                                      ? PREASSOCIATE_RR
++                                      : ASSOCIATE);
+         if (vmOp != VIR_VM_OP_MIGRATE_IN_START && !rc)
+             ifaceUp(linkdev);
+         break;
+-- 
+1.7.4.1
+

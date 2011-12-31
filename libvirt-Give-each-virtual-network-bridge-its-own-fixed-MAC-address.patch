@@ -1,0 +1,420 @@
+From 236cb48d861036ec2c407f6ad1465fc936f521e5 Mon Sep 17 00:00:00 2001
+Message-Id: <236cb48d861036ec2c407f6ad1465fc936f521e5.1298580376.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Thu, 17 Feb 2011 15:41:52 -0500
+Subject: [PATCH] Give each virtual network bridge its own fixed MAC address
+
+This is a pure cherry-pick of upstream:
+
+   commit 5754dbd56d4738112a86776c09e810e32f7c3224
+   Author: Laine Stump <laine@laine.org>
+   Date:   Wed Feb 9 03:28:12 2011 -0500
+
+It fixes:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=609463
+
+The problem was that, since a bridge always acquires the MAC address
+of the connected interface with the numerically lowest MAC, as guests
+are started and stopped, it was possible for the MAC address to change
+over time, and this change in the network was being detected by
+Windows 7 (it sees the MAC of the default route change), so on each
+reboot it would bring up a dialog box asking about this "new network".
+
+The solution is to create a dummy tap interface with a MAC guaranteed
+to be lower than any guest interface's MAC, and attach that tap to the
+bridge as soon as it's created. Since all guest MAC addresses start
+with 0xFE, we can just generate a MAC with the standard "0x52, 0x54,
+0" prefix, and it's guaranteed to always win (physical interfaces are
+never connected to these bridges, so we don't need to worry about
+competing numerically with them).
+
+Note that the dummy tap is never set to IFF_UP state - that's not
+necessary in order for the bridge to take its MAC, and not setting it
+to UP eliminates the clutter of having an (eg) "virbr0-nic" displayed
+in the output of the ifconfig command.
+
+I chose to not auto-generate the MAC address in the network XML
+parser, as there are likely to be consumers of that API that don't
+need or want to have a MAC address associated with the
+bridge.
+
+Instead, in bridge_driver.c when the network is being defined, if
+there is no MAC, one is generated. To account for virtual network
+configs that already exist when upgrading from an older version of
+libvirt, I've added a %post script to the specfile that searches for
+all network definitions in both the config directory
+(/etc/libvirt/qemu/networks) and the state directory
+(/var/lib/libvirt/network) that are missing a mac address, generates a
+random address, and adds it to the config (and a matching address to
+the state file, if there is one).
+
+docs/formatnetwork.html.in: document <mac address.../>
+docs/schemas/network.rng: add nac address to schema
+libvirt.spec.in: %post script to update existing networks
+src/conf/network_conf.[ch]: parse and format <mac address.../>
+src/libvirt_private.syms: export a couple private symbols we need
+src/network/bridge_driver.c:
+    auto-generate mac address when needed,
+    create dummy interface if mac address is present.
+tests/networkxml2xmlin/isolated-network.xml
+tests/networkxml2xmlin/routed-network.xml
+tests/networkxml2xmlout/isolated-network.xml
+tests/networkxml2xmlout/routed-network.xml: add mac address to some tests
+---
+ docs/formatnetwork.html.in                   |   21 ++++++++-
+ docs/schemas/network.rng                     |    8 +++
+ libvirt.spec.in                              |   40 ++++++++++++++++
+ src/conf/network_conf.c                      |   30 ++++++++++++
+ src/conf/network_conf.h                      |    5 ++
+ src/libvirt_private.syms                     |    2 +
+ src/network/bridge_driver.c                  |   65 ++++++++++++++++++++++++++
+ tests/networkxml2xmlin/isolated-network.xml  |    1 +
+ tests/networkxml2xmlin/routed-network.xml    |    1 +
+ tests/networkxml2xmlout/isolated-network.xml |    1 +
+ tests/networkxml2xmlout/routed-network.xml   |    1 +
+ 11 files changed, 173 insertions(+), 2 deletions(-)
+
+diff --git a/docs/formatnetwork.html.in b/docs/formatnetwork.html.in
+index b1b0485..c6969eb 100644
+--- a/docs/formatnetwork.html.in
++++ b/docs/formatnetwork.html.in
+@@ -105,12 +105,15 @@
+     <h3><a name="elementsAddress">Addressing</a></h3>
+ 
+     <p>
+-      The final set of elements define the IPv4 address range available,
+-      and optionally enable DHCP sevices.
++      The final set of elements define the addresses (IPv4 and/or
++      IPv6, as well as MAC) to be assigned to the bridge device
++      associated with the virtual network, and optionally enable DHCP
++      services.
+     </p>
+ 
+     <pre>
+         ...
++        &lt;mac address='00:16:3E:5D:C7:9E'/&gt;
+         &lt;ip address="192.168.122.1" netmask="255.255.255.0"&gt;
+           &lt;dhcp&gt;
+             &lt;range start="192.168.122.100" end="192.168.122.254" /&gt;
+@@ -121,6 +124,20 @@
+       &lt;/network&gt;</pre>
+ 
+     <dl>
++      <dt><code>mac</code></dt>
++      <dd>The <code>address</code> attribute defines a MAC
++        (hardware) address formatted as 6 groups of 2-digit
++        hexadecimal numbers, the groups separated by colons
++        (eg, <code>"52:54:00:1C:DA:2F"</code>).  This MAC address is
++        assigned to the bridge device when it is created.  Generally
++        it is best to not specify a MAC address when creating a
++        network - in this case, if a defined MAC address is needed for
++        proper operation, libvirt will automatically generate a random
++        MAC address and save it in the config. Allowing libvirt to
++        generate the MAC address will assure that it is compatible
++        with the idiosyncrasies of the platform where libvirt is
++        running. <span class="since">Since 0.8.8</span>
++      </dd>
+       <dt><code>ip</code></dt>
+       <dd>The <code>address</code> attribute defines an IPv4 address in
+         dotted-decimal format, or an IPv6 address in standard
+diff --git a/docs/schemas/network.rng b/docs/schemas/network.rng
+index 4252f30..6d01b06 100644
+--- a/docs/schemas/network.rng
++++ b/docs/schemas/network.rng
+@@ -50,6 +50,14 @@
+           </element>
+         </optional>
+ 
++        <!-- <mac> element -->
++        <optional>
++          <element name="mac">
++            <attribute name="address"><ref name="mac-addr"/></attribute>
++            <empty/>
++          </element>
++        </optional>
++
+         <!-- <forward> element -->
+         <optional>
+           <!-- The device through which the bridge is connected to the
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index abe91b5..4468a8e 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -628,6 +628,19 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+     if (virXPathULong("string(./bridge[1]/@delay)", ctxt, &def->delay) < 0)
+         def->delay = 0;
+ 
++    tmp = virXPathString("string(./mac[1]/@address)", ctxt);
++    if (tmp) {
++        if (virParseMacAddr(tmp, def->mac) < 0) {
++            virNetworkReportError(VIR_ERR_XML_ERROR,
++                                  _("Invalid bridge mac address '%s' in network '%s'"),
++                                  tmp, def->name);
++            VIR_FREE(tmp);
++            goto error;
++        }
++        VIR_FREE(tmp);
++        def->mac_specified = true;
++    }
++
+     nIps = virXPathNodeSet("./ip", ctxt, &ipNodes);
+     if (nIps > 0) {
+         int ii;
+@@ -854,6 +867,11 @@ char *virNetworkDefFormat(const virNetworkDefPtr def)
+     virBufferVSprintf(&buf, " stp='%s' delay='%ld' />\n",
+                       def->stp ? "on" : "off",
+                       def->delay);
++    if (def->mac_specified) {
++        char macaddr[VIR_MAC_STRING_BUFLEN];
++        virFormatMacAddr(def->mac, macaddr);
++        virBufferVSprintf(&buf, "  <mac address='%s'/>\n", macaddr);
++    }
+ 
+     if (def->domain)
+         virBufferVSprintf(&buf, "  <domain name='%s'/>\n", def->domain);
+@@ -1163,6 +1181,18 @@ error:
+ }
+ 
+ 
++void virNetworkSetBridgeMacAddr(virNetworkDefPtr def)
++{
++    if (!def->mac_specified) {
++        /* if the bridge doesn't have a mac address explicitly defined,
++         * autogenerate a random one.
++         */
++        virGenerateMacAddr((unsigned char[]){ 0x52, 0x54, 0 },
++                           def->mac);
++        def->mac_specified = true;
++    }
++}
++
+ /*
+  * virNetworkObjIsDuplicate:
+  * @doms : virNetworkObjListPtr to search
+diff --git a/src/conf/network_conf.h b/src/conf/network_conf.h
+index fd96c36..281124b 100644
+--- a/src/conf/network_conf.h
++++ b/src/conf/network_conf.h
+@@ -31,6 +31,7 @@
+ # include "internal.h"
+ # include "threads.h"
+ # include "network.h"
++# include "util.h"
+ 
+ /* 2 possible types of forwarding */
+ enum virNetworkForwardType {
+@@ -92,6 +93,8 @@ struct _virNetworkDef {
+     char *domain;
+     unsigned long delay;   /* Bridge forward delay (ms) */
+     unsigned int stp :1; /* Spanning tree protocol */
++    unsigned char mac[VIR_MAC_BUFLEN]; /* mac address of bridge device */
++    bool mac_specified;
+ 
+     int forwardType;    /* One of virNetworkForwardType constants */
+     char *forwardDev;   /* Destination device for forwarding */
+@@ -191,6 +194,8 @@ int virNetworkSetBridgeName(const virNetworkObjListPtr nets,
+                             virNetworkDefPtr def,
+                             int check_collision);
+ 
++void virNetworkSetBridgeMacAddr(virNetworkDefPtr def);
++
+ int virNetworkObjIsDuplicate(virNetworkObjListPtr doms,
+                              virNetworkDefPtr def,
+                              unsigned int check_active);
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 5387c35..786dd75 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -609,6 +609,7 @@ virNetworkObjLock;
+ virNetworkObjUnlock;
+ virNetworkRemoveInactive;
+ virNetworkSaveConfig;
++virNetworkSetBridgeMacAddr;
+ virNetworkSetBridgeName;
+ 
+ 
+@@ -856,6 +857,7 @@ virFileWriteStr;
+ virFindFileInPath;
+ virFork;
+ virFormatMacAddr;
++virGenerateMacAddr;
+ virGetGroupID;
+ virGetHostname;
+ virGetUserDirectory;
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 4c64a74..b609518 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -128,6 +128,15 @@ networkRadvdConfigFileName(const char *netname)
+     return configfile;
+ }
+ 
++static char *
++networkBridgeDummyNicName(const char *brname)
++{
++    char *nicname;
++
++    virAsprintf(&nicname, "%s-nic", brname);
++    return nicname;
++}
++
+ static void
+ networkFindActiveConfigs(struct network_driver *driver) {
+     unsigned int i;
+@@ -1535,6 +1544,7 @@ networkStartNetworkDaemon(struct network_driver *driver,
+     bool v4present = false, v6present = false;
+     virErrorPtr save_err = NULL;
+     virNetworkIpDefPtr ipdef;
++    char *macTapIfName;
+ 
+     if (virNetworkObjIsActive(network)) {
+         networkReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -1554,6 +1564,30 @@ networkStartNetworkDaemon(struct network_driver *driver,
+         return -1;
+     }
+ 
++    if (network->def->mac_specified) {
++        /* To set a mac for the bridge, we need to define a dummy tap
++         * device, set its mac, then attach it to the bridge. As long
++         * as its mac address is lower than any other interface that
++         * gets attached, the bridge will always maintain this mac
++         * address.
++         */
++        macTapIfName = networkBridgeDummyNicName(network->def->bridge);
++        if (!macTapIfName) {
++            virReportOOMError();
++            goto err0;
++        }
++        if ((err = brAddTap(driver->brctl, network->def->bridge,
++                            &macTapIfName, network->def->mac, 0, false, NULL))) {
++            virReportSystemError(err,
++                                 _("cannot create dummy tap device '%s' to set mac"
++                                   " address on bridge '%s'"),
++                                 macTapIfName, network->def->bridge);
++            VIR_FREE(macTapIfName);
++            goto err0;
++        }
++        VIR_FREE(macTapIfName);
++    }
++
+     /* Set bridge options */
+     if ((err = brSetForwardDelay(driver->brctl, network->def->bridge,
+                                  network->def->delay))) {
+@@ -1664,6 +1698,17 @@ networkStartNetworkDaemon(struct network_driver *driver,
+  err1:
+     if (!save_err)
+         save_err = virSaveLastError();
++
++    if ((err = brDeleteTap(driver->brctl, macTapIfName))) {
++        char ebuf[1024];
++        VIR_WARN("Failed to delete dummy tap device '%s' on bridge '%s' : %s",
++                 macTapIfName, network->def->bridge,
++                 virStrerror(err, ebuf, sizeof ebuf));
++    }
++
++ err0:
++    if (!save_err)
++        save_err = virSaveLastError();
+     if ((err = brDeleteBridge(driver->brctl, network->def->bridge))) {
+         char ebuf[1024];
+         VIR_WARN("Failed to delete bridge '%s' : %s",
+@@ -1683,6 +1728,7 @@ static int networkShutdownNetworkDaemon(struct network_driver *driver,
+ {
+     int err;
+     char *stateFile;
++    char *macTapIfName;
+ 
+     VIR_INFO(_("Shutting down network '%s'"), network->def->name);
+ 
+@@ -1713,6 +1759,21 @@ static int networkShutdownNetworkDaemon(struct network_driver *driver,
+         kill(network->dnsmasqPid, SIGTERM);
+ 
+     char ebuf[1024];
++
++    if (network->def->mac_specified) {
++        macTapIfName = networkBridgeDummyNicName(network->def->bridge);
++        if (!macTapIfName) {
++            virReportOOMError();
++        } else {
++            if ((err = brDeleteTap(driver->brctl, macTapIfName))) {
++                VIR_WARN("Failed to delete dummy tap device '%s' on bridge '%s' : %s",
++                         macTapIfName, network->def->bridge,
++                         virStrerror(err, ebuf, sizeof ebuf));
++            }
++            VIR_FREE(macTapIfName);
++        }
++    }
++
+     if ((err = brSetInterfaceUp(driver->brctl, network->def->bridge, 0))) {
+         VIR_WARN("Failed to bring down bridge '%s' : %s",
+                  network->def->bridge, virStrerror(err, ebuf, sizeof ebuf));
+@@ -1957,6 +2018,8 @@ static virNetworkPtr networkCreate(virConnectPtr conn, const char *xml) {
+     if (virNetworkSetBridgeName(&driver->networks, def, 1))
+         goto cleanup;
+ 
++    virNetworkSetBridgeMacAddr(def);
++
+     if (!(network = virNetworkAssignDef(&driver->networks,
+                                         def)))
+         goto cleanup;
+@@ -1998,6 +2061,8 @@ static virNetworkPtr networkDefine(virConnectPtr conn, const char *xml) {
+     if (virNetworkSetBridgeName(&driver->networks, def, 1))
+         goto cleanup;
+ 
++    virNetworkSetBridgeMacAddr(def);
++
+     if (!(network = virNetworkAssignDef(&driver->networks,
+                                         def)))
+         goto cleanup;
+diff --git a/tests/networkxml2xmlin/isolated-network.xml b/tests/networkxml2xmlin/isolated-network.xml
+index 507e3bb..0d562ea 100644
+--- a/tests/networkxml2xmlin/isolated-network.xml
++++ b/tests/networkxml2xmlin/isolated-network.xml
+@@ -2,6 +2,7 @@
+   <name>private</name>
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a9b</uuid>
+   <bridge name="virbr2" />
++  <mac address='52:54:00:17:3F:37'/>
+   <ip address="192.168.152.1" netmask="255.255.255.0">
+     <dhcp>
+       <range start="192.168.152.2" end="192.168.152.254" />
+diff --git a/tests/networkxml2xmlin/routed-network.xml b/tests/networkxml2xmlin/routed-network.xml
+index 6634ee8..61d73c0 100644
+--- a/tests/networkxml2xmlin/routed-network.xml
++++ b/tests/networkxml2xmlin/routed-network.xml
+@@ -2,6 +2,7 @@
+   <name>local</name>
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a9b</uuid>
+   <bridge name="virbr1" />
++  <mac address='12:34:56:78:9A:BC'/>
+   <forward mode="route" dev="eth1"/>
+   <ip address="192.168.122.1" netmask="255.255.255.0">
+   </ip>
+diff --git a/tests/networkxml2xmlout/isolated-network.xml b/tests/networkxml2xmlout/isolated-network.xml
+index 1d06f19..cc320a9 100644
+--- a/tests/networkxml2xmlout/isolated-network.xml
++++ b/tests/networkxml2xmlout/isolated-network.xml
+@@ -2,6 +2,7 @@
+   <name>private</name>
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a9b</uuid>
+   <bridge name='virbr2' stp='on' delay='0' />
++  <mac address='52:54:00:17:3F:37'/>
+   <ip address='192.168.152.1' netmask='255.255.255.0'>
+     <dhcp>
+       <range start='192.168.152.2' end='192.168.152.254' />
+diff --git a/tests/networkxml2xmlout/routed-network.xml b/tests/networkxml2xmlout/routed-network.xml
+index 8f11166..3aa8109 100644
+--- a/tests/networkxml2xmlout/routed-network.xml
++++ b/tests/networkxml2xmlout/routed-network.xml
+@@ -3,6 +3,7 @@
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a9b</uuid>
+   <forward dev='eth1' mode='route'/>
+   <bridge name='virbr1' stp='on' delay='0' />
++  <mac address='12:34:56:78:9A:BC'/>
+   <ip address='192.168.122.1' netmask='255.255.255.0'>
+   </ip>
+ </network>
+-- 
+1.7.4.1
+

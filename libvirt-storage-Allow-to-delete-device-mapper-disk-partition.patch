@@ -1,0 +1,331 @@
+From 3008658d555b6eb2b558198d37fbfd1725361a00 Mon Sep 17 00:00:00 2001
+Message-Id: <3008658d555b6eb2b558198d37fbfd1725361a00.1297957056.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 17 Feb 2011 15:29:07 +0800
+Subject: [PATCH] storage: Allow to delete device mapper disk partition
+
+https://bugzilla.redhat.com/show_bug.cgi?id=611443
+
+The name convention of device mapper disk is different, and 'parted'
+can't be used to delete a device mapper disk partition. e.g.
+
+Name                 Path
+-----------------------------------------
+3600a0b80005ad1d7000093604cae912fp1 /dev/mapper/3600a0b80005ad1d7000093604cae912fp1
+
+Error: Expecting a partition number.
+
+This patch introduces 'dmsetup' to fix it.
+
+Changes:
+  - New function "virIsDevMapperDevice" in "src/utils/utils.c"
+  - remove "is_dm_device" in "src/storage/parthelper.c", use
+    "virIsDevMapperDevice" instead.
+  - Requires "device-mapper" for 'with-storage-disk" in "libvirt.spec.in"
+  - Check "dmsetup" in 'configure.ac' for "with-storage-disk"
+  - Changes on "src/Makefile.am" to link against libdevmapper
+  - New entry for "virIsDevMapperDevice" in "src/libvirt_private.syms"
+
+Changes from v1 to v3:
+  - s/virIsDeviceMapperDevice/virIsDevMapperDevice/g
+  - replace "virRun" with "virCommand"
+  - sort the list of util functions in "libvirt_private.syms"
+  - ATTRIBUTE_NONNULL(1) for virIsDevMapperDevice declaration.
+
+e.g.
+
+Name                 Path
+-----------------------------------------
+3600a0b80005ad1d7000093604cae912fp1 /dev/mapper/3600a0b80005ad1d7000093604cae912fp1
+
+Vol /dev/mapper/3600a0b80005ad1d7000093604cae912fp1 deleted
+
+Name                 Path
+-----------------------------------------
+(cherry picked from commit df1011ca8ee8160a2c60b2a639392e9d86fcf262)
+---
+ configure.ac                       |   24 +++++++++++++----
+ libvirt.spec.in                    |    1 +
+ src/Makefile.am                    |    8 +++---
+ src/libvirt_private.syms           |    1 +
+ src/storage/parthelper.c           |   14 +---------
+ src/storage/storage_backend_disk.c |   48 +++++++++++++++++++++--------------
+ src/util/util.c                    |   14 ++++++++++
+ src/util/util.h                    |    1 +
+ 8 files changed, 69 insertions(+), 42 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 765cc80..48d675e 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1725,12 +1725,19 @@ LIBPARTED_LIBS=
+ if test "$with_storage_disk" = "yes" ||
+    test "$with_storage_disk" = "check"; then
+   AC_PATH_PROG([PARTED], [parted], [], [$PATH:/sbin:/usr/sbin])
++  AC_PATH_PROG([DMSETUP], [dmsetup], [], [$PATH:/sbin:/usr/sbin])
+   if test -z "$PARTED" ; then
+     PARTED_FOUND=no
+   else
+     PARTED_FOUND=yes
+   fi
+ 
++  if test -z "$DMSETUP" ; then
++    DMSETUP_FOUND=no
++  else
++    DMSETUP_FOUND=yes
++  fi
++
+   if test "$PARTED_FOUND" = "yes" && test "x$PKG_CONFIG" != "x" ; then
+     PKG_CHECK_MODULES([LIBPARTED], [libparted >= $PARTED_REQUIRED], [],
+       [PARTED_FOUND=no])
+@@ -1748,14 +1755,17 @@ if test "$with_storage_disk" = "yes" ||
+     CFLAGS="$save_CFLAGS"
+   fi
+ 
+-  if test "$PARTED_FOUND" = "no" ; then
+-    if test "$with_storage_disk" = "yes" ; then
+-      AC_MSG_ERROR([We need parted for disk storage driver])
+-    else
++  if test "$with_storage_disk" = "yes" &&
++     test "$PARTED_FOUND:$DMSETUP_FOUND" != "yes:yes"; then
++    AC_MSG_ERROR([Need both parted and dmsetup for disk storage driver])
++  fi
++
++  if test "$with_storage_disk" = "check"; then
++    if test "$PARTED_FOUND:$DMSETUP_FOUND" != "yes:yes"; then
+       with_storage_disk=no
++    else
++      with_storage_disk=yes
+     fi
+-  else
+-    with_storage_disk=yes
+   fi
+ 
+   if test "$with_storage_disk" = "yes"; then
+@@ -1763,6 +1773,8 @@ if test "$with_storage_disk" = "yes" ||
+       [whether Disk backend for storage driver is enabled])
+     AC_DEFINE_UNQUOTED([PARTED],["$PARTED"],
+       [Location or name of the parted program])
++    AC_DEFINE_UNQUOTED([DMSETUP],["$DMSETUP"],
++      [Location or name of the dmsetup program])
+   fi
+ fi
+ AM_CONDITIONAL([WITH_STORAGE_DISK], [test "$with_storage_disk" = "yes"])
+diff --git a/libvirt.spec.in b/libvirt.spec.in
+index fe14889..35d1f96 100644
+--- a/libvirt.spec.in
++++ b/libvirt.spec.in
+@@ -280,6 +280,7 @@ Requires: iscsi-initiator-utils
+ %if %{with_storage_disk}
+ # For disk driver
+ Requires: parted
++Requires: device-mapper
+ %endif
+ %if %{with_storage_mpath}
+ # For multipath support
+diff --git a/src/Makefile.am b/src/Makefile.am
+index c13724a..bd029d8 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -437,9 +437,9 @@ libvirt_la_BUILT_LIBADD = libvirt_util.la
+ libvirt_util_la_SOURCES =					\
+ 		$(UTIL_SOURCES)
+ libvirt_util_la_CFLAGS = $(CAPNG_CFLAGS) $(YAJL_CFLAGS) $(LIBNL_CFLAGS) \
+-		$(AM_CFLAGS) $(AUDIT_CFLAGS)
++		$(AM_CFLAGS) $(AUDIT_CFLAGS) $(DEVMAPPER_CFLAGS)
+ libvirt_util_la_LIBADD = $(CAPNG_LIBS) $(YAJL_LIBS) $(LIBNL_LIBS) \
+-		$(LIB_PTHREAD) $(AUDIT_LIBS)
++		$(LIB_PTHREAD) $(AUDIT_LIBS) $(DEVMAPPER_LIBS)
+ 
+ 
+ noinst_LTLIBRARIES += libvirt_conf.la
+@@ -1154,7 +1154,6 @@ libvirt_parthelper_SOURCES = $(STORAGE_HELPER_DISK_SOURCES)
+ libvirt_parthelper_LDFLAGS = $(WARN_LDFLAGS) $(AM_LDFLAGS)
+ libvirt_parthelper_LDADD =		\
+ 		$(LIBPARTED_LIBS)	\
+-		$(DEVMAPPER_LIBS)	\
+ 		libvirt_util.la		\
+ 		../gnulib/lib/libgnu.la
+ 
+@@ -1179,7 +1178,8 @@ libvirt_lxc_SOURCES =						\
+ libvirt_lxc_LDFLAGS = $(WARN_CFLAGS) $(AM_LDFLAGS)
+ libvirt_lxc_LDADD = $(CAPNG_LIBS) $(YAJL_LIBS) \
+ 		$(LIBXML_LIBS) $(NUMACTL_LIBS) $(LIB_PTHREAD) \
+-		$(LIBNL_LIBS) $(AUDIT_LIBS) ../gnulib/lib/libgnu.la
++		$(LIBNL_LIBS) $(AUDIT_LIBS) $(DEVMAPPER_LIBS) \
++		../gnulib/lib/libgnu.la
+ libvirt_lxc_CFLAGS =				\
+ 		$(LIBPARTED_CFLAGS)		\
+ 		$(NUMACTL_CFLAGS)		\
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index f594f67..5387c35 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -863,6 +863,7 @@ virGetUserID;
+ virGetUserName;
+ virHexToBin;
+ virIndexToDiskName;
++virIsDevMapperDevice;
+ virKillProcess;
+ virMacAddrCompare;
+ virParseMacAddr;
+diff --git a/src/storage/parthelper.c b/src/storage/parthelper.c
+index 6ef413d..acc9171 100644
+--- a/src/storage/parthelper.c
++++ b/src/storage/parthelper.c
+@@ -59,18 +59,6 @@ enum diskCommand {
+     DISK_GEOMETRY
+ };
+ 
+-static int
+-is_dm_device(const char *devname)
+-{
+-    struct stat buf;
+-
+-    if (devname && !stat(devname, &buf) && dm_is_dm_major(major(buf.st_rdev))) {
+-        return 1;
+-    }
+-
+-    return 0;
+-}
+-
+ int main(int argc, char **argv)
+ {
+     PedDevice *dev;
+@@ -96,7 +84,7 @@ int main(int argc, char **argv)
+     }
+ 
+     path = argv[1];
+-    if (is_dm_device(path)) {
++    if (virIsDevMapperDevice(path)) {
+         partsep = "p";
+         canonical_path = strdup(path);
+         if (canonical_path == NULL) {
+diff --git a/src/storage/storage_backend_disk.c b/src/storage/storage_backend_disk.c
+index c7ade6b..98f74da 100644
+--- a/src/storage/storage_backend_disk.c
++++ b/src/storage/storage_backend_disk.c
+@@ -31,6 +31,7 @@
+ #include "storage_backend_disk.h"
+ #include "util.h"
+ #include "memory.h"
++#include "command.h"
+ #include "configmake.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_STORAGE
+@@ -647,6 +648,8 @@ virStorageBackendDiskDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
+     char *part_num = NULL;
+     char *devpath = NULL;
+     char *devname, *srcname;
++    virCommandPtr cmd = NULL;
++    bool isDevMapperDevice;
+     int rc = -1;
+ 
+     if (virFileResolveLink(vol->target.path, &devpath) < 0) {
+@@ -660,38 +663,45 @@ virStorageBackendDiskDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
+     srcname = basename(pool->def->source.devices[0].path);
+     DEBUG("devname=%s, srcname=%s", devname, srcname);
+ 
+-    if (!STRPREFIX(devname, srcname)) {
++    isDevMapperDevice = virIsDevMapperDevice(devpath);
++
++    if (!isDevMapperDevice && !STRPREFIX(devname, srcname)) {
+         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("Volume path '%s' did not start with parent "
+                                 "pool source device name."), devname);
+         goto cleanup;
+     }
+ 
+-    part_num = devname + strlen(srcname);
++    if (!isDevMapperDevice) {
++        part_num = devname + strlen(srcname);
+ 
+-    if (*part_num == 0) {
+-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
+-                              _("cannot parse partition number from target "
+-                                "'%s'"), devname);
+-        goto cleanup;
+-    }
++        if (*part_num == 0) {
++            virStorageReportError(VIR_ERR_INTERNAL_ERROR,
++                                  _("cannot parse partition number from target "
++                                    "'%s'"), devname);
++            goto cleanup;
++        }
+ 
+-    /* eg parted /dev/sda rm 2 */
+-    const char *prog[] = {
+-        PARTED,
+-        pool->def->source.devices[0].path,
+-        "rm",
+-        "--script",
+-        part_num,
+-        NULL,
+-    };
++        /* eg parted /dev/sda rm 2 */
++        cmd = virCommandNewArgList(PARTED,
++                                   pool->def->source.devices[0].path,
++                                   "rm",
++                                   "--script",
++                                   part_num,
++                                   NULL);
++        if (virCommandRun(cmd, NULL) < 0)
++            goto cleanup;
++    } else {
++        cmd = virCommandNewArgList(DMSETUP, "remove", "--force", devpath, NULL);
+ 
+-    if (virRun(prog, NULL) < 0)
+-        goto cleanup;
++        if (virCommandRun(cmd, NULL) < 0)
++            goto cleanup;
++    }
+ 
+     rc = 0;
+ cleanup:
+     VIR_FREE(devpath);
++    virCommandFree(cmd);
+     return rc;
+ }
+ 
+diff --git a/src/util/util.c b/src/util/util.c
+index f412a83..5e6c792 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -45,6 +45,7 @@
+ #include <string.h>
+ #include <signal.h>
+ #include <termios.h>
++#include <libdevmapper.h>
+ #include "c-ctype.h"
+ 
+ #ifdef HAVE_PATHS_H
+@@ -3098,3 +3099,16 @@ virTimestamp(void)
+ 
+     return timestamp;
+ }
++
++bool
++virIsDevMapperDevice(const char *devname)
++{
++    struct stat buf;
++
++    if (!stat(devname, &buf) &&
++        S_ISBLK(buf.st_mode) &&
++        dm_is_dm_major(major(buf.st_rdev)))
++            return true;
++
++    return false;
++}
+diff --git a/src/util/util.h b/src/util/util.h
+index 8373038..c822174 100644
+--- a/src/util/util.h
++++ b/src/util/util.h
+@@ -296,4 +296,5 @@ int virBuildPathInternal(char **path, ...) ATTRIBUTE_SENTINEL;
+ 
+ char *virTimestamp(void);
+ 
++bool virIsDevMapperDevice(const char *devname) ATTRIBUTE_NONNULL(1);
+ #endif /* __VIR_UTIL_H__ */
+-- 
+1.7.4.1
+

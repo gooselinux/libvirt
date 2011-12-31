@@ -1,0 +1,367 @@
+From 5d3043809844ab3302d08587c4cf9ecbd481791f Mon Sep 17 00:00:00 2001
+Message-Id: <5d3043809844ab3302d08587c4cf9ecbd481791f.1296819816.git.jdenemar@redhat.com>
+From: Niels de Vos <ndevos@redhat.com>
+Date: Tue, 1 Feb 2011 16:22:01 +0000
+Subject: [PATCH] qemuBuildDeviceAddressStr() checks for QEMUD_CMD_FLAG_PCI_MULTIBUS
+
+Taken as a dependency for
+    https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+Depending if the qemu binary supports multiple pci-busses, the device
+options will contain "bus=pci" or "bus=pci.0".
+
+Only x86_64 and i686 seem to have support for multiple PCI-busses. When
+a guest of these architectures is started, set the
+QEMUD_CMD_FLAG_PCI_MULTIBUS flag.
+
+Signed-off-by: Niels de Vos <ndevos@redhat.com>
+(cherry picked from commit 0b864eb103274e43441ea784bfc7f99a0771a0f5)
+---
+ AUTHORS                      |    1 +
+ src/qemu/qemu_capabilities.h |    1 +
+ src/qemu/qemu_command.c      |   67 ++++++++++++++++++++++++++---------------
+ src/qemu/qemu_command.h      |   18 +++++++----
+ src/qemu/qemu_hotplug.c      |    5 ++-
+ 5 files changed, 59 insertions(+), 33 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 23fb4ab..436c131 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -144,6 +144,7 @@ Patches have also been contributed by:
+   Paweł Krześniak      <pawel.krzesniak@gmail.com>
+   Kay Schubert         <kayegypt@web.de>
+   Matthias Dahl        <mdvirt@designassembly.de>
++  Niels de Vos         <ndevos@redhat.com>
+ 
+   [....send patches to get your name here....]
+ 
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index 59bb22a..e04f6a8 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -86,6 +86,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_BOOTINDEX     = (1LL << 49), /* -device bootindex property */
+     QEMUD_CMD_FLAG_HDA_DUPLEX    = (1LL << 50), /* -device hda-duplex */
+     QEMUD_CMD_FLAG_DRIVE_AIO     = (1LL << 51), /* -drive aio= supported */
++    QEMUD_CMD_FLAG_PCI_MULTIBUS  = (1LL << 52), /* bus=pci.0 vs bus=pci */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index f2c86c2..381ae18 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1088,7 +1088,8 @@ error:
+ 
+ static int
+ qemuBuildDeviceAddressStr(virBufferPtr buf,
+-                          virDomainDeviceInfoPtr info)
++                          virDomainDeviceInfoPtr info,
++                          unsigned long long qemuCmdFlags)
+ {
+     if (info->type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_PCI) {
+         if (info->addr.pci.domain != 0) {
+@@ -1113,7 +1114,10 @@ qemuBuildDeviceAddressStr(virBufferPtr buf,
+          * When QEMU grows support for > 1 PCI domain, then pci.0 change
+          * to pciNN.0  where NN is the domain number
+          */
+-        virBufferVSprintf(buf, ",bus=pci.0,addr=0x%x", info->addr.pci.slot);
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_PCI_MULTIBUS)
++            virBufferVSprintf(buf, ",bus=pci.0,addr=0x%x", info->addr.pci.slot);
++        else
++            virBufferVSprintf(buf, ",bus=pci,addr=0x%x", info->addr.pci.slot);
+     }
+     return 0;
+ }
+@@ -1383,7 +1387,7 @@ qemuBuildDriveDevStr(virDomainDiskDefPtr disk,
+         break;
+     case VIR_DOMAIN_DISK_BUS_VIRTIO:
+         virBufferAddLit(&opt, "virtio-blk-pci");
+-        qemuBuildDeviceAddressStr(&opt, &disk->info);
++        qemuBuildDeviceAddressStr(&opt, &disk->info, qemuCmdFlags);
+         break;
+     case VIR_DOMAIN_DISK_BUS_USB:
+         virBufferAddLit(&opt, "usb-storage");
+@@ -1447,7 +1451,8 @@ error:
+ 
+ 
+ char *
+-qemuBuildFSDevStr(virDomainFSDefPtr fs)
++qemuBuildFSDevStr(virDomainFSDefPtr fs,
++                  unsigned long long qemuCmdFlags)
+ {
+     virBuffer opt = VIR_BUFFER_INITIALIZER;
+ 
+@@ -1461,7 +1466,7 @@ qemuBuildFSDevStr(virDomainFSDefPtr fs)
+     virBufferVSprintf(&opt, ",id=%s", fs->info.alias);
+     virBufferVSprintf(&opt, ",fsdev=%s%s", QEMU_FSDEV_HOST_PREFIX, fs->info.alias);
+     virBufferVSprintf(&opt, ",mount_tag=%s", fs->dst);
+-    qemuBuildDeviceAddressStr(&opt, &fs->info);
++    qemuBuildDeviceAddressStr(&opt, &fs->info, qemuCmdFlags);
+ 
+     if (virBufferError(&opt)) {
+         virReportOOMError();
+@@ -1477,7 +1482,8 @@ error:
+ 
+ 
+ char *
+-qemuBuildControllerDevStr(virDomainControllerDefPtr def)
++qemuBuildControllerDevStr(virDomainControllerDefPtr def,
++                          unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+@@ -1514,7 +1520,7 @@ qemuBuildControllerDevStr(virDomainControllerDefPtr def)
+         goto error;
+     }
+ 
+-    if (qemuBuildDeviceAddressStr(&buf, &def->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &def->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -1581,7 +1587,7 @@ qemuBuildNicDevStr(virDomainNetDefPtr net,
+                       net->mac[0], net->mac[1],
+                       net->mac[2], net->mac[3],
+                       net->mac[4], net->mac[5]);
+-    if (qemuBuildDeviceAddressStr(&buf, &net->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &net->info, qemuCmdFlags) < 0)
+         goto error;
+     if (net->bootIndex && (qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX))
+         virBufferVSprintf(&buf, ",bootindex=%d", net->bootIndex);
+@@ -1702,7 +1708,8 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
+ 
+ 
+ char *
+-qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev)
++qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev,
++                        unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+@@ -1715,7 +1722,7 @@ qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev)
+ 
+     virBufferVSprintf(&buf, "%s", model);
+     virBufferVSprintf(&buf, ",id=%s", dev->info.alias);
+-    if (qemuBuildDeviceAddressStr(&buf, &dev->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &dev->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -1732,13 +1739,14 @@ error:
+ 
+ 
+ char *
+-qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev)
++qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev,
++                          unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+     virBufferAddLit(&buf, "virtio-balloon-pci");
+     virBufferVSprintf(&buf, ",id=%s", dev->info.alias);
+-    if (qemuBuildDeviceAddressStr(&buf, &dev->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &dev->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -1778,7 +1786,8 @@ error:
+ 
+ 
+ char *
+-qemuBuildSoundDevStr(virDomainSoundDefPtr sound)
++qemuBuildSoundDevStr(virDomainSoundDefPtr sound,
++                     unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     const char *model = virDomainSoundModelTypeToString(sound->model);
+@@ -1799,7 +1808,7 @@ qemuBuildSoundDevStr(virDomainSoundDefPtr sound)
+ 
+     virBufferVSprintf(&buf, "%s", model);
+     virBufferVSprintf(&buf, ",id=%s", sound->info.alias);
+-    if (qemuBuildDeviceAddressStr(&buf, &sound->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &sound->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -1839,7 +1848,8 @@ error:
+ }
+ 
+ static char *
+-qemuBuildVideoDevStr(virDomainVideoDefPtr video)
++qemuBuildVideoDevStr(virDomainVideoDefPtr video,
++                     unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     const char *model = qemuVideoTypeToString(video->type);
+@@ -1852,7 +1862,7 @@ qemuBuildVideoDevStr(virDomainVideoDefPtr video)
+ 
+     virBufferVSprintf(&buf, "%s", model);
+     virBufferVSprintf(&buf, ",id=%s", video->info.alias);
+-    if (qemuBuildDeviceAddressStr(&buf, &video->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &video->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -1894,7 +1904,8 @@ qemuOpenPCIConfig(virDomainHostdevDefPtr dev)
+ }
+ 
+ char *
+-qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev, const char *configfd)
++qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev, const char *configfd,
++                          unsigned long long qemuCmdFlags)
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+@@ -1906,7 +1917,7 @@ qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev, const char *configfd)
+     virBufferVSprintf(&buf, ",id=%s", dev->info.alias);
+     if (configfd && *configfd)
+         virBufferVSprintf(&buf, ",configfd=%s", configfd);
+-    if (qemuBuildDeviceAddressStr(&buf, &dev->info) < 0)
++    if (qemuBuildDeviceAddressStr(&buf, &dev->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+     if (virBufferError(&buf)) {
+@@ -2637,6 +2648,12 @@ qemuBuildCommandLine(virConnectPtr conn,
+         break;
+     }
+ 
++    /* Currently only x86_64 and i686 support PCI-multibus. */
++    if (STREQLEN(def->os.arch, "x86_64", 6) ||
++        STREQLEN(def->os.arch, "i686", 4)) {
++        qemuCmdFlags |= QEMUD_CMD_FLAG_PCI_MULTIBUS;
++    }
++
+     cmd = virCommandNewArgList(emulator, "-S", NULL);
+ 
+     virCommandAddEnvPassCommon(cmd);
+@@ -3051,7 +3068,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+             virCommandAddArg(cmd, "-device");
+ 
+             char *devstr;
+-            if (!(devstr = qemuBuildControllerDevStr(def->controllers[i])))
++            if (!(devstr = qemuBuildControllerDevStr(def->controllers[i], qemuCmdFlags)))
+                 goto no_memory;
+ 
+             virCommandAddArg(cmd, devstr);
+@@ -3302,7 +3319,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+             VIR_FREE(optstr);
+ 
+             virCommandAddArg(cmd, "-device");
+-            if (!(optstr = qemuBuildFSDevStr(fs)))
++            if (!(optstr = qemuBuildFSDevStr(fs, qemuCmdFlags)))
+                 goto error;
+             virCommandAddArg(cmd, optstr);
+             VIR_FREE(optstr);
+@@ -3830,7 +3847,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+                     virCommandAddArg(cmd, "-device");
+ 
+-                    if (!(str = qemuBuildVideoDevStr(def->videos[i])))
++                    if (!(str = qemuBuildVideoDevStr(def->videos[i], qemuCmdFlags)))
+                         goto error;
+ 
+                     virCommandAddArg(cmd, str);
+@@ -3865,7 +3882,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     virCommandAddArgList(cmd, "-soundhw", "pcspk", NULL);
+                 } else {
+                     virCommandAddArg(cmd, "-device");
+-                    if (!(str = qemuBuildSoundDevStr(sound)))
++                    if (!(str = qemuBuildSoundDevStr(sound, qemuCmdFlags)))
+                         goto error;
+ 
+                     virCommandAddArg(cmd, str);
+@@ -3931,7 +3948,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+         if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+             virCommandAddArg(cmd, "-device");
+ 
+-            optstr = qemuBuildWatchdogDevStr(watchdog);
++            optstr = qemuBuildWatchdogDevStr(watchdog, qemuCmdFlags);
+             if (!optstr)
+                 goto error;
+         } else {
+@@ -4005,7 +4022,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     }
+                 }
+                 virCommandAddArg(cmd, "-device");
+-                devstr = qemuBuildPCIHostdevDevStr(hostdev, configfd_name);
++                devstr = qemuBuildPCIHostdevDevStr(hostdev, configfd_name, qemuCmdFlags);
+                 VIR_FREE(configfd_name);
+                 if (!devstr)
+                     goto error;
+@@ -4104,7 +4121,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+             char *optstr;
+             virCommandAddArg(cmd, "-device");
+ 
+-            optstr = qemuBuildMemballoonDevStr(def->memballoon);
++            optstr = qemuBuildMemballoonDevStr(def->memballoon, qemuCmdFlags);
+             if (!optstr)
+                 goto error;
+             virCommandAddArg(cmd, optstr);
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 4e0040b..8ada3c1 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -79,23 +79,29 @@ char *qemuBuildFSStr(virDomainFSDefPtr fs,
+ /* Current, best practice */
+ char * qemuBuildDriveDevStr(virDomainDiskDefPtr disk,
+                             unsigned long long qemuCmdFlags);
+-char * qemuBuildFSDevStr(virDomainFSDefPtr fs);
++char * qemuBuildFSDevStr(virDomainFSDefPtr fs,
++                         unsigned long long qemuCmdFlags);
+ /* Current, best practice */
+-char * qemuBuildControllerDevStr(virDomainControllerDefPtr def);
++char * qemuBuildControllerDevStr(virDomainControllerDefPtr def,
++                                 unsigned long long qemuCmdFlags);
+ 
+-char * qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev);
++char * qemuBuildWatchdogDevStr(virDomainWatchdogDefPtr dev,
++                               unsigned long long qemuCmdFlags);
+ 
+-char * qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev);
++char * qemuBuildMemballoonDevStr(virDomainMemballoonDefPtr dev,
++                                 unsigned long long qemuCmdFlags);
+ 
+ char * qemuBuildUSBInputDevStr(virDomainInputDefPtr dev);
+ 
+-char * qemuBuildSoundDevStr(virDomainSoundDefPtr sound);
++char * qemuBuildSoundDevStr(virDomainSoundDefPtr sound,
++                            unsigned long long qemuCmdFlags);
+ 
+ /* Legacy, pre device support */
+ char * qemuBuildPCIHostdevPCIDevStr(virDomainHostdevDefPtr dev);
+ /* Current, best practice */
+ char * qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev,
+-                                 const char *configfd);
++                                 const char *configfd,
++                                 unsigned long long qemuCmdFlags);
+ 
+ int qemuOpenPCIConfig(virDomainHostdevDefPtr dev);
+ 
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index d3a9c2e..2ed4421 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -269,7 +269,7 @@ int qemuDomainAttachPciControllerDevice(struct qemud_driver *driver,
+         if (qemuAssignDeviceControllerAlias(controller) < 0)
+             goto cleanup;
+ 
+-        if (!(devstr = qemuBuildControllerDevStr(controller))) {
++        if (!(devstr = qemuBuildControllerDevStr(controller, qemuCmdFlags))) {
+             goto cleanup;
+         }
+     }
+@@ -841,7 +841,8 @@ int qemuDomainAttachHostPciDevice(struct qemud_driver *driver,
+             goto error;
+         }
+ 
+-        if (!(devstr = qemuBuildPCIHostdevDevStr(hostdev, configfd_name)))
++        if (!(devstr = qemuBuildPCIHostdevDevStr(hostdev, configfd_name,
++                                                 qemuCmdFlags)))
+             goto error;
+ 
+         qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-- 
+1.7.4
+

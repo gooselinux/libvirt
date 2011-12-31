@@ -1,0 +1,288 @@
+From 7f4ec959ebfdc7d9b9297532be76a65f8d36cb5d Mon Sep 17 00:00:00 2001
+Message-Id: <7f4ec959ebfdc7d9b9297532be76a65f8d36cb5d.1296838266.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:54:36 -0700
+Subject: [PATCH] smartcard: add spicevmc support
+
+https://bugzilla.redhat.com/show_bug.cgi?id=641834
+
+Adds <smartcard mode='passthrough' type='spicevmc'/>, which uses the
+new <channel name='smartcard'/> of <graphics type='spice'>.
+
+* docs/schemas/domain.rng: Support new XML.
+* docs/formatdomain.html.in: Document it.
+* src/conf/domain_conf.h (virDomainGraphicsSpiceChannelName): New
+enum value.
+(virDomainChrSpicevmcName): New enum.
+(virDomainChrSourceDef): Distinguish spicevmc types.
+* src/conf/domain_conf.c (virDomainGraphicsSpiceChannelName): Add
+smartcard.
+(virDomainSmartcardDefParseXML): Parse it.
+(virDomainChrDefParseXML, virDomainSmartcardDefParseXML): Set
+spicevmc name.
+(virDomainChrSpicevmc): New enum conversion functions.
+* src/libvirt_private.syms: Export new functions.
+* src/qemu/qemu_command.c (qemuBuildChrChardevStr): Conditionalize
+name.
+* tests/qemuxml2argvtest.c (domain): New test.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.args:
+New file.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.xml:
+Likewise.
+
+(cherry picked from commit 79f9267f4bd697fbcfeb040440404bc49195eb48)
+---
+ docs/formatdomain.html.in                          |   14 ++++++---
+ docs/schemas/domain.rng                            |    1 +
+ src/conf/domain_conf.c                             |   27 +++++++++++++------
+ src/conf/domain_conf.h                             |   12 ++++++++-
+ src/libvirt_private.syms                           |    2 +
+ src/qemu/qemu_command.c                            |    3 +-
+ ...emuxml2argv-smartcard-passthrough-spicevmc.args |    7 +++++
+ ...qemuxml2argv-smartcard-passthrough-spicevmc.xml |   16 +++++++++++
+ tests/qemuxml2argvtest.c                           |    4 +++
+ 9 files changed, 70 insertions(+), 16 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index edca651..59788a8 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -939,6 +939,7 @@
+       &lt;protocol type='raw'/&gt;
+       &lt;address type='ccid' controller='0' slot='0'/&gt;
+     &lt;/smartcard&gt;
++    &lt;smartcard mode='passthrough' type='spicevmc'/&gt;
+   &lt;/devices&gt;
+   ...
+ </pre>
+@@ -981,9 +982,11 @@
+       files).  In this mode of operation, an additional
+       attribute <code>type</code> is required, matching one of the
+       supported <a href="#elementsConsole">serial device</a> types, to
+-      describe the host side of the tunnel; <code>type='tcp'</code> is
+-      typical.  Further sub-elements, such
+-      as <code>&lt;source&gt;</code>, are required according to the
++      describe the host side of the tunnel; <code>type='tcp'</code>
++      or <code>type='spicevmc'</code> (which uses the smartcard
++      channel of a <a href="#elementsGraphics">SPICE graphics
++      device</a>) are typical.  Further sub-elements, such
++      as <code>&lt;source&gt;</code>, may be required according to the
+       given type, although a <code>&lt;target&gt;</code> sub-element
+       is not required (since the consumer of the character device is
+       the hypervisor itself, rather than a device visible in the
+@@ -1423,8 +1426,9 @@ qemu-kvm -net nic,model=? /dev/null
+   can be desirable to restrict what channels can be run on each port.
+   This is achieved by adding one or more &lt;channel&gt; elements inside
+   the main &lt;graphics&gt; element. Valid channel names include
+-  <code>main</code>,<code>display</code>,<code>inputs</code>,<code>cursor</code>,
+-  <code>playback</code>,<code>record</code>.
++  <code>main</code>, <code>display</code>, <code>inputs</code>,
++  <code>cursor</code>, <code>playback</code>, <code>record</code>;
++  and <span class="since">since 0.8.8</span>: <code>smartcard</code>.
+ 	    </p>
+ 	    <pre>
+   &lt;graphics type='spice' port='-1' tlsPort='-1' autoport='yes'&gt;
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 22124df..1d85ba3 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1226,6 +1226,7 @@
+                   <value>cursor</value>
+                   <value>playback</value>
+                   <value>record</value>
++                  <value>smartcard</value>
+                 </choice>
+               </attribute>
+               <attribute name="mode">
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 477cf38..6c9ed7f 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -234,6 +234,10 @@ VIR_ENUM_IMPL(virDomainChrTcpProtocol, VIR_DOMAIN_CHR_TCP_PROTOCOL_LAST,
+               "telnets",
+               "tls")
+ 
++VIR_ENUM_IMPL(virDomainChrSpicevmc, VIR_DOMAIN_CHR_SPICEVMC_LAST,
++              "vdagent",
++              "smartcard")
++
+ VIR_ENUM_IMPL(virDomainSmartcard, VIR_DOMAIN_SMARTCARD_TYPE_LAST,
+               "host",
+               "host-certificates",
+@@ -303,7 +307,8 @@ VIR_ENUM_IMPL(virDomainGraphicsSpiceChannelName,
+               "inputs",
+               "cursor",
+               "playback",
+-              "record");
++              "record",
++              "smartcard");
+ 
+ VIR_ENUM_IMPL(virDomainGraphicsSpiceChannelMode,
+               VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_MODE_LAST,
+@@ -3255,11 +3260,15 @@ virDomainChrDefParseXML(virCapsPtr caps,
+         }
+     }
+ 
+-    if (def->source.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC &&
+-        def->targetType != VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO) {
+-        virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+-                             _("spicevmc device type only supports virtio"));
+-        goto error;
++    if (def->source.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC) {
++        if (def->targetType != VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO) {
++            virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                 _("spicevmc device type only supports "
++                                   "virtio"));
++            goto error;
++        } else {
++            def->source.data.spicevmc = VIR_DOMAIN_CHR_SPICEVMC_VDAGENT;
++        }
+     }
+ 
+     if (virDomainDeviceInfoParseXML(node, &def->info, flags) < 0)
+@@ -3371,10 +3380,10 @@ virDomainSmartcardDefParseXML(xmlNodePtr node,
+             goto error;
+ 
+         if (def->data.passthru.type == VIR_DOMAIN_CHR_TYPE_SPICEVMC) {
+-            virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+-                                 _("smartcard spicevmc device not supported"));
+-            goto error;
++            def->data.passthru.data.spicevmc
++                = VIR_DOMAIN_CHR_SPICEVMC_SMARTCARD;
+         }
++
+         break;
+ 
+     default:
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 726d83a..d4d9a9f 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -427,13 +427,20 @@ enum virDomainChrTcpProtocol {
+     VIR_DOMAIN_CHR_TCP_PROTOCOL_LAST,
+ };
+ 
++enum virDomainChrSpicevmcName {
++    VIR_DOMAIN_CHR_SPICEVMC_VDAGENT,
++    VIR_DOMAIN_CHR_SPICEVMC_SMARTCARD,
++
++    VIR_DOMAIN_CHR_SPICEVMC_LAST,
++};
++
+ /* The host side information for a character device.  */
+ typedef struct _virDomainChrSourceDef virDomainChrSourceDef;
+ typedef virDomainChrSourceDef *virDomainChrSourceDefPtr;
+ struct _virDomainChrSourceDef {
+     int type; /* virDomainChrType */
+     union {
+-        /* no <source> for null, vc, stdio, spicevmc */
++        /* no <source> for null, vc, stdio */
+         struct {
+             char *path;
+         } file; /* pty, file, pipe, or device */
+@@ -453,6 +460,7 @@ struct _virDomainChrSourceDef {
+             char *path;
+             bool listen;
+         } nix;
++        int spicevmc;
+     } data;
+ };
+ 
+@@ -623,6 +631,7 @@ enum virDomainGraphicsSpiceChannelName {
+     VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_CURSOR,
+     VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_PLAYBACK,
+     VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_RECORD,
++    VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_SMARTCARD,
+ 
+     VIR_DOMAIN_GRAPHICS_SPICE_CHANNEL_LAST
+ };
+@@ -1359,6 +1368,7 @@ VIR_ENUM_DECL(virDomainChrConsoleTarget)
+ VIR_ENUM_DECL(virDomainSmartcard)
+ VIR_ENUM_DECL(virDomainChr)
+ VIR_ENUM_DECL(virDomainChrTcpProtocol)
++VIR_ENUM_DECL(virDomainChrSpicevmc)
+ VIR_ENUM_DECL(virDomainSoundModel)
+ VIR_ENUM_DECL(virDomainMemballoonModel)
+ VIR_ENUM_DECL(virDomainSysinfo)
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index b2e07a1..3a7484b 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -193,6 +193,8 @@ virDomainChrConsoleTargetTypeToString;
+ virDomainChrDefForeach;
+ virDomainChrDefFree;
+ virDomainChrSourceDefFree;
++virDomainChrSpicevmcTypeFromString;
++virDomainChrSpicevmcTypeToString;
+ virDomainChrTcpProtocolTypeFromString;
+ virDomainChrTcpProtocolTypeToString;
+ virDomainChrTypeFromString;
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index f03f2eb..242f1c8 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2080,7 +2080,8 @@ qemuBuildChrChardevStr(virDomainChrSourceDefPtr dev, const char *alias,
+                             _("spicevmc not supported in this QEMU binary"));
+             goto error;
+         }
+-        virBufferVSprintf(&buf, "spicevmc,id=char%s,name=vdagent", alias);
++        virBufferVSprintf(&buf, "spicevmc,id=char%s,name=%s", alias,
++                          virDomainChrSpicevmcTypeToString(dev->data.spicevmc));
+         break;
+ 
+     default:
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.args b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.args
+new file mode 100644
+index 0000000..8408a3e
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev \
++socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon \
++chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -device \
++usb-ccid,id=ccid0 -chardev spicevmc,id=charsmartcard0,name=smartcard \
++-device ccid-card-passthru,chardev=charsmartcard0,id=smartcard0,bus=ccid0.0 \
++-usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.xml b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.xml
+new file mode 100644
+index 0000000..19512eb
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-spicevmc.xml
+@@ -0,0 +1,16 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219136</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <smartcard mode='passthrough' type='spicevmc'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 0726130..9032528 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -420,6 +420,10 @@ mymain(int argc, char **argv)
+     DO_TEST("smartcard-passthrough-tcp",
+             QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_PASSTHRU, false);
++    DO_TEST("smartcard-passthrough-spicevmc",
++            QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_PASSTHRU |
++            QEMUD_CMD_FLAG_CHARDEV_SPICEVMC, false);
+     DO_TEST("smartcard-controller",
+             QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_EMULATED, false);
+-- 
+1.7.4
+

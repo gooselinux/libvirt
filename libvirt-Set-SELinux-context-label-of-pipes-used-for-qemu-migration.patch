@@ -1,0 +1,78 @@
+From 82d8f8fe8e511feb29a6324edb9df26a2ab8e4a1 Mon Sep 17 00:00:00 2001
+Message-Id: <82d8f8fe8e511feb29a6324edb9df26a2ab8e4a1.1296166858.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Wed, 26 Jan 2011 16:22:08 -0500
+Subject: [PATCH] Set SELinux context label of pipes used for qemu migration
+
+This patch derived from upstream commit
+34a19dda1c525e3e94a7b51cd161fafba8f2fbe8 and is a partial resolution
+to the following bug:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=667756
+
+(to complete the fix, an updated selinux-policy package is required,
+to add the policy that allows libvirt to set the context of a fifo,
+which was previously not allowed).
+
+Explanation : When an incoming migration is over a pipe (for example,
+if the image was compressed and is being fed through gzip, or was on a
+root-squash nfs server, so needed to be opened by a child process
+running as a different uid), qemu cannot read it unless the selinux
+context label for the pipe has been set properly.
+
+The solution is to check the fd used as the source of the migration
+just before passing it to qemu; if it's a fifo (implying that it's a
+pipe), we call the newly added virSecurityManagerSetFDLabel() function
+to set the context properly.
+
+RHEL6 REBASE NOTES:
+
+Note that this is not a simple cherry-pick of the upstream commit. The
+security driver code has been refactored since the last rebase, so
+some manual rework was necessary. In particular:
+
+1) The calling sequence of security driver functions doesn't have a
+   virSecurityManager arg for every function.
+
+2) Calls to the security functions in RHEL6 are all directly to the
+   pointer in the security driver object rather than via security
+   manager helpers, so the caller must always check for a NULL pointer
+   before calling.
+---
+ src/qemu/qemu_driver.c |   20 ++++++++++++++++++++
+ 1 files changed, 20 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 7408aa8..c7e425c 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3073,6 +3073,26 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+         goto cleanup;
+     }
+ 
++    if (stdin_fd != -1) {
++        /* if there's an fd to migrate from, and it's a pipe, put the
++         * proper security label on it
++         */
++        struct stat stdin_sb;
++
++        DEBUG0("setting security label on pipe used for migration");
++
++        if (fstat(stdin_fd, &stdin_sb) < 0) {
++            virReportSystemError(errno,
++                                 _("cannot stat fd %d"), stdin_fd);
++            goto cleanup;
++        }
++        if (S_ISFIFO(stdin_sb.st_mode) &&
++            driver->securityDriver &&
++            driver->securityDriver->domainSetSecurityFDLabel &&
++            driver->securityDriver->domainSetSecurityFDLabel(vm, stdin_fd) < 0)
++            goto cleanup;
++    }
++
+     /* Ensure no historical cgroup for this VM is lying around bogus
+      * settings */
+     DEBUG0("Ensuring no historical cgroup is lying around");
+-- 
+1.7.4.rc3
+

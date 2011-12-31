@@ -1,0 +1,101 @@
+From ecff453c5a07e9486cf915178ca63488f322e4a6 Mon Sep 17 00:00:00 2001
+Message-Id: <ecff453c5a07e9486cf915178ca63488f322e4a6.1299776671.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 9 Mar 2011 21:47:06 +0100
+Subject: [PATCH] qemu: Escape snapshot name passed to {save,load,del}vm
+
+https://bugzilla.redhat.com/show_bug.cgi?id=589076
+
+(cherry picked from commit 81711cee34740b5896e7de0a4d1695ce97b543dc)
+---
+ src/qemu/qemu_monitor_text.c |   27 ++++++++++++++++++---------
+ 1 files changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index 57e56f1..531df70 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -2525,13 +2525,15 @@ cleanup:
+ 
+ int qemuMonitorTextCreateSnapshot(qemuMonitorPtr mon, const char *name)
+ {
+-    char *cmd;
++    char *cmd = NULL;
+     char *reply = NULL;
+     int ret = -1;
++    char *safename;
+ 
+-    if (virAsprintf(&cmd, "savevm \"%s\"", name) < 0) {
++    if (!(safename = qemuMonitorEscapeArg(name)) ||
++        virAsprintf(&cmd, "savevm \"%s\"", safename) < 0) {
+         virReportOOMError();
+-        return -1;
++        goto cleanup;
+     }
+ 
+     if (qemuMonitorHMPCommand(mon, cmd, &reply)) {
+@@ -2563,6 +2565,7 @@ int qemuMonitorTextCreateSnapshot(qemuMonitorPtr mon, const char *name)
+     ret = 0;
+ 
+ cleanup:
++    VIR_FREE(safename);
+     VIR_FREE(cmd);
+     VIR_FREE(reply);
+     return ret;
+@@ -2570,13 +2573,15 @@ cleanup:
+ 
+ int qemuMonitorTextLoadSnapshot(qemuMonitorPtr mon, const char *name)
+ {
+-    char *cmd;
++    char *cmd = NULL;
+     char *reply = NULL;
+     int ret = -1;
++    char *safename;
+ 
+-    if (virAsprintf(&cmd, "loadvm \"%s\"", name) < 0) {
++    if (!(safename = qemuMonitorEscapeArg(name)) ||
++        virAsprintf(&cmd, "loadvm \"%s\"", safename) < 0) {
+         virReportOOMError();
+-        return -1;
++        goto cleanup;
+     }
+ 
+     if (qemuMonitorHMPCommand(mon, cmd, &reply)) {
+@@ -2619,6 +2624,7 @@ int qemuMonitorTextLoadSnapshot(qemuMonitorPtr mon, const char *name)
+     ret = 0;
+ 
+ cleanup:
++    VIR_FREE(safename);
+     VIR_FREE(cmd);
+     VIR_FREE(reply);
+     return ret;
+@@ -2626,13 +2632,15 @@ cleanup:
+ 
+ int qemuMonitorTextDeleteSnapshot(qemuMonitorPtr mon, const char *name)
+ {
+-    char *cmd;
++    char *cmd = NULL;
+     char *reply = NULL;
+     int ret = -1;
++    char *safename;
+ 
+-    if (virAsprintf(&cmd, "delvm \"%s\"", name) < 0) {
++    if (!(safename = qemuMonitorEscapeArg(name)) ||
++        virAsprintf(&cmd, "delvm \"%s\"", safename) < 0) {
+         virReportOOMError();
+-        return -1;
++        goto cleanup;
+     }
+     if (qemuMonitorHMPCommand(mon, cmd, &reply)) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED,
+@@ -2659,6 +2667,7 @@ int qemuMonitorTextDeleteSnapshot(qemuMonitorPtr mon, const char *name)
+     ret = 0;
+ 
+ cleanup:
++    VIR_FREE(safename);
+     VIR_FREE(cmd);
+     VIR_FREE(reply);
+     return ret;
+-- 
+1.7.4.1
+

@@ -1,0 +1,494 @@
+From ac855ca68299a998f25b81fc180522974b9250ec Mon Sep 17 00:00:00 2001
+Message-Id: <ac855ca68299a998f25b81fc180522974b9250ec.1298580376.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Thu, 17 Feb 2011 15:26:34 -0500
+Subject: [PATCH] Add txmode attribute to interface XML for virtio backend
+
+This a cherry-pick of upstream:
+
+  commit e9bd5c0e248aaa73db4d26ed4abf27acc6f93cc8
+  Author: Laine Stump <laine@laine.org>
+  Date:   Thu Feb 3 15:20:01 2011 -0500
+
+with a very small change (there is an extra QEMU_CMD_FLAG in RHEL that
+doesn't exist upstream, and this created a conflict). It resolves:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=629662
+
+Explanation
+
+qemu's virtio-net-pci driver allows setting the algorithm used for tx
+packets to either "bh" or "timer". This is done by adding ",tx=bh" or
+",tx=timer" to the "-device virtio-net-pci" commandline option.
+
+'bh' stands for 'bottom half'; when this is set, packet tx is all done
+in an iothread in the bottom half of the driver. (In libvirt, this
+option is called the more descriptive "iothread".)
+
+'timer' means that tx work is done in qemu, and if there is more tx
+data than can be sent at the present time, a timer is set before qemu
+moves on to do other things; when the timer fires, another attempt is
+made to send more data. (libvirt retains the name "timer" for this
+option.)
+
+The resulting difference, according to the qemu developer who added
+the option is:
+
+    bh makes tx more asynchronous and reduces latency, but potentially
+    causes more processor bandwidth contention since the cpu doing the
+    tx isn't necessarily the cpu where the guest generated the
+    packets.
+
+Solution
+
+This patch provides a libvirt domain xml knob to change the option on
+the qemu commandline, by adding a new attribute "txmode" to the
+<driver> element that can be placed inside any <interface> element in
+a domain definition. It's use would be something like this:
+
+    <interface ...>
+      ...
+      <model type='virtio'/>
+      <driver txmode='iothread'/>
+      ...
+    </interface>
+
+I chose to put this setting as an attribute to <driver> rather than as
+a sub-element to <tune> because it is specific to the virtio-net
+driver, not something that is generally usable by all network drivers.
+(note that this is the same placement as the "driver name=..."
+attribute used to choose kernel vs. userland backend for the
+virtio-net driver.)
+
+Actually adding the tx=xxx option to the qemu commandline is only done
+if the version of qemu being used advertises it in the output of
+
+    qemu -device virtio-net-pci,?
+
+If a particular txmode is requested in the XML, and the option isn't
+listed in that help output, an UNSUPPORTED_CONFIG error is logged, and
+the domain fails to start.
+---
+ docs/formatdomain.html.in                          |   50 ++++++++++++++++++++
+ docs/schemas/domain.rng                            |    8 +++
+ src/conf/domain_conf.c                             |   26 ++++++++++-
+ src/conf/domain_conf.h                             |   11 ++++
+ src/qemu/qemu_capabilities.c                       |    3 +
+ src/qemu/qemu_capabilities.h                       |    1 +
+ src/qemu/qemu_command.c                            |   27 +++++++++++
+ tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device |   25 ++++++++++
+ tests/qemuhelpdata/qemu-kvm-0.13.0-device          |   22 +++++++++
+ tests/qemuhelptest.c                               |    1 +
+ .../qemuxml2argv-net-virtio-device.args            |    2 +-
+ .../qemuxml2argv-net-virtio-device.xml             |    3 +
+ tests/qemuxml2argvtest.c                           |    2 +-
+ tests/qemuxml2xmltest.c                            |    1 +
+ 14 files changed, 179 insertions(+), 3 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index eea2704..f942880 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1295,6 +1295,56 @@ qemu-kvm -net nic,model=? /dev/null
+       ne2k_isa i82551 i82557b i82559er ne2k_pci pcnet rtl8139 e1000 virtio
+     </p>
+ 
++    <h5><a name="elementsDriverBackendOptions">Setting NIC driver-specific options</a></h5>
++
++<pre>
++  ...
++  &lt;devices&gt;
++    &lt;interface type='network'&gt;
++      &lt;source network='default'/&gt;
++      &lt;target dev='vnet1'/&gt;
++      &lt;model type='virtio'/&gt;
++      <b>&lt;driver txmode='iothread'/&gt;</b>
++    &lt;/interface&gt;
++  &lt;/devices&gt;
++  ...</pre>
++
++    <p>
++      Some NICs may have tunable driver-specific options. These are
++      set as attributes of the <code>driver</code> sub-element of the
++      interface definition. Currently the following attributes are
++      available for the <code>"virtio"</code> NIC driver:
++    </p>
++
++    <dl>
++      <dt><code>txmode</code></dt>
++      <dd>
++        The <code>txmode</code> attribute specifies how to handle
++        transmission of packets when the transmit buffer is full. The
++        value can be either 'iothread' or 'timer'.
++        <span class="since">Since 0.8.8 (QEMU and KVM only)</span><br><br>
++
++        If set to 'iothread', packet tx is all done in an iothread in
++        the bottom half of the driver (this option translates into
++        adding "tx=bh" to the qemu commandline -device virtio-net-pci
++        option).<br><br>
++
++        If set to 'timer', tx work is done in qemu, and if there is
++        more tx data than can be sent at the present time, a timer is
++        set before qemu moves on to do other things; when the timer
++        fires, another attempt is made to send more data.<br><br>
++
++        The resulting difference, according to the qemu developer who
++        added the option is: "bh makes tx more asynchronous and reduces
++        latency, but potentially causes more processor bandwidth
++        contention since the cpu doing the tx isn't necessarily the
++        cpu where the guest generated the packets."<br><br>
++
++        <b>In general you should leave this option alone, unless you
++        are very certain you know what you are doing.</b>
++      </dd>
++    </dl>
++
+     <h5><a name="elementsNICSTargetOverride">Overriding the target element</a></h5>
+ 
+ <pre>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 0f57866..861ece9 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1047,6 +1047,14 @@
+               </choice>
+             </attribute>
+           </optional>
++          <optional>
++            <attribute name="txmode">
++              <choice>
++                <value>iothread</value>
++                <value>timer</value>
++              </choice>
++            </attribute>
++          </optional>
+           <empty/>
+         </element>
+       </optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index b3d1f94..7279c85 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -197,6 +197,11 @@ VIR_ENUM_IMPL(virDomainNetBackend, VIR_DOMAIN_NET_BACKEND_TYPE_LAST,
+               "qemu",
+               "vhost")
+ 
++VIR_ENUM_IMPL(virDomainNetVirtioTxMode, VIR_DOMAIN_NET_VIRTIO_TX_MODE_LAST,
++              "default",
++              "iothread",
++              "timer")
++
+ VIR_ENUM_IMPL(virDomainChrChannelTarget,
+               VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_LAST,
+               "guestfwd",
+@@ -2476,6 +2481,7 @@ virDomainNetDefParseXML(virCapsPtr caps,
+     char *port = NULL;
+     char *model = NULL;
+     char *backend = NULL;
++    char *txmode = NULL;
+     char *filter = NULL;
+     char *internal = NULL;
+     char *devaddr = NULL;
+@@ -2564,6 +2570,7 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                 model = virXMLPropString(cur, "type");
+             } else if (xmlStrEqual (cur->name, BAD_CAST "driver")) {
+                 backend = virXMLPropString(cur, "name");
++                txmode = virXMLPropString(cur, "txmode");
+             } else if (xmlStrEqual (cur->name, BAD_CAST "filterref")) {
+                 filter = virXMLPropString(cur, "filter");
+                 VIR_FREE(filterparams);
+@@ -2768,6 +2775,18 @@ virDomainNetDefParseXML(virCapsPtr caps,
+             }
+             def->driver.virtio.name = name;
+         }
++        if (txmode != NULL) {
++            int m;
++            if (((m = virDomainNetVirtioTxModeTypeFromString(txmode)) < 0) ||
++                (m == VIR_DOMAIN_NET_VIRTIO_TX_MODE_DEFAULT)) {
++                virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                     _("Unknown interface <driver txmode='%s'> "
++                                       "has been specified"),
++                                     txmode);
++                goto error;
++            }
++            def->driver.virtio.txmode = m;
++        }
+     }
+ 
+     if (filter != NULL) {
+@@ -2807,6 +2826,7 @@ cleanup:
+     VIR_FREE(bridge);
+     VIR_FREE(model);
+     VIR_FREE(backend);
++    VIR_FREE(txmode);
+     VIR_FREE(filter);
+     VIR_FREE(type);
+     VIR_FREE(internal);
+@@ -6816,12 +6836,16 @@ virDomainNetDefFormat(virBufferPtr buf,
+         virBufferEscapeString(buf, "      <model type='%s'/>\n",
+                               def->model);
+         if (STREQ(def->model, "virtio") &&
+-            def->driver.virtio.name) {
++            (def->driver.virtio.name || def->driver.virtio.txmode)) {
+             virBufferAddLit(buf, "      <driver");
+             if (def->driver.virtio.name) {
+                 virBufferVSprintf(buf, " name='%s'",
+                                   virDomainNetBackendTypeToString(def->driver.virtio.name));
+             }
++            if (def->driver.virtio.txmode) {
++                virBufferVSprintf(buf, " txmode='%s'",
++                                  virDomainNetVirtioTxModeTypeToString(def->driver.virtio.txmode));
++            }
+             virBufferAddLit(buf, "/>\n");
+         }
+     }
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 45e1dc4..4c40349 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -321,6 +321,15 @@ enum virDomainNetBackendType {
+     VIR_DOMAIN_NET_BACKEND_TYPE_LAST,
+ };
+ 
++/* the TX algorithm used for virtio interfaces */
++enum virDomainNetVirtioTxModeType {
++    VIR_DOMAIN_NET_VIRTIO_TX_MODE_DEFAULT, /* default for this version of qemu */
++    VIR_DOMAIN_NET_VIRTIO_TX_MODE_IOTHREAD,
++    VIR_DOMAIN_NET_VIRTIO_TX_MODE_TIMER,
++
++    VIR_DOMAIN_NET_VIRTIO_TX_MODE_LAST,
++};
++
+ /* the mode type for macvtap devices */
+ enum virDomainNetdevMacvtapType {
+     VIR_DOMAIN_NETDEV_MACVTAP_MODE_VEPA,
+@@ -341,6 +350,7 @@ struct _virDomainNetDef {
+     union {
+         struct {
+             enum virDomainNetBackendType name; /* which driver backend to use */
++            enum virDomainNetVirtioTxModeType txmode;
+         } virtio;
+     } driver;
+     union {
+@@ -1371,6 +1381,7 @@ VIR_ENUM_DECL(virDomainFS)
+ VIR_ENUM_DECL(virDomainFSAccessMode)
+ VIR_ENUM_DECL(virDomainNet)
+ VIR_ENUM_DECL(virDomainNetBackend)
++VIR_ENUM_DECL(virDomainNetVirtioTxMode)
+ VIR_ENUM_DECL(virDomainChrDevice)
+ VIR_ENUM_DECL(virDomainChrChannelTarget)
+ VIR_ENUM_DECL(virDomainChrConsoleTarget)
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 458f760..f0c1c81 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1068,6 +1068,7 @@ qemuCapsExtractDeviceStr(const char *qemu,
+                                "-device", "?",
+                                "-device", "pci-assign,?",
+                                "-device", "virtio-blk-pci,?",
++                               "-device", "virtio-net-pci,?",
+                                NULL);
+     virCommandAddEnvPassCommon(cmd);
+     /* qemu -help goes to stdout, but qemu -device ? goes to stderr.  */
+@@ -1109,6 +1110,8 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+         if (strstr(str, "pci-assign.bootindex"))
+             *flags |= QEMUD_CMD_FLAG_PCI_BOOTINDEX;
+     }
++    if (strstr(str, "virtio-net-pci.tx="))
++        *flags |= QEMUD_CMD_FLAG_VIRTIO_TX_ALG;
+ 
+     return 0;
+ }
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index d3c7a72..ad4a848 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -92,6 +92,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_CCID_PASSTHRU = (1LL << 55), /* -device ccid-card-passthru */
+     QEMUD_CMD_FLAG_CHARDEV_SPICEVMC = (1LL << 56), /* newer -chardev spicevmc */
+     QEMUD_CMD_FLAG_DEVICE_SPICEVMC = (1LL << 57), /* older -device spicevmc*/
++    QEMUD_CMD_FLAG_VIRTIO_TX_ALG = (1LL << 58), /* -device virtio-net-pci,tx=string */
+     QEMUD_CMD_FLAG_DISABLE_KSM   = (1LL << 63), /* Is '-redhat-disable-KSM' available? */
+ };
+ 
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 4429490..6755618 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1577,16 +1577,43 @@ qemuBuildNicDevStr(virDomainNetDefPtr net,
+ {
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+     const char *nic;
++    bool usingVirtio = false;
+ 
+     if (!net->model) {
+         nic = "rtl8139";
+     } else if (STREQ(net->model, "virtio")) {
+         nic = "virtio-net-pci";
++        usingVirtio = true;
+     } else {
+         nic = net->model;
+     }
+ 
+     virBufferAdd(&buf, nic, strlen(nic));
++    if (usingVirtio && net->driver.virtio.txmode) {
++        if (qemuCmdFlags & QEMUD_CMD_FLAG_VIRTIO_TX_ALG) {
++            virBufferAddLit(&buf, ",tx=");
++            switch (net->driver.virtio.txmode) {
++                case VIR_DOMAIN_NET_VIRTIO_TX_MODE_IOTHREAD:
++                    virBufferAddLit(&buf, "bh");
++                    break;
++
++                case VIR_DOMAIN_NET_VIRTIO_TX_MODE_TIMER:
++                    virBufferAddLit(&buf, "timer");
++                    break;
++                default:
++                    /* this should never happen, if it does, we need
++                     * to add another case to this switch.
++                     */
++                    qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                    _("unrecognized virtio-net-pci 'tx' option"));
++                    goto error;
++            }
++        } else {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                            _("virtio-net-pci 'tx' option not supported in this QEMU binary"));
++            goto error;
++        }
++    }
+     if (vlan == -1)
+         virBufferVSprintf(&buf, ",netdev=host%s", net->info.alias);
+     else
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
+index 8a0e528..8ac9630 100644
+--- a/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
++++ b/tests/qemuhelpdata/qemu-kvm-0.12.1.2-rhel61-device
+@@ -72,3 +72,28 @@ virtio-blk-pci.ioeventfd=on/off
+ virtio-blk-pci.vectors=uint32
+ virtio-blk-pci.indirect_desc=on/off
+ virtio-blk-pci.scsi=on/off
++virtio-net-pci.vectors=uint32
++virtio-net-pci.indirect_desc=on/off
++virtio-net-pci.csum=on/off
++virtio-net-pci.guest_csum=on/off
++virtio-net-pci.gso=on/off
++virtio-net-pci.guest_tso4=on/off
++virtio-net-pci.guest_tso6=on/off
++virtio-net-pci.guest_ecn=on/off
++virtio-net-pci.guest_ufo=on/off
++virtio-net-pci.host_tso4=on/off
++virtio-net-pci.host_tso6=on/off
++virtio-net-pci.host_ecn=on/off
++virtio-net-pci.host_ufo=on/off
++virtio-net-pci.mrg_rxbuf=on/off
++virtio-net-pci.status=on/off
++virtio-net-pci.ctrl_vq=on/off
++virtio-net-pci.ctrl_rx=on/off
++virtio-net-pci.ctrl_vlan=on/off
++virtio-net-pci.ctrl_rx_extra=on/off
++virtio-net-pci.mac=macaddr
++virtio-net-pci.vlan=vlan
++virtio-net-pci.netdev=netdev
++virtio-net-pci.x-txtimer=uint32
++virtio-net-pci.x-txburst=int32
++virtio-net-pci.tx=string
+diff --git a/tests/qemuhelpdata/qemu-kvm-0.13.0-device b/tests/qemuhelpdata/qemu-kvm-0.13.0-device
+index b121257..4888d18 100644
+--- a/tests/qemuhelpdata/qemu-kvm-0.13.0-device
++++ b/tests/qemuhelpdata/qemu-kvm-0.13.0-device
+@@ -68,3 +68,25 @@ name "pci-assign", bus PCI, desc "pass through host pci devices to the guest"
+ pci-assign.host=pci-hostaddr
+ pci-assign.iommu=uint32
+ pci-assign.configfd=string
++virtio-net-pci.vectors=uint32
++virtio-net-pci.indirect_desc=on/off
++virtio-net-pci.csum=on/off
++virtio-net-pci.guest_csum=on/off
++virtio-net-pci.gso=on/off
++virtio-net-pci.guest_tso4=on/off
++virtio-net-pci.guest_tso6=on/off
++virtio-net-pci.guest_ecn=on/off
++virtio-net-pci.guest_ufo=on/off
++virtio-net-pci.host_tso4=on/off
++virtio-net-pci.host_tso6=on/off
++virtio-net-pci.host_ecn=on/off
++virtio-net-pci.host_ufo=on/off
++virtio-net-pci.mrg_rxbuf=on/off
++virtio-net-pci.status=on/off
++virtio-net-pci.ctrl_vq=on/off
++virtio-net-pci.ctrl_rx=on/off
++virtio-net-pci.ctrl_vlan=on/off
++virtio-net-pci.ctrl_rx_extra=on/off
++virtio-net-pci.mac=macaddr
++virtio-net-pci.vlan=vlan
++virtio-net-pci.netdev=netdev
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 0571bce..76535a2 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -481,6 +481,7 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_DRIVE_AIO |
+             QEMUD_CMD_FLAG_CCID_PASSTHRU |
+             QEMUD_CMD_FLAG_CHARDEV_SPICEVMC |
++            QEMUD_CMD_FLAG_VIRTIO_TX_ALG |
+             QEMUD_CMD_FLAG_DISABLE_KSM,
+             12001, 1,  0);
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.args b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.args
+index 92bd889..843c3e9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.args
+@@ -1,6 +1,6 @@
+ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
+ pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor \
+ unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda \
+-/dev/HostVG/QEMUGuest1 -device virtio-net-pci,vlan=0,id=net0,\
++/dev/HostVG/QEMUGuest1 -device virtio-net-pci,tx=bh,vlan=0,id=net0,\
+ mac=00:11:22:33:44:55,bus=pci.0,addr=0x2 -net user,vlan=0,name=hostnet0 -usb \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
+index e521796..29a5c73 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-device.xml
+@@ -17,10 +17,13 @@
+     <disk type='block' device='disk'>
+       <source dev='/dev/HostVG/QEMUGuest1'/>
+       <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
+     </disk>
++    <controller type='ide' index='0'/>
+     <interface type='user'>
+       <mac address='00:11:22:33:44:55'/>
+       <model type='virtio'/>
++      <driver txmode='iothread'/>
+     </interface>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 96260c0..4817d51 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -365,7 +365,7 @@ mymain(int argc, char **argv)
+     DO_TEST("net-user", 0, false);
+     DO_TEST("net-virtio", 0, false);
+     DO_TEST("net-virtio-device", QEMUD_CMD_FLAG_DEVICE |
+-            QEMUD_CMD_FLAG_NODEFCONFIG, false);
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_VIRTIO_TX_ALG, false);
+     DO_TEST("net-virtio-netdev", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NETDEV | QEMUD_CMD_FLAG_NODEFCONFIG, false);
+     DO_TEST("net-eth", 0, false);
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 15d94b7..67e721b 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -159,6 +159,7 @@ mymain(int argc, char **argv)
+     DO_TEST("misc-no-reboot");
+     DO_TEST("net-user");
+     DO_TEST("net-virtio");
++    DO_TEST("net-virtio-device");
+     DO_TEST("net-eth");
+     DO_TEST("net-eth-ifname");
+     DO_TEST("sound");
+-- 
+1.7.4.1
+

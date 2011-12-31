@@ -1,0 +1,314 @@
+From 623f29996fa958a421ef7db2bee2413d51667168 Mon Sep 17 00:00:00 2001
+Message-Id: <623f29996fa958a421ef7db2bee2413d51667168.1295285120.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 17 Jan 2011 09:43:55 -0700
+Subject: [PATCH] qemu: use -incoming fd:n to avoid qemu holding fd indefinitely
+
+https://bugzilla.redhat.com/show_bug.cgi?id=620363
+
+When using -incoming stdio or -incoming exec:, qemu keeps the
+stdin fd open long after the migration is complete.  Not to
+mention that exec:cat is horribly inefficient, by doubling the
+I/O and going through a popen interface in qemu.
+
+The new -incoming fd: of qemu 0.12.0 closes the fd after using
+it, and allows us to bypass an intermediary cat process for
+less I/O.
+
+* src/qemu/qemu_command.h (qemuBuildCommandLine): Add parameter.
+* src/qemu/qemu_command.c (qemuBuildCommandLine): Support
+migration via fd: when possible.  Consolidate migration handling
+into one spot, now that it is more complex.
+* src/qemu/qemu_driver.c (qemudStartVMDaemon): Update caller.
+* tests/qemuxml2argvtest.c (mymain): Likewise.
+* tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.args: New file.
+* tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.xml: Likewise.
+(cherry picked from commit 1859939a742f0559d1672a2f06515f1b129398c9)
+---
+ src/qemu/qemu_command.c                            |   82 +++++++++++++-------
+ src/qemu/qemu_command.h                            |    1 +
+ src/qemu/qemu_driver.c                             |    7 +-
+ .../qemuxml2argv-restore-v2-fd.args                |    1 +
+ .../qemuxml2argv-restore-v2-fd.xml                 |   25 ++++++
+ tests/qemuxml2argvtest.c                           |   30 +++++--
+ 6 files changed, 103 insertions(+), 43 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.xml
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 082b585..692232b 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2513,6 +2513,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                      bool monitor_json,
+                      unsigned long long qemuCmdFlags,
+                      const char *migrateFrom,
++                     int migrateFd,
+                      virDomainSnapshotObjPtr current_snapshot,
+                      enum virVMOperationType vmop)
+ {
+@@ -2540,33 +2541,6 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+     virUUIDFormat(def->uuid, uuid);
+ 
+-    /* Migration is very annoying due to wildly varying syntax & capabilities
+-     * over time of KVM / QEMU codebases
+-     */
+-    if (migrateFrom) {
+-        if (STRPREFIX(migrateFrom, "tcp")) {
+-            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_TCP)) {
+-                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                                "%s", _("TCP migration is not supported with this QEMU binary"));
+-                return NULL;
+-            }
+-        } else if (STREQ(migrateFrom, "stdio")) {
+-            if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC) {
+-                migrateFrom = "exec:cat";
+-            } else if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_KVM_STDIO)) {
+-                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                                "%s", _("STDIO migration is not supported with this QEMU binary"));
+-                return NULL;
+-            }
+-        } else if (STRPREFIX(migrateFrom, "exec")) {
+-            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC)) {
+-                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                                "%s", _("STDIO migration is not supported with this QEMU binary"));
+-                return NULL;
+-            }
+-        }
+-    }
+-
+     emulator = def->emulator;
+ 
+     /*
+@@ -3956,8 +3930,58 @@ qemuBuildCommandLine(virConnectPtr conn,
+         }
+     }
+ 
+-    if (migrateFrom)
+-        virCommandAddArgList(cmd, "-incoming", migrateFrom, NULL);
++    /* Migration is very annoying due to wildly varying syntax &
++     * capabilities over time of KVM / QEMU codebases.
++     */
++    if (migrateFrom) {
++        virCommandAddArg(cmd, "-incoming");
++        if (STRPREFIX(migrateFrom, "tcp")) {
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_TCP)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("TCP migration is not supported with "
++                                        "this QEMU binary"));
++                goto error;
++            }
++            virCommandAddArg(cmd, migrateFrom);
++        } else if (STREQ(migrateFrom, "stdio")) {
++            if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_FD) {
++                virCommandAddArgFormat(cmd, "fd:%d", migrateFd);
++                virCommandPreserveFD(cmd, migrateFd);
++            } else if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC) {
++                virCommandAddArg(cmd, "exec:cat");
++                virCommandSetInputFD(cmd, migrateFd);
++            } else if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_KVM_STDIO) {
++                virCommandAddArg(cmd, migrateFrom);
++                virCommandSetInputFD(cmd, migrateFd);
++            } else {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("STDIO migration is not supported "
++                                        "with this QEMU binary"));
++                goto error;
++            }
++        } else if (STRPREFIX(migrateFrom, "exec")) {
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("EXEC migration is not supported "
++                                        "with this QEMU binary"));
++                goto error;
++            }
++            virCommandAddArg(cmd, migrateFrom);
++        } else if (STRPREFIX(migrateFrom, "fd")) {
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_FD)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("FD migration is not supported "
++                                        "with this QEMU binary"));
++                goto error;
++            }
++            virCommandAddArg(cmd, migrateFrom);
++            virCommandPreserveFD(cmd, migrateFd);
++        } else {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                            "%s", _("unknown migration protocol"));
++            goto error;
++        }
++    }
+ 
+     /* QEMU changed its default behavior to not include the virtio balloon
+      * device.  Explicitly request it to ensure it will be present.
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 59c8ff2..4e0040b 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -44,6 +44,7 @@ virCommandPtr qemuBuildCommandLine(virConnectPtr conn,
+                                    bool monitor_json,
+                                    unsigned long long qemuCmdFlags,
+                                    const char *migrateFrom,
++                                   int migrateFd,
+                                    virDomainSnapshotObjPtr current_snapshot,
+                                    enum virVMOperationType vmop)
+     ATTRIBUTE_NONNULL(1);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index dcba3b9..9d172df 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3183,7 +3183,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     vm->def->id = driver->nextvmid++;
+     if (!(cmd = qemuBuildCommandLine(conn, driver, vm->def, priv->monConfig,
+                                      priv->monJSON != 0, qemuCmdFlags,
+-                                     migrateFrom,
++                                     migrateFrom, stdin_fd,
+                                      vm->current_snapshot, vmop)))
+         goto cleanup;
+ 
+@@ -3233,9 +3233,6 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     VIR_WARN("Executing %s", vm->def->emulator);
+     virCommandSetPreExecHook(cmd, qemudSecurityHook, &hookData);
+ 
+-    if (stdin_fd != -1)
+-        virCommandSetInputFD(cmd, stdin_fd);
+-
+     virCommandSetOutputFD(cmd, &logfile);
+     virCommandSetErrorFD(cmd, &logfile);
+     virCommandNonblockingFDs(cmd);
+@@ -6514,7 +6511,7 @@ static char *qemuDomainXMLToNative(virConnectPtr conn,
+ 
+     if (!(cmd = qemuBuildCommandLine(conn, driver, def,
+                                      &monConfig, false, qemuCmdFlags,
+-                                     NULL, NULL, VIR_VM_OP_NO_OP)))
++                                     NULL, -1, NULL, VIR_VM_OP_NO_OP)))
+         goto cleanup;
+ 
+     ret = virCommandToString(cmd);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.args b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.args
+new file mode 100644
+index 0000000..5464d37
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -net none -serial none -parallel none -usb -incoming fd:7
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.xml b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.xml
+new file mode 100644
+index 0000000..ed91e37
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-restore-v2-fd.xml
+@@ -0,0 +1,25 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 2834cdb..3567a56 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -31,6 +31,7 @@ static int testCompareXMLToArgvFiles(const char *xml,
+                                      const char *cmdline,
+                                      unsigned long long extraFlags,
+                                      const char *migrateFrom,
++                                     int migrateFd,
+                                      bool expectError) {
+     char argvData[MAX_FILE];
+     char *expectargv = &(argvData[0]);
+@@ -113,7 +114,8 @@ static int testCompareXMLToArgvFiles(const char *xml,
+ 
+     if (!(cmd = qemuBuildCommandLine(conn, &driver,
+                                      vmdef, &monitor_chr, false, flags,
+-                                     migrateFrom, NULL, VIR_VM_OP_CREATE)))
++                                     migrateFrom, migrateFd, NULL,
++                                     VIR_VM_OP_CREATE)))
+         goto fail;
+ 
+     if (!!virGetLastError() != expectError) {
+@@ -161,6 +163,7 @@ struct testInfo {
+     const char *name;
+     unsigned long long extraFlags;
+     const char *migrateFrom;
++    int migrateFd;
+     bool expectError;
+ };
+ 
+@@ -173,7 +176,8 @@ static int testCompareXMLToArgvHelper(const void *data) {
+     snprintf(args, PATH_MAX, "%s/qemuxml2argvdata/qemuxml2argv-%s.args",
+              abs_srcdir, info->name);
+     return testCompareXMLToArgvFiles(xml, args, info->extraFlags,
+-                                     info->migrateFrom, info->expectError);
++                                     info->migrateFrom, info->migrateFd,
++                                     info->expectError);
+ }
+ 
+ 
+@@ -218,10 +222,10 @@ mymain(int argc, char **argv)
+     if (cpuMapOverride(map) < 0)
+         return EXIT_FAILURE;
+ 
+-# define DO_TEST_FULL(name, extraFlags, migrateFrom, expectError)       \
++# define DO_TEST_FULL(name, extraFlags, migrateFrom, migrateFd, expectError) \
+     do {                                                                \
+         const struct testInfo info = {                                  \
+-            name, extraFlags, migrateFrom, expectError                  \
++            name, extraFlags, migrateFrom, migrateFd, expectError       \
+         };                                                              \
+         if (virtTestRun("QEMU XML-2-ARGV " name,                        \
+                         1, testCompareXMLToArgvHelper, &info) < 0)      \
+@@ -229,7 +233,7 @@ mymain(int argc, char **argv)
+     } while (0)
+ 
+ # define DO_TEST(name, extraFlags, expectError)                         \
+-        DO_TEST_FULL(name, extraFlags, NULL, expectError)
++    DO_TEST_FULL(name, extraFlags, NULL, -1, expectError)
+ 
+     /* Unset or set all envvars here that are copied in qemudBuildCommandLine
+      * using ADD_ENV_COPY, otherwise these tests may fail due to unexpected
+@@ -430,10 +434,18 @@ mymain(int argc, char **argv)
+     DO_TEST("hostdev-pci-address-device", QEMUD_CMD_FLAG_PCIDEVICE |
+             QEMUD_CMD_FLAG_DEVICE | QEMUD_CMD_FLAG_NODEFCONFIG, false);
+ 
+-    DO_TEST_FULL("restore-v1", QEMUD_CMD_FLAG_MIGRATE_KVM_STDIO, "stdio", false);
+-    DO_TEST_FULL("restore-v2", QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC, "stdio", false);
+-    DO_TEST_FULL("restore-v2", QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC, "exec:cat", false);
+-    DO_TEST_FULL("migrate", QEMUD_CMD_FLAG_MIGRATE_QEMU_TCP, "tcp:10.0.0.1:5000", false);
++    DO_TEST_FULL("restore-v1", QEMUD_CMD_FLAG_MIGRATE_KVM_STDIO, "stdio", 7,
++                 false);
++    DO_TEST_FULL("restore-v2", QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC, "stdio", 7,
++                 false);
++    DO_TEST_FULL("restore-v2", QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC, "exec:cat", 7,
++                 false);
++    DO_TEST_FULL("restore-v2-fd", QEMUD_CMD_FLAG_MIGRATE_QEMU_FD, "stdio", 7,
++                 false);
++    DO_TEST_FULL("restore-v2-fd", QEMUD_CMD_FLAG_MIGRATE_QEMU_FD, "fd:7", 7,
++                 false);
++    DO_TEST_FULL("migrate", QEMUD_CMD_FLAG_MIGRATE_QEMU_TCP,
++                 "tcp:10.0.0.1:5000", -1, false);
+ 
+     DO_TEST("qemu-ns", 0, false);
+ 
+-- 
+1.7.4.rc2
+

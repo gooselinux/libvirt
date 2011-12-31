@@ -1,0 +1,82 @@
+From 93998679841c178288bf2e258119dca455318d65 Mon Sep 17 00:00:00 2001
+Message-Id: <93998679841c178288bf2e258119dca455318d65.1296819816.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 3 Feb 2011 15:09:17 +0100
+Subject: [PATCH] qemu: Support booting from hostdev PCI devices
+
+https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+(cherry picked from commit 963a9460b61158d298ad5c23b6e4dfee36fb1a78)
+---
+ src/qemu/qemu_capabilities.c |    5 ++++-
+ src/qemu/qemu_capabilities.h |    1 +
+ src/qemu/qemu_command.c      |   17 +++++++++++++++++
+ 3 files changed, 22 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 975d1ca..bde2422 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1088,8 +1088,11 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+     /* Features of given devices. */
+     if (strstr(str, "pci-assign.configfd"))
+         *flags |= QEMUD_CMD_FLAG_PCI_CONFIGFD;
+-    if (strstr(str, "virtio-blk-pci.bootindex"))
++    if (strstr(str, "virtio-blk-pci.bootindex")) {
+         *flags |= QEMUD_CMD_FLAG_BOOTINDEX;
++        if (strstr(str, "pci-assign.bootindex"))
++            *flags |= QEMUD_CMD_FLAG_PCI_BOOTINDEX;
++    }
+ 
+     return 0;
+ }
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index e04f6a8..c2d09ca 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -87,6 +87,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_HDA_DUPLEX    = (1LL << 50), /* -device hda-duplex */
+     QEMUD_CMD_FLAG_DRIVE_AIO     = (1LL << 51), /* -drive aio= supported */
+     QEMUD_CMD_FLAG_PCI_MULTIBUS  = (1LL << 52), /* bus=pci.0 vs bus=pci */
++    QEMUD_CMD_FLAG_PCI_BOOTINDEX = (1LL << 53), /* pci-assign.bootindex */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 381ae18..d37c497 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1917,6 +1917,8 @@ qemuBuildPCIHostdevDevStr(virDomainHostdevDefPtr dev, const char *configfd,
+     virBufferVSprintf(&buf, ",id=%s", dev->info.alias);
+     if (configfd && *configfd)
+         virBufferVSprintf(&buf, ",configfd=%s", configfd);
++    if (dev->bootIndex)
++        virBufferVSprintf(&buf, ",bootindex=%d", dev->bootIndex);
+     if (qemuBuildDeviceAddressStr(&buf, &dev->info, qemuCmdFlags) < 0)
+         goto error;
+ 
+@@ -3984,6 +3986,21 @@ qemuBuildCommandLine(virConnectPtr conn,
+         virDomainHostdevDefPtr hostdev = def->hostdevs[i];
+         char *devstr;
+ 
++        if (hostdev->bootIndex) {
++            if (hostdev->mode != VIR_DOMAIN_HOSTDEV_MODE_SUBSYS ||
++                hostdev->source.subsys.type != VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                _("booting from assigned devices is only"
++                                  " supported for PCI devices"));
++                goto error;
++            } else if (!(qemuCmdFlags & QEMUD_CMD_FLAG_PCI_BOOTINDEX)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                _("booting from assigned PCI devices is not"
++                                  " supported with this version of qemu"));
++                goto error;
++            }
++        }
++
+         /* USB */
+         if (hostdev->mode == VIR_DOMAIN_HOSTDEV_MODE_SUBSYS &&
+             hostdev->source.subsys.type == VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_USB) {
+-- 
+1.7.4
+

@@ -1,0 +1,46 @@
+From e1f066b0f32e24b3da495380c71c049d7c5f891e Mon Sep 17 00:00:00 2001
+Message-Id: <e1f066b0f32e24b3da495380c71c049d7c5f891e.1298580377.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 21 Feb 2011 12:30:42 -0700
+Subject: [PATCH] network: plug memory leak
+
+https://bugzilla.redhat.com/show_bug.cgi?id=679164
+
+* src/conf/network_conf.c (virNetworkDefParseXML): Release ipNodes.
+(cherry picked from commit 6e2bab80c8899cee33d2958ee50e6f6fa304591f)
+---
+ src/conf/network_conf.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 4468a8e..dcab9de 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -1,7 +1,7 @@
+ /*
+  * network_conf.c: network XML handling
+  *
+- * Copyright (C) 2006-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -659,6 +659,7 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+             def->nips++;
+         }
+     }
++    VIR_FREE(ipNodes);
+ 
+     /* IPv4 forwarding setup */
+     if (virXPathBoolean("count(./forward) > 0", ctxt)) {
+@@ -690,6 +691,7 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+ 
+  error:
+     virNetworkDefFree(def);
++    VIR_FREE(ipNodes);
+     return NULL;
+ }
+ 
+-- 
+1.7.4.1
+

@@ -1,0 +1,247 @@
+From 942c38b1ca872b8c7a0eca0aa38c0c7f76b461ef Mon Sep 17 00:00:00 2001
+Message-Id: <942c38b1ca872b8c7a0eca0aa38c0c7f76b461ef.1299776671.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:52 -0700
+Subject: [PATCH] audit: add qemu hooks for auditing cgroup events
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+* src/qemu/qemu_audit.h (qemuDomainCgroupAudit): New prototype.
+* src/qemu/qemu_audit.c (qemuDomainCgroupAudit): Implement it.
+* src/qemu/qemu_driver.c (qemudDomainSaveFlag): Add audit.
+* src/qemu/qemu_cgroup.c (qemuSetupDiskPathAllow)
+(qemuSetupChardevCgroup, qemuSetupHostUsbDeviceCgroup)
+(qemuSetupCgroup, qemuTeardownDiskPathDeny): Likewise.
+(cherry picked from commit 6bb98d419f34739b916047bffd3242e832519eb0)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split affected context
+---
+ src/qemu/qemu_audit.c  |   48 +++++++++++++++++++++++++++++++++++++++++++++++-
+ src/qemu/qemu_audit.h  |    9 ++++++++-
+ src/qemu/qemu_cgroup.c |   19 +++++++++++++++++++
+ src/qemu/qemu_driver.c |    7 +++++++
+ 4 files changed, 81 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_audit.c b/src/qemu/qemu_audit.c
+index f03f984..76dacf7 100644
+--- a/src/qemu/qemu_audit.c
++++ b/src/qemu/qemu_audit.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_audit.c: QEMU audit management
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -102,6 +102,52 @@ void qemuDomainNetAudit(virDomainObjPtr vm,
+ }
+ 
+ 
++/**
++ * qemuDomainCgroupAudit:
++ * @vm: domain making the cgroups ACL change
++ * @cgroup: cgroup that manages the devices
++ * @reason: either "allow" or "deny"
++ * @item: one of "all", "path", or "major"
++ * @name: NULL for @item of "all", device path for @item of "path", and
++ * string describing major device type for @item of "major"
++ * @success: true if the cgroup operation succeeded
++ *
++ * Log an audit message about an attempted cgroup device ACL change.
++ */
++void qemuDomainCgroupAudit(virDomainObjPtr vm,
++                           virCgroupPtr cgroup ATTRIBUTE_UNUSED,
++                           const char *reason,
++                           const char *item,
++                           const char *name,
++                           bool success)
++{
++    char uuidstr[VIR_UUID_STRING_BUFLEN];
++    char *vmname;
++    char *detail = NULL;
++
++    virUUIDFormat(vm->def->uuid, uuidstr);
++    if (!(vmname = virAuditEncode("vm", vm->def->name))) {
++        VIR_WARN0("OOM while encoding audit message");
++        return;
++    }
++    if (name &&
++        !(detail = virAuditEncode(STREQ(item, "path") ? "path" : "type",
++                                  name))) {
++        VIR_WARN0("OOM while encoding audit message");
++        goto cleanup;
++    }
++
++    VIR_AUDIT(VIR_AUDIT_RECORD_RESOURCE, success,
++              "resrc=cgroup reason=%s %s uuid=%s item=%s%s%s",
++              reason, vmname, uuidstr,
++              item, detail ? " " : "", detail ? detail : "");
++
++cleanup:
++    VIR_FREE(vmname);
++    VIR_FREE(detail);
++}
++
++
+ static void qemuDomainLifecycleAudit(virDomainObjPtr vm,
+                                      const char *op,
+                                      const char *reason,
+diff --git a/src/qemu/qemu_audit.h b/src/qemu/qemu_audit.h
+index 5b5a5d3..da18eb4 100644
+--- a/src/qemu/qemu_audit.h
++++ b/src/qemu/qemu_audit.h
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_audit.h: QEMU audit management
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -25,6 +25,7 @@
+ # define __QEMU_AUDIT_H__
+ 
+ # include "domain_conf.h"
++# include "cgroup.h"
+ 
+ void qemuDomainStartAudit(virDomainObjPtr vm, const char *reason, bool success);
+ void qemuDomainStopAudit(virDomainObjPtr vm, const char *reason);
+@@ -38,6 +39,12 @@ void qemuDomainNetAudit(virDomainObjPtr vm,
+                         virDomainNetDefPtr newDef,
+                         const char *reason,
+                         bool success);
++void qemuDomainCgroupAudit(virDomainObjPtr vm,
++                           virCgroupPtr group,
++                           const char *reason,
++                           const char *item,
++                           const char *name,
++                           bool success);
+ void qemuDomainSecurityLabelAudit(virDomainObjPtr vm, bool success);
+ 
+ #endif /* __QEMU_AUDIT_H__ */
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 84a3203..8786e35 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -29,6 +29,7 @@
+ #include "memory.h"
+ #include "virterror_internal.h"
+ #include "util.h"
++#include "qemu_audit.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -66,6 +67,9 @@ qemuSetupDiskPathAllow(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
+     VIR_DEBUG("Process path %s for disk", path);
+     /* XXX RO vs RW */
+     rc = virCgroupAllowDevicePath(data->cgroup, path);
++    if (rc <= 0)
++        qemuDomainCgroupAudit(data->vm, data->cgroup, "allow", "path", path,
++                              rc == 0);
+     if (rc < 0) {
+         if (rc == -EACCES) { /* Get this for root squash NFS */
+             VIR_DEBUG("Ignoring EACCES for %s", path);
+@@ -106,6 +110,9 @@ qemuTeardownDiskPathDeny(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
+     VIR_DEBUG("Process path %s for disk", path);
+     /* XXX RO vs RW */
+     rc = virCgroupDenyDevicePath(data->cgroup, path);
++    if (rc <= 0)
++        qemuDomainCgroupAudit(data->vm, data->cgroup, "deny", "path", path,
++                              rc == 0);
+     if (rc < 0) {
+         if (rc == -EACCES) { /* Get this for root squash NFS */
+             VIR_DEBUG("Ignoring EACCES for %s", path);
+@@ -148,6 +155,9 @@ qemuSetupChardevCgroup(virDomainDefPtr def,
+ 
+     VIR_DEBUG("Process path '%s' for disk", dev->source.data.file.path);
+     rc = virCgroupAllowDevicePath(data->cgroup, dev->source.data.file.path);
++    if (rc < 0)
++        qemuDomainCgroupAudit(data->vm, data->cgroup, "allow", "path",
++                              dev->source.data.file.path, rc == 0);
+     if (rc < 0) {
+         virReportSystemError(-rc,
+                              _("Unable to allow device %s for %s"),
+@@ -168,6 +178,9 @@ int qemuSetupHostUsbDeviceCgroup(usbDevice *dev ATTRIBUTE_UNUSED,
+ 
+     VIR_DEBUG("Process path '%s' for USB device", path);
+     rc = virCgroupAllowDevicePath(data->cgroup, path);
++    if (rc <= 0)
++        qemuDomainCgroupAudit(data->vm, data->cgroup, "allow", "path", path,
++                              rc == 0);
+     if (rc < 0) {
+         virReportSystemError(-rc,
+                              _("Unable to allow device %s"),
+@@ -203,6 +216,7 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+     if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_DEVICES)) {
+         qemuCgroupData data = { vm, cgroup };
+         rc = virCgroupDenyAllDevices(cgroup);
++        qemuDomainCgroupAudit(vm, cgroup, "deny", "all", NULL, rc == 0);
+         if (rc != 0) {
+             if (rc == -EPERM) {
+                 VIR_WARN0("Group devices ACL is not accessible, disabling whitelisting");
+@@ -220,6 +234,7 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+         }
+ 
+         rc = virCgroupAllowDeviceMajor(cgroup, 'c', DEVICE_PTY_MAJOR);
++        qemuDomainCgroupAudit(vm, cgroup, "allow", "major", "pty", rc == 0);
+         if (rc != 0) {
+             virReportSystemError(-rc, "%s",
+                                  _("unable to allow /dev/pts/ devices"));
+@@ -228,6 +243,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+ 
+         if (vm->def->nsounds) {
+             rc = virCgroupAllowDeviceMajor(cgroup, 'c', DEVICE_SND_MAJOR);
++            qemuDomainCgroupAudit(vm, cgroup, "allow", "major", "sound",
++                                  rc == 0);
+             if (rc != 0) {
+                 virReportSystemError(-rc, "%s",
+                                      _("unable to allow /dev/snd/ devices"));
+@@ -238,6 +255,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+         for (i = 0; deviceACL[i] != NULL ; i++) {
+             rc = virCgroupAllowDevicePath(cgroup,
+                                           deviceACL[i]);
++            qemuDomainCgroupAudit(vm, cgroup, "allow", "path",
++                                  deviceACL[i], rc == 0);
+             if (rc < 0 &&
+                 rc != -ENOENT) {
+                 virReportSystemError(-rc,
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ac1372f..92973c0 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4883,6 +4883,8 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+             goto endjob;
+         }
+         rc = virCgroupAllowDevicePath(cgroup, path);
++        if (rc <= 0)
++            qemuDomainCgroupAudit(vm, cgroup, "allow", "path", path, rc == 0);
+         if (rc < 0) {
+             virReportSystemError(-rc,
+                                  _("Unable to allow device %s for %s"),
+@@ -4936,6 +4938,8 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+ 
+     if (cgroup != NULL) {
+         rc = virCgroupDenyDevicePath(cgroup, path);
++        if (rc <= 0)
++            qemuDomainCgroupAudit(vm, cgroup, "deny", "path", path, rc == 0);
+         if (rc < 0)
+             VIR_WARN("Unable to deny device %s for %s %d",
+                      path, vm->def->name, rc);
+@@ -4967,6 +4971,9 @@ endjob:
+ 
+             if (cgroup != NULL) {
+                 rc = virCgroupDenyDevicePath(cgroup, path);
++                if (rc <= 0)
++                    qemuDomainCgroupAudit(vm, cgroup, "deny", "path", path,
++                                          rc == 0);
+                 if (rc < 0)
+                     VIR_WARN("Unable to deny device %s for %s: %d",
+                              path, vm->def->name, rc);
+-- 
+1.7.4.1
+

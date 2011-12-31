@@ -1,0 +1,122 @@
+From 8c6d353feb820feb26758b33c238d8890a2abe6e Mon Sep 17 00:00:00 2001
+Message-Id: <8c6d353feb820feb26758b33c238d8890a2abe6e.1299776671.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 10 Mar 2011 10:14:30 +0800
+Subject: [PATCH] qemu: Replace deprecated option of qemu-img
+
+qemu-img silently disable "-e", so we can't use it for volume
+encryption anymore, change it into "-o encryption=on" if qemu
+supports "-o" option.
+(cherry picked from commit e997c268efdc79ccdc0049e1fd2c1d1f3b8c9a80)
+
+BZ#: 676984
+https://bugzilla.redhat.com/show_bug.cgi?id=676984
+---
+ src/storage/storage_backend.c |   47 +++++++++++++++++++++++++++++++++-------
+ 1 files changed, 38 insertions(+), 9 deletions(-)
+
+diff --git a/src/storage/storage_backend.c b/src/storage/storage_backend.c
+index ee08a4a..4f0096c 100644
+--- a/src/storage/storage_backend.c
++++ b/src/storage/storage_backend.c
+@@ -637,6 +637,7 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+     int ret = -1;
+     char *size = NULL;
+     char *create_tool;
++    int imgformat = -1;
+ 
+     const char *type = virStorageFileFormatTypeToString(vol->target.format);
+     const char *backingType = vol->backingStore.path ?
+@@ -741,6 +742,10 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+         return -1;
+     }
+ 
++    imgformat = virStorageBackendQEMUImgBackingFormat(create_tool);
++    if (imgformat < 0)
++        goto cleanup;
++
+     if (inputvol) {
+         const char *imgargv[] = {
+             create_tool,
+@@ -750,8 +755,19 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+             inputPath,
+             vol->target.path,
+             NULL,
++            NULL,
++            NULL
+         };
+ 
++        if (vol->target.encryption != NULL) {
++            if (imgformat == QEMU_IMG_BACKING_FORMAT_FLAG) {
++                imgargv[8] = "-o";
++                imgargv[9] = "encryption=on";
++            } else {
++                imgargv[8] = "-e";
++            }
++        }
++
+         ret = virStorageBackendCreateExecCommand(pool, vol, imgargv);
+     } else if (vol->backingStore.path) {
+         const char *imgargv[] = {
+@@ -766,11 +782,8 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+             NULL,
+             NULL
+         };
+-        int imgformat = virStorageBackendQEMUImgBackingFormat(create_tool);
+-        char *optflag = NULL;
+-        if (imgformat < 0)
+-            goto cleanup;
+ 
++        char *optflag = NULL;
+         switch (imgformat) {
+         case QEMU_IMG_BACKING_FORMAT_FLAG:
+             imgargv[6] = "-F";
+@@ -786,13 +799,21 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+                 virReportOOMError();
+                 goto cleanup;
+             }
++
++            if (vol->target.encryption != NULL) {
++                char *tmp = NULL;
++                if (virAsprintf(&tmp, "%s,%s", optflag, "encryption=on") < 0) {
++                    virReportOOMError();
++                    goto cleanup;
++                }
++                VIR_FREE(optflag);
++                optflag = tmp;
++            }
++
+             imgargv[6] = "-o";
+             imgargv[7] = optflag;
+             imgargv[8] = vol->target.path;
+             imgargv[9] = size;
+-            if (vol->target.encryption != NULL)
+-                imgargv[10] = "-e";
+-            break;
+ 
+         default:
+             VIR_INFO("Unable to set backing store format for %s with %s",
+@@ -814,10 +835,18 @@ virStorageBackendCreateQemuImg(virConnectPtr conn,
+             vol->target.path,
+             size,
+             NULL,
++            NULL,
+             NULL
+         };
+-        if (vol->target.encryption != NULL)
+-            imgargv[6] = "-e";
++
++        if (vol->target.encryption != NULL) {
++            if (imgformat == QEMU_IMG_BACKING_FORMAT_FLAG) {
++                imgargv[6] = "-o";
++                imgargv[7] = "encryption=on";
++            } else {
++                imgargv[6] = "-e";
++            }
++        }
+ 
+         ret = virStorageBackendCreateExecCommand(pool, vol, imgargv);
+     }
+-- 
+1.7.4.1
+

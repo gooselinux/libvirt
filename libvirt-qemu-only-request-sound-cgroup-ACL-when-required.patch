@@ -1,0 +1,41 @@
+From 65578527c8602950016dc86545a35b99747151bd Mon Sep 17 00:00:00 2001
+Message-Id: <65578527c8602950016dc86545a35b99747151bd.1299776672.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:55 -0700
+Subject: [PATCH] qemu: only request sound cgroup ACL when required
+
+https://bugzilla.redhat.com/show_bug.cgi?id=680398
+
+When a SPICE or VNC graphics controller is present, and sound is
+piggybacked over a channel to the graphics device rather than
+directly accessing host hardware, then there is no need to grant
+host hardware access to that qemu process.
+
+* src/qemu/qemu_cgroup.c (qemuSetupCgroup): Prevent sound with
+spice, and with vnc when vnc_allow_host_audio is 0.
+Reported by Daniel Berrange.
+(cherry picked from commit 7c6b22c4d5343f8f635aa5c820778b09636f9beb)
+---
+ src/qemu/qemu_cgroup.c |    6 +++++-
+ 1 files changed, 5 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 8786e35..333a766 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -241,7 +241,11 @@ int qemuSetupCgroup(struct qemud_driver *driver,
+             goto cleanup;
+         }
+ 
+-        if (vm->def->nsounds) {
++        if (vm->def->nsounds &&
++            (!vm->def->ngraphics ||
++             ((vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC &&
++               driver->vncAllowHostAudio) ||
++              (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SDL)))) {
+             rc = virCgroupAllowDeviceMajor(cgroup, 'c', DEVICE_SND_MAJOR);
+             qemuDomainCgroupAudit(vm, cgroup, "allow", "major", "sound",
+                                   rc == 0);
+-- 
+1.7.4.1
+

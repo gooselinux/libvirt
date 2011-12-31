@@ -1,0 +1,51 @@
+From 93171ad9839463cca577dc1d43dd7971b6ecee8d Mon Sep 17 00:00:00 2001
+Message-Id: <93171ad9839463cca577dc1d43dd7971b6ecee8d.1301393957.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 23 Mar 2011 08:27:01 -0600
+Subject: [PATCH] Initialization error of qemuCgroupData in Qemu host usb hotplug
+
+https://bugzilla.redhat.com/show_bug.cgi?id=690183
+
+Steps to reproduce this bug:
+<hostdev mode='subsystem' type='usb'>
+  <source>
+    <address bus='0x001' device='0x003'/>
+  </source>
+</hostdev>
+error: Failed to attach device from usb.xml
+error: server closed connection:
+
+The reason of this bug is that we set data.cgroup to NULL, and this will cause
+libvirtd crashed.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit bcac844f4f21b7aa6501af81efcc1aaa703ba756)
+---
+ src/qemu/qemu_hotplug.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 2301eb0..a8b5f24 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -919,7 +919,7 @@ int qemuDomainAttachHostUsbDevice(struct qemud_driver *driver,
+     if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_DEVICES)) {
+         virCgroupPtr cgroup = NULL;
+         usbDevice *usb;
+-        qemuCgroupData data = { vm, cgroup };
++        qemuCgroupData data;
+ 
+         if (virCgroupForDomain(driver->cgroup, vm->def->name, &cgroup, 0) !=0 ) {
+             qemuReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -932,6 +932,8 @@ int qemuDomainAttachHostUsbDevice(struct qemud_driver *driver,
+                                 hostdev->source.subsys.u.usb.device)) == NULL)
+             goto error;
+ 
++        data.vm = vm;
++        data.cgroup = cgroup;
+         if (usbDeviceFileIterate(usb, qemuSetupHostUsbDeviceCgroup, &data) < 0)
+             goto error;
+     }
+-- 
+1.7.4.1
+

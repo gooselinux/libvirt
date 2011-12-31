@@ -1,0 +1,41 @@
+From 64757235f5a8cf2ffdb763bd032aaa5046986b1b Mon Sep 17 00:00:00 2001
+Message-Id: <64757235f5a8cf2ffdb763bd032aaa5046986b1b.1295522811.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 18 Jan 2011 12:07:13 +0100
+Subject: [PATCH] qemu: Avoid sending STOPPED event twice
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=666158
+
+In some circumstances, libvirtd would issue two STOPPED events after it
+stopped a domain. This was because an EOF event can arrive after a qemu
+process is killed but before qemuMonitorClose() is called.
+
+qemuHandleMonitorEOF() should ignore EOF when the domain is not running.
+
+I wasn't able to reproduce this bug directly, only after adding an
+artificial sleep() into qemudShutdownVMDaemon().
+(cherry picked from commit 15e786589373e7bd5b949be911b90e56481740fb)
+---
+ src/qemu/qemu_driver.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 9d172df..542ecf9 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -738,6 +738,12 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ 
+     virDomainObjLock(vm);
+ 
++    if (!virDomainObjIsActive(vm)) {
++        VIR_DEBUG("Domain %p is not active, ignoring EOF", vm);
++        virDomainObjUnlock(vm);
++        return;
++    }
++
+     priv = vm->privateData;
+     if (!hasError && priv->monJSON && !priv->gotShutdown) {
+         VIR_DEBUG("Monitor connection to '%s' closed without SHUTDOWN event; "
+-- 
+1.7.4.rc2
+

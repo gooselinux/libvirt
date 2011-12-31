@@ -1,0 +1,33 @@
+From b6a23f4e228a0a8efa0003f81d9d118165fc9c95 Mon Sep 17 00:00:00 2001
+Message-Id: <b6a23f4e228a0a8efa0003f81d9d118165fc9c95.1296819815.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 1 Feb 2011 17:01:11 +0800
+Subject: [PATCH] docs: Update docs for cpu_shares setting
+
+BZ# 641187
+https://bugzilla.redhat.com/show_bug.cgi?id=641187
+
+* tools/virsh.pod
+(cherry picked from commit 8168285b450ebe9f6e4ac2c3d8f107ca7c581119)
+---
+ tools/virsh.pod |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 811ff2d..a510406 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -561,7 +561,9 @@ Xen (credit scheduler): weight, cap
+ 
+ ESX (allocation scheduler): reservation, limit, shares
+ 
+-B<Note>: The cpu_shares parameter has a valid value range of 0-262144.
++B<Note>: The cpu_shares parameter has a valid value range of 0-262144; Negative
++values are wrapped to positive, and larger values are capped at the maximum.
++Therefore, -1 is a useful shorthand for 262144.
+ 
+ B<Note>: The weight and cap parameters are defined only for the
+ XEN_CREDIT scheduler and are now I<DEPRECATED>.
+-- 
+1.7.4
+

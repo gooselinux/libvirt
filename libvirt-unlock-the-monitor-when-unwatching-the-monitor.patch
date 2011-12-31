@@ -1,0 +1,39 @@
+From d0e6846a155825935e77bd8c63b1a00198f2fc30 Mon Sep 17 00:00:00 2001
+Message-Id: <d0e6846a155825935e77bd8c63b1a00198f2fc30.1300791642.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Fri, 18 Mar 2011 12:42:09 -0600
+Subject: [PATCH] unlock the monitor when unwatching the monitor
+
+https://bugzilla.redhat.com/show_bug.cgi?id=688774
+
+Steps to reproduce this bug:
+The domain has 2 cpus, and we try to set the third cpu online.
+The qemu crashes, and this command will hang.
+
+The reason is that the refs is not 1 when we unwatch the monitor.
+We lock the monitor, but we do not unlock it. So virCondWait()
+will be blocked.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit 9741f3461b14e84816a21e1a9578adb7f1466fa2)
+---
+ src/qemu/qemu_monitor.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index ad19107..6d0f176 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -239,7 +239,8 @@ qemuMonitorUnwatch(void *monitor)
+     qemuMonitorPtr mon = monitor;
+ 
+     qemuMonitorLock(mon);
+-    qemuMonitorUnref(mon);
++    if (qemuMonitorUnref(mon) > 0)
++        qemuMonitorUnlock(mon);
+ }
+ 
+ static int
+-- 
+1.7.4.1
+

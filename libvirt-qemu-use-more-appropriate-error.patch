@@ -1,0 +1,43 @@
+From f6bec4d232d8f7d1556f16c36ff556881e5087cd Mon Sep 17 00:00:00 2001
+Message-Id: <f6bec4d232d8f7d1556f16c36ff556881e5087cd.1300223309.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 15 Mar 2011 08:58:03 -0600
+Subject: [PATCH] qemu: use more appropriate error
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673578
+
+Fixes bug in commit acacced
+
+* src/qemu/qemu_command.c (qemuBuildCommandLine):
+s/INVALID_ARG/CONFIG_UNSUPPORTED/.
+Reported by Daniel P. Berrange.
+(cherry picked from commit 30a50fc3b03cafc063df6ee0adb07487db12ba0b)
+---
+ src/qemu/qemu_command.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index ae665cf..5ed6b30 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1903,7 +1903,7 @@ qemuBuildVideoDevStr(virDomainVideoDefPtr video,
+ 
+     if (video->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
+         if (video->vram > (UINT_MAX / 1024)) {
+-            qemuReportError(VIR_ERR_INVALID_ARG,
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                             _("value for 'vram' must be less than '%u'"),
+                             UINT_MAX / 1024);
+             goto error;
+@@ -4020,7 +4020,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     if (def->videos[0]->vram &&
+                         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+                         if (def->videos[0]->vram > (UINT_MAX / 1024)) {
+-                            qemuReportError(VIR_ERR_INVALID_ARG,
++                            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                             _("value for 'vram' must be less than '%u'"),
+                                             UINT_MAX / 1024);
+                             goto error;
+-- 
+1.7.4.1
+

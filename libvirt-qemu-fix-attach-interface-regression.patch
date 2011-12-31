@@ -1,0 +1,224 @@
+From 014c2502b1b3368763be1d1974389e498074eb6f Mon Sep 17 00:00:00 2001
+Message-Id: <014c2502b1b3368763be1d1974389e498074eb6f.1297440280.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 10 Feb 2011 15:18:20 -0700
+Subject: [PATCH] qemu: fix attach-interface regression
+
+https://bugzilla.redhat.com/show_bug.cgi?id=676686
+
+QEMUD_CMD_FLAG_PCI_MULTIBUS should be set in the function
+qemuCapsExtractVersionInfo()
+
+The flag QEMUD_CMD_FLAG_PCI_MULTIBUS is used in the function
+qemuBuildDeviceAddressStr(). All callers get qemuCmdFlags
+by the function qemuCapsExtractVersionInfo() except that
+testCompareXMLToArgvFiles() in qemuxml2argvtest.c.
+
+So we should set QEMUD_CMD_FLAG_PCI_MULTIBUS in the function
+qemuCapsExtractVersionInfo() instead of qemuBuildCommandLine()
+because the function qemuBuildCommandLine() does not be called
+when we attach a pci device.
+
+tests: set QEMUD_CMD_FLAG_PCI_MULTIBUS in testCompareXMLToArgvFiles()
+
+set QEMUD_CMD_FLAG_PCI_MULTIBUS before calling qemuBuildCommandLine()
+as the flags is not set by qemuCapsExtractVersionInfo().
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit 6bf4788e86b408ba8f813e32dedd6b1956538df5)
+
+Conflicts:
+
+	src/qemu/qemu_capabilities.c - rhel-specific context
+---
+ src/qemu/qemu_capabilities.c |   12 +++++++++---
+ src/qemu/qemu_capabilities.h |    2 +-
+ src/qemu/qemu_command.c      |    6 ------
+ src/qemu/qemu_driver.c       |   20 +++++++++++---------
+ tests/qemuxml2argvtest.c     |    9 +++++++++
+ 5 files changed, 30 insertions(+), 19 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 2cca29d..6d6ed8f 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -547,7 +547,7 @@ qemuCapsInitGuest(virCapsPtr caps,
+         !virCapabilitiesAddGuestFeature(guest, "cpuselection", 1, 0))
+         goto error;
+ 
+-    if (qemuCapsExtractVersionInfo(binary, NULL, &qemuCmdFlags) < 0 ||
++    if (qemuCapsExtractVersionInfo(binary, info->arch, NULL, &qemuCmdFlags) < 0 ||
+         ((qemuCmdFlags & QEMUD_CMD_FLAG_BOOTINDEX) &&
+          !virCapabilitiesAddGuestFeature(guest, "deviceboot", 1, 0)))
+         goto error;
+@@ -1111,7 +1111,7 @@ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+     return 0;
+ }
+ 
+-int qemuCapsExtractVersionInfo(const char *qemu,
++int qemuCapsExtractVersionInfo(const char *qemu, const char *arch,
+                                unsigned int *retversion,
+                                unsigned long long *retflags)
+ {
+@@ -1158,6 +1158,12 @@ int qemuCapsExtractVersionInfo(const char *qemu,
+         flags |= QEMUD_CMD_FLAG_NETDEV;
+     }
+ 
++    /* Currently only x86_64 and i686 support PCI-multibus. */
++    if (STREQLEN(arch, "x86_64", 6) ||
++        STREQLEN(arch, "i686", 4)) {
++        flags |= QEMUD_CMD_FLAG_PCI_MULTIBUS;
++    }
++
+     /* qemuCapsExtractDeviceStr will only set additional flags if qemu
+      * understands the 0.13.0+ notion of "-device driver,".  */
+     if ((flags & QEMUD_CMD_FLAG_DEVICE) &&
+@@ -1219,7 +1225,7 @@ int qemuCapsExtractVersion(virCapsPtr caps,
+         return -1;
+     }
+ 
+-    if (qemuCapsExtractVersionInfo(binary, version, NULL) < 0) {
++    if (qemuCapsExtractVersionInfo(binary, ut.machine, version, NULL) < 0) {
+         return -1;
+     }
+ 
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index a681e0d..d3c7a72 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -109,7 +109,7 @@ int qemuCapsProbeCPUModels(const char *qemu,
+ 
+ int qemuCapsExtractVersion(virCapsPtr caps,
+                            unsigned int *version);
+-int qemuCapsExtractVersionInfo(const char *qemu,
++int qemuCapsExtractVersionInfo(const char *qemu, const char *arch,
+                                unsigned int *version,
+                                unsigned long long *qemuCmdFlags);
+ 
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 054ac05..55afdb4 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2685,12 +2685,6 @@ qemuBuildCommandLine(virConnectPtr conn,
+         break;
+     }
+ 
+-    /* Currently only x86_64 and i686 support PCI-multibus. */
+-    if (STREQLEN(def->os.arch, "x86_64", 6) ||
+-        STREQLEN(def->os.arch, "i686", 4)) {
+-        qemuCmdFlags |= QEMUD_CMD_FLAG_PCI_MULTIBUS;
+-    }
+-
+     cmd = virCommandNewArgList(emulator, "-S", NULL);
+ 
+     virCommandAddEnvPassCommon(cmd);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 55b05b8..4c1f066 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1331,7 +1331,7 @@ qemuReconnectDomain(void *payload, const char *name ATTRIBUTE_UNUSED, void *opaq
+     /* XXX we should be persisting the original flags in the XML
+      * not re-detecting them, since the binary may have changed
+      * since launch time */
+-    if (qemuCapsExtractVersionInfo(obj->def->emulator,
++    if (qemuCapsExtractVersionInfo(obj->def->emulator, obj->def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) >= 0 &&
+         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+@@ -2908,7 +2908,7 @@ qemuAssignPCIAddresses(virDomainDefPtr def)
+     unsigned long long qemuCmdFlags = 0;
+     qemuDomainPCIAddressSetPtr addrs = NULL;
+ 
+-    if (qemuCapsExtractVersionInfo(def->emulator,
++    if (qemuCapsExtractVersionInfo(def->emulator, def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto cleanup;
+@@ -3151,7 +3151,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+         goto cleanup;
+ 
+     DEBUG0("Determining emulator version");
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator,
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto cleanup;
+@@ -6556,7 +6556,7 @@ static char *qemuDomainXMLToNative(virConnectPtr conn,
+             def->graphics[i]->data.vnc.port = QEMU_VNC_PORT_MIN;
+     }
+ 
+-    if (qemuCapsExtractVersionInfo(def->emulator,
++    if (qemuCapsExtractVersionInfo(def->emulator, def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto cleanup;
+@@ -6940,7 +6940,7 @@ static int qemudDomainAttachDevice(virDomainPtr dom,
+     if (dev == NULL)
+         goto endjob;
+ 
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator,
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto endjob;
+@@ -7110,7 +7110,7 @@ static int qemuDomainUpdateDeviceFlags(virDomainPtr dom,
+     if (dev == NULL)
+         goto endjob;
+ 
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator,
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto endjob;
+@@ -7216,7 +7216,7 @@ static int qemudDomainDetachDevice(virDomainPtr dom,
+     if (dev == NULL)
+         goto endjob;
+ 
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator,
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
+                                    NULL,
+                                    &qemuCmdFlags) < 0)
+         goto endjob;
+@@ -8545,7 +8545,8 @@ qemudDomainMigratePrepareTunnel(virConnectPtr dconn,
+     unlink(unixfile);
+ 
+     /* check that this qemu version supports the interactive exec */
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator, NULL, &qemuCmdFlags) < 0) {
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
++                                   NULL, &qemuCmdFlags) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("Cannot determine QEMU argv syntax %s"),
+                         vm->def->emulator);
+@@ -9086,7 +9087,8 @@ static int doTunnelMigrate(virDomainPtr dom,
+     }
+ 
+     /* check that this qemu version supports the unix migration */
+-    if (qemuCapsExtractVersionInfo(vm->def->emulator, NULL, &qemuCmdFlags) < 0) {
++    if (qemuCapsExtractVersionInfo(vm->def->emulator, vm->def->os.arch,
++                                   NULL, &qemuCmdFlags) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         _("Cannot extract Qemu version from '%s'"),
+                         vm->def->emulator);
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 9512bdc..af5ce56 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -111,6 +111,15 @@ static int testCompareXMLToArgvFiles(const char *xml,
+     free(virtTestLogContentAndReset());
+     virResetLastError();
+ 
++    /* We do not call qemuCapsExtractVersionInfo() before calling
++     * qemuBuildCommandLine(), so we should set QEMUD_CMD_FLAG_PCI_MULTIBUS for
++     * x86_64 and i686 architectures here.
++     */
++    if (STREQLEN(vmdef->os.arch, "x86_64", 6) ||
++        STREQLEN(vmdef->os.arch, "i686", 4)) {
++        flags |= QEMUD_CMD_FLAG_PCI_MULTIBUS;
++    }
++
+     if (!(cmd = qemuBuildCommandLine(conn, &driver,
+                                      vmdef, &monitor_chr, false, flags,
+                                      migrateFrom, migrateFd, NULL,
+-- 
+1.7.4
+

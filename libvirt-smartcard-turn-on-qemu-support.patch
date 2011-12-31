@@ -1,0 +1,265 @@
+From 9ffe02d763e3e2be79115ba220b05cfc929da439 Mon Sep 17 00:00:00 2001
+Message-Id: <9ffe02d763e3e2be79115ba220b05cfc929da439.1296838266.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 22:54:34 -0700
+Subject: [PATCH] smartcard: turn on qemu support
+
+https://bugzilla.redhat.com/show_bug.cgi?id=591703
+
+* src/qemu/qemu_command.c (qemuBuildCommandLine): Emit smartcard
+options.
+(qemuAssignDeviceAliases): Assign an alias for smartcards.
+(qemuBuildControllerDevStr): Manage the usb-ccid controller.
+* tests/qemuxml2argvtest.c (mymain): Add new tests.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.args: New
+file.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.args:
+Likewise.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough.args:
+Likewise.
+* tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.args:
+Likewise.
+
+(cherry picked from commit f5fd9baac1db4d1570ba22ec21cd7c508c9afdb1)
+---
+ src/qemu/qemu_command.c                            |  116 +++++++++++++++++++-
+ .../qemuxml2argv-smartcard-controller.args         |    7 +
+ .../qemuxml2argv-smartcard-host-certificates.args  |    8 ++
+ .../qemuxml2argv-smartcard-host.args               |    7 +
+ .../qemuxml2argv-smartcard-passthrough-tcp.args    |    8 ++
+ tests/qemuxml2argvtest.c                           |   13 ++
+ 6 files changed, 157 insertions(+), 2 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.args
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index dc7cf28..83b7a15 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -638,6 +638,10 @@ qemuAssignDeviceAliases(virDomainDefPtr def, unsigned long long qemuCmdFlags)
+         if (virAsprintf(&def->channels[i]->info.alias, "channel%d", i) < 0)
+             goto no_memory;
+     }
++    for (i = 0; i < def->nsmartcards ; i++) {
++        if (virAsprintf(&def->smartcards[i]->info.alias, "smartcard%d", i) < 0)
++            goto no_memory;
++    }
+     if (def->console) {
+         if (virAsprintf(&def->console->info.alias, "console%d", i) < 0)
+             goto no_memory;
+@@ -1002,8 +1006,9 @@ qemuAssignDevicePCISlots(virDomainDefPtr def, qemuDomainPCIAddressSetPtr addrs)
+ 
+     /* Disk controllers (SCSI only for now) */
+     for (i = 0; i < def->ncontrollers ; i++) {
+-        /* FDC lives behind the ISA bridge */
+-        if (def->controllers[i]->type == VIR_DOMAIN_CONTROLLER_TYPE_FDC)
++        /* FDC lives behind the ISA bridge; CCID is a usb device */
++        if (def->controllers[i]->type == VIR_DOMAIN_CONTROLLER_TYPE_FDC ||
++            def->controllers[i]->type == VIR_DOMAIN_CONTROLLER_TYPE_CCID)
+             continue;
+ 
+         /* First IDE controller lives on the PIIX3 at slot=1, function=1,
+@@ -1511,6 +1516,10 @@ qemuBuildControllerDevStr(virDomainControllerDefPtr def,
+         }
+         break;
+ 
++    case VIR_DOMAIN_CONTROLLER_TYPE_CCID:
++        virBufferVSprintf(&buf, "usb-ccid,id=ccid%d", def->idx);
++        break;
++
+     /* We always get an IDE controller, whether we want it or not. */
+     case VIR_DOMAIN_CONTROLLER_TYPE_IDE:
+     default:
+@@ -3434,6 +3443,109 @@ qemuBuildCommandLine(virConnectPtr conn,
+         }
+     }
+ 
++    if (def->nsmartcards) {
++        /* -device usb-ccid was already emitted along with other
++         * controllers.  For now, qemu handles only one smartcard.  */
++        virDomainSmartcardDefPtr smartcard = def->smartcards[0];
++        char *devstr;
++        virBuffer opt = VIR_BUFFER_INITIALIZER;
++        int j;
++        const char *database;
++
++        if (def->nsmartcards > 1 ||
++            smartcard->info.type != VIR_DOMAIN_DEVICE_ADDRESS_TYPE_CCID ||
++            smartcard->info.addr.ccid.controller != 0 ||
++            smartcard->info.addr.ccid.slot != 0) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                            _("this QEMU binary lacks multiple smartcard "
++                              "support"));
++            virBufferFreeAndReset(&opt);
++            goto error;
++        }
++
++        switch (smartcard->type) {
++        case VIR_DOMAIN_SMARTCARD_TYPE_HOST:
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) ||
++                !(qemuCmdFlags & QEMUD_CMD_FLAG_CCID_EMULATED)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                _("this QEMU binary lacks smartcard host "
++                                  "mode support"));
++                goto error;
++            }
++
++            virBufferAddLit(&opt, "ccid-card-emulated,backend=nss-emulated");
++            break;
++
++        case VIR_DOMAIN_SMARTCARD_TYPE_HOST_CERTIFICATES:
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) ||
++                !(qemuCmdFlags & QEMUD_CMD_FLAG_CCID_EMULATED)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                _("this QEMU binary lacks smartcard host "
++                                  "mode support"));
++                goto error;
++            }
++
++            virBufferAddLit(&opt, "ccid-card-emulated,backend=certificates");
++            for (j = 0; j < VIR_DOMAIN_SMARTCARD_NUM_CERTIFICATES; j++) {
++                if (strchr(smartcard->data.cert.file[j], ',')) {
++                    virBufferFreeAndReset(&opt);
++                    qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                    _("invalid certificate name: %s"),
++                                    smartcard->data.cert.file[j]);
++                    goto error;
++                }
++                virBufferVSprintf(&opt, ",cert%d=%s", j + 1,
++                                  smartcard->data.cert.file[j]);
++            }
++            if (smartcard->data.cert.database) {
++                if (strchr(smartcard->data.cert.database, ',')) {
++                    virBufferFreeAndReset(&opt);
++                    qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                    _("invalid database name: %s"),
++                                    smartcard->data.cert.database);
++                    goto error;
++                }
++                database = smartcard->data.cert.database;
++            } else {
++                database = VIR_DOMAIN_SMARTCARD_DEFAULT_DATABASE;
++            }
++            virBufferVSprintf(&opt, ",database=%s", database);
++            break;
++
++        case VIR_DOMAIN_SMARTCARD_TYPE_PASSTHROUGH:
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_CHARDEV) ||
++                !(qemuCmdFlags & QEMUD_CMD_FLAG_CCID_PASSTHRU)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                _("this QEMU binary lacks smartcard "
++                                  "passthrough mode support"));
++                goto error;
++            }
++
++            virCommandAddArg(cmd, "-chardev");
++            if (!(devstr = qemuBuildChrChardevStr(&smartcard->data.passthru,
++                                                  smartcard->info.alias))) {
++                virBufferFreeAndReset(&opt);
++                goto error;
++            }
++            virCommandAddArg(cmd, devstr);
++            VIR_FREE(devstr);
++
++            virBufferVSprintf(&opt, "ccid-card-passthru,chardev=char%s",
++                              smartcard->info.alias);
++            break;
++
++        default:
++            qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                            _("unexpected smartcard type %d"),
++                            smartcard->type);
++            virBufferFreeAndReset(&opt);
++            goto error;
++        }
++        virCommandAddArg(cmd, "-device");
++        virBufferVSprintf(&opt, ",id=%s,bus=ccid0.0", smartcard->info.alias);
++        virCommandAddArgBuffer(cmd, &opt);
++    }
++
+     if (!def->nserials) {
+         /* If we have -device, then we set -nodefault already */
+         if (!(qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE))
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.args b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.args
+new file mode 100644
+index 0000000..a0ee85e
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-controller.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev \
++socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon \
++chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -device \
++usb-ccid,id=ccid0 -device \
++ccid-card-emulated,backend=nss-emulated,id=smartcard0,bus=ccid0.0 -usb \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.args b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.args
+new file mode 100644
+index 0000000..46bf38a
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host-certificates.args
+@@ -0,0 +1,8 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev \
++socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon \
++chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -device \
++usb-ccid,id=ccid0 -device \
++ccid-card-emulated,backend=certificates,cert1=cert1,cert2=cert2,cert3=cert3\
++,database=/etc/pki/nssdb,id=smartcard0,bus=ccid0.0 -usb -device \
++virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.args b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.args
+new file mode 100644
+index 0000000..a0ee85e
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-host.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev \
++socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon \
++chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -device \
++usb-ccid,id=ccid0 -device \
++ccid-card-emulated,backend=nss-emulated,id=smartcard0,bus=ccid0.0 -usb \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.args b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.args
+new file mode 100644
+index 0000000..159ca87
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-smartcard-passthrough-tcp.args
+@@ -0,0 +1,8 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M \
++pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -chardev \
++socket,id=charmonitor,path=/tmp/test-monitor,server,nowait -mon \
++chardev=charmonitor,id=monitor,mode=readline -no-acpi -boot c -device \
++usb-ccid,id=ccid0 -chardev \
++socket,id=charsmartcard0,host=127.0.0.1,port=2001,server,nowait \
++-device ccid-card-passthru,chardev=charsmartcard0,id=smartcard0,bus=ccid0.0 \
++-usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x2
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 0a39791..0b4bfeb 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -408,6 +408,19 @@ mymain(int argc, char **argv)
+     DO_TEST("console-virtio", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG, false);
+ 
++    DO_TEST("smartcard-host",
++            QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_EMULATED, false);
++    DO_TEST("smartcard-host-certificates",
++            QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_EMULATED, false);
++    DO_TEST("smartcard-passthrough-tcp",
++            QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_PASSTHRU, false);
++    DO_TEST("smartcard-controller",
++            QEMUD_CMD_FLAG_CHARDEV | QEMUD_CMD_FLAG_DEVICE |
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_CCID_EMULATED, false);
++
+     DO_TEST("smbios", QEMUD_CMD_FLAG_SMBIOS_TYPE, false);
+ 
+     DO_TEST("watchdog", 0, false);
+-- 
+1.7.4
+

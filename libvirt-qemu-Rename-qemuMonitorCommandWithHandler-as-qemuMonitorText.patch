@@ -1,0 +1,82 @@
+From 43e14b2bf201076819badf6d5f7685f2cdcbd4c8 Mon Sep 17 00:00:00 2001
+Message-Id: <43e14b2bf201076819badf6d5f7685f2cdcbd4c8.1299776671.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 10 Mar 2011 09:37:08 +0100
+Subject: [PATCH] qemu: Rename qemuMonitorCommandWithHandler as qemuMonitorText*
+
+https://bugzilla.redhat.com/show_bug.cgi?id=589076
+
+To make it more obvious that it is only used for text monitor. The
+naming also matches the style of qemuMonitorTextCommandWithFd.
+(cherry picked from commit b3c6ec03b814ee7817f53c09a97447b42976eb7a)
+---
+ src/qemu/qemu_monitor_text.c |   32 +++++++++++++++++---------------
+ 1 files changed, 17 insertions(+), 15 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index d3d6f10..57e56f1 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -206,12 +206,13 @@ int qemuMonitorTextIOProcess(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ }
+ 
+ static int
+-qemuMonitorCommandWithHandler(qemuMonitorPtr mon,
+-                              const char *cmd,
+-                              qemuMonitorPasswordHandler passwordHandler,
+-                              void *passwordOpaque,
+-                              int scm_fd,
+-                              char **reply) {
++qemuMonitorTextCommandWithHandler(qemuMonitorPtr mon,
++                                  const char *cmd,
++                                  qemuMonitorPasswordHandler passwordHandler,
++                                  void *passwordOpaque,
++                                  int scm_fd,
++                                  char **reply)
++{
+     int ret;
+     qemuMonitorMessage msg;
+ 
+@@ -265,7 +266,8 @@ qemuMonitorTextCommandWithFd(qemuMonitorPtr mon,
+                              int scm_fd,
+                              char **reply)
+ {
+-    return qemuMonitorCommandWithHandler(mon, cmd, NULL, NULL, scm_fd, reply);
++    return qemuMonitorTextCommandWithHandler(mon, cmd, NULL, NULL,
++                                             scm_fd, reply);
+ }
+ 
+ 
+@@ -345,10 +347,10 @@ qemuMonitorTextStartCPUs(qemuMonitorPtr mon,
+                          virConnectPtr conn) {
+     char *reply;
+ 
+-    if (qemuMonitorCommandWithHandler(mon, "cont",
+-                                      qemuMonitorSendDiskPassphrase,
+-                                      conn,
+-                                      -1, &reply) < 0)
++    if (qemuMonitorTextCommandWithHandler(mon, "cont",
++                                          qemuMonitorSendDiskPassphrase,
++                                          conn,
++                                          -1, &reply) < 0)
+         return -1;
+ 
+     VIR_FREE(reply);
+@@ -750,10 +752,10 @@ int qemuMonitorTextSetVNCPassword(qemuMonitorPtr mon,
+ {
+     char *info = NULL;
+ 
+-    if (qemuMonitorCommandWithHandler(mon, "change vnc password",
+-                                      qemuMonitorSendVNCPassphrase,
+-                                      (char *)password,
+-                                      -1, &info) < 0) {
++    if (qemuMonitorTextCommandWithHandler(mon, "change vnc password",
++                                          qemuMonitorSendVNCPassphrase,
++                                          (char *)password,
++                                          -1, &info) < 0) {
+         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                         "%s", _("setting VNC password failed"));
+         return -1;
+-- 
+1.7.4.1
+

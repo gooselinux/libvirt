@@ -1,0 +1,35 @@
+From 04260adcf13c1f62b98864a146238e8ab521c938 Mon Sep 17 00:00:00 2001
+Message-Id: <04260adcf13c1f62b98864a146238e8ab521c938.1300293192.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Wed, 16 Mar 2011 16:38:33 +0800
+Subject: [PATCH] storage: Fix a problem which will cause libvirtd crashed
+
+If pool xml has no definition for "port", then "Segmentation fault"
+happens when jumping to "cleanup:" to do "VIR_FREE(port)", as "port"
+was not initialized in this situation.
+
+* src/conf/storage_conf.c
+(cherry picked from commit 98a4e5a301eb96b4d6c80b859e9986491e1eae06)
+
+BZ# 684712
+https://bugzilla.redhat.com/show_bug.cgi?id=684712
+---
+ src/conf/storage_conf.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index f7f471e..21cb3cd 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -396,7 +396,7 @@ virStoragePoolDefParseSource(xmlXPathContextPtr ctxt,
+     char *authType = NULL;
+     int nsource, i;
+     virStoragePoolOptionsPtr options;
+-    char *port;
++    char *port = NULL;
+ 
+     relnode = ctxt->node;
+     ctxt->node = node;
+-- 
+1.7.4.1
+

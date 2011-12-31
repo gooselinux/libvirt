@@ -1,0 +1,43 @@
+From cd082cc8df8933285564167019228adec35a5feb Mon Sep 17 00:00:00 2001
+Message-Id: <cd082cc8df8933285564167019228adec35a5feb.1295522811.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Wed, 5 Jan 2011 16:35:07 -0500
+Subject: [PATCH] remote: Don't lose track of events when callbacks are slow
+
+After the remote driver runs an event callback, it unconditionally disables the
+loop timer, thinking it just flushed every queued event. This doesn't work
+correctly though if an event is queued while a callback is running.
+
+The events actually aren't being lost, it's just that the event loop didn't
+think there was anything that needed to be dispatched. So all those 'lost
+events' should actually get re-triggered if you manually kick the loop by
+generating a new event (like creating a new guest).
+
+The solution is to disable the dispatch timer _before_ we invoke any event
+callbacks. Events queued while a callback is running will properly reenable the
+timer.
+
+More info at https://bugzilla.redhat.com/show_bug.cgi?id=624252
+(cherry picked from commit 1dd5c7f2dfeb324c39296569f72d8bf44d5e2a97)
+---
+ src/remote/remote_driver.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index ee2de4a..ea119c6 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -10557,9 +10557,9 @@ remoteDomainEventQueueFlush(int timer ATTRIBUTE_UNUSED, void *opaque)
+     priv->domainEvents->count = 0;
+     priv->domainEvents->events = NULL;
+ 
++    virEventUpdateTimeout(priv->eventFlushTimer, -1);
+     virDomainEventQueueDispatch(&tempQueue, priv->callbackList,
+                                 remoteDomainEventDispatchFunc, priv);
+-    virEventUpdateTimeout(priv->eventFlushTimer, -1);
+ 
+     /* Purge any deleted callbacks */
+     virDomainEventCallbackListPurgeMarked(priv->callbackList);
+-- 
+1.7.4.rc2
+

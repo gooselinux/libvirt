@@ -1,0 +1,63 @@
+From c5e327b150a34882d95d653251e65efb31e5180f Mon Sep 17 00:00:00 2001
+Message-Id: <c5e327b150a34882d95d653251e65efb31e5180f.1301393957.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 28 Mar 2011 13:23:00 -0600
+Subject: [PATCH] qemu: don't restore label that was never set
+
+https://bugzilla.redhat.com/show_bug.cgi?id=690737
+
+RHEL-specific. This is a technically a subset of upstream
+6034ddd55954251f454ca0a0632d5bb6ef4a5db4
+but the changes to create qemu_migration.c have not been backported,
+and the upstream commit also depends on other changes to exec: vs. fd:
+migration which are too invasive to backport the entire series to RHEL.
+
+* src/qemu/qemu_driver.c (qemudDomainSaveFlag): Track when label
+was set.
+---
+ src/qemu/qemu_driver.c |    8 +++++---
+ 1 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index fffce1e..65c68f0 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4706,7 +4706,8 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+     char *xml = NULL;
+     struct qemud_save_header header;
+     struct fileOpHookData hdata;
+-    int bypassSecurityDriver = 0;
++    bool bypassSecurityDriver = false;
++    bool restoreLabel = false;
+     int ret = -1;
+     int rc;
+     virDomainEventPtr event = NULL;
+@@ -4874,7 +4875,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+                is NFS, we assume it's a root-squashing NFS share, and that
+                the security driver stuff would have failed anyway */
+ 
+-            bypassSecurityDriver = 1;
++            bypassSecurityDriver = true;
+         }
+     }
+ 
+@@ -4904,6 +4905,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+         driver->securityDriver->domainSetSavedStateLabel(driver->securityDriver,
+                                                          vm, path) == -1)
+         goto endjob;
++    restoreLabel = true;
+ 
+     if (header.compressed == QEMUD_SAVE_FORMAT_RAW) {
+         const char *args[] = { "cat", NULL };
+@@ -4984,7 +4986,7 @@ endjob:
+                              path, vm->def->name, rc);
+             }
+ 
+-            if ((!bypassSecurityDriver) &&
++            if (restoreLabel && (!bypassSecurityDriver) &&
+                 driver->securityDriver &&
+                 driver->securityDriver->domainRestoreSavedStateLabel &&
+                 driver->securityDriver->domainRestoreSavedStateLabel(driver->securityDriver,
+-- 
+1.7.4.1
+

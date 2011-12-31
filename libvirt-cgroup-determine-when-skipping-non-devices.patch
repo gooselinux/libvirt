@@ -1,0 +1,142 @@
+From 48c6ced5210f3baf5c67075d141b9f8d9070354c Mon Sep 17 00:00:00 2001
+Message-Id: <48c6ced5210f3baf5c67075d141b9f8d9070354c.1299776671.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:50 -0700
+Subject: [PATCH] cgroup: determine when skipping non-devices
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+* src/util/cgroup.c (virCgroupAllowDevicePath)
+(virCgroupDenyDevicePath): Don't fail with EINVAL for
+non-devices.
+* src/qemu/qemu_driver.c (qemudDomainSaveFlag): Update caller.
+* src/qemu/qemu_cgroup.c (qemuSetupDiskPathAllow)
+(qemuSetupChardevCgroup, qemuSetupHostUsbDeviceCgroup)
+(qemuSetupCgroup, qemuTeardownDiskPathDeny): Likewise.
+(cherry picked from commit 061738764db6b8296ea80103d2fa60028ff2e2ba)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream file split affected context
+---
+ src/qemu/qemu_cgroup.c |   18 ++++++------------
+ src/qemu/qemu_driver.c |    6 +++---
+ src/util/cgroup.c      |    7 ++++---
+ 3 files changed, 13 insertions(+), 18 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index f016e8d..faf6944 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -66,11 +66,8 @@ int qemuSetupDiskPathAllow(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
+     VIR_DEBUG("Process path %s for disk", path);
+     /* XXX RO vs RW */
+     rc = virCgroupAllowDevicePath(cgroup, path);
+-    if (rc != 0) {
+-        /* Get this for non-block devices */
+-        if (rc == -EINVAL) {
+-            VIR_DEBUG("Ignoring EINVAL for %s", path);
+-        } else if (rc == -EACCES) { /* Get this for root squash NFS */
++    if (rc < 0) {
++        if (rc == -EACCES) { /* Get this for root squash NFS */
+             VIR_DEBUG("Ignoring EACCES for %s", path);
+         } else {
+             virReportSystemError(-rc,
+@@ -106,11 +103,8 @@ int qemuTeardownDiskPathDeny(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
+     VIR_DEBUG("Process path %s for disk", path);
+     /* XXX RO vs RW */
+     rc = virCgroupDenyDevicePath(cgroup, path);
+-    if (rc != 0) {
+-        /* Get this for non-block devices */
+-        if (rc == -EINVAL) {
+-            VIR_DEBUG("Ignoring EINVAL for %s", path);
+-        } else if (rc == -EACCES) { /* Get this for root squash NFS */
++    if (rc < 0) {
++        if (rc == -EACCES) { /* Get this for root squash NFS */
+             VIR_DEBUG("Ignoring EACCES for %s", path);
+         } else {
+             virReportSystemError(-rc,
+@@ -148,7 +142,7 @@ int qemuSetupChardevCgroup(virDomainDefPtr def,
+ 
+     VIR_DEBUG("Process path '%s' for disk", dev->source.data.file.path);
+     rc = virCgroupAllowDevicePath(cgroup, dev->source.data.file.path);
+-    if (rc != 0) {
++    if (rc < 0) {
+         virReportSystemError(-rc,
+                              _("Unable to allow device %s for %s"),
+                              dev->source.data.file.path, def->name);
+@@ -168,7 +162,7 @@ int qemuSetupHostUsbDeviceCgroup(usbDevice *dev ATTRIBUTE_UNUSED,
+ 
+     VIR_DEBUG("Process path '%s' for USB device", path);
+     rc = virCgroupAllowDevicePath(cgroup, path);
+-    if (rc != 0) {
++    if (rc < 0) {
+         virReportSystemError(-rc,
+                              _("Unable to allow device %s"),
+                              path);
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 0b1e8ba..5c67f76 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4883,7 +4883,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+             goto endjob;
+         }
+         rc = virCgroupAllowDevicePath(cgroup, path);
+-        if (rc != 0) {
++        if (rc < 0) {
+             virReportSystemError(-rc,
+                                  _("Unable to allow device %s for %s"),
+                                  path, vm->def->name);
+@@ -4936,7 +4936,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+ 
+     if (cgroup != NULL) {
+         rc = virCgroupDenyDevicePath(cgroup, path);
+-        if (rc != 0)
++        if (rc < 0)
+             VIR_WARN("Unable to deny device %s for %s %d",
+                      path, vm->def->name, rc);
+     }
+@@ -4967,7 +4967,7 @@ endjob:
+ 
+             if (cgroup != NULL) {
+                 rc = virCgroupDenyDevicePath(cgroup, path);
+-                if (rc != 0)
++                if (rc < 0)
+                     VIR_WARN("Unable to deny device %s for %s: %d",
+                              path, vm->def->name, rc);
+             }
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index ed6efda..00c555b 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -1144,7 +1144,8 @@ int virCgroupAllowDeviceMajor(virCgroupPtr group, char type, int major)
+  * Queries the type of device and its major/minor number, and
+  * adds that to the cgroup ACL
+  *
+- * Returns: 0 on success
++ * Returns: 0 on success, 1 if path exists but is not a device, or
++ * negative errno value on failure
+  */
+ #if defined(major) && defined(minor)
+ int virCgroupAllowDevicePath(virCgroupPtr group, const char *path)
+@@ -1155,7 +1156,7 @@ int virCgroupAllowDevicePath(virCgroupPtr group, const char *path)
+         return -errno;
+ 
+     if (!S_ISCHR(sb.st_mode) && !S_ISBLK(sb.st_mode))
+-        return -EINVAL;
++        return 1;
+ 
+     return virCgroupAllowDevice(group,
+                                 S_ISCHR(sb.st_mode) ? 'c' : 'b',
+@@ -1239,7 +1240,7 @@ int virCgroupDenyDevicePath(virCgroupPtr group, const char *path)
+         return -errno;
+ 
+     if (!S_ISCHR(sb.st_mode) && !S_ISBLK(sb.st_mode))
+-        return -EINVAL;
++        return 1;
+ 
+     return virCgroupDenyDevice(group,
+                                S_ISCHR(sb.st_mode) ? 'c' : 'b',
+-- 
+1.7.4.1
+

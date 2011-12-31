@@ -1,0 +1,39 @@
+From 2e2d3a2387fde6933a1a9a3dd1b558620fcab317 Mon Sep 17 00:00:00 2001
+Message-Id: <2e2d3a2387fde6933a1a9a3dd1b558620fcab317.1301393957.git.jdenemar@redhat.com>
+From: Stefan Berger <stefanb@us.ibm.com>
+Date: Wed, 23 Mar 2011 07:57:12 -0600
+Subject: [PATCH] qemu driver: fix positioning to end of log file
+
+https://bugzilla.redhat.com/show_bug.cgi?id=689986
+
+While doing some testing with Qemu and creating huge logfiles I encountered the case where the VM could not start anymore due to the lseek() to the end of the Qemu VM's log file failing. The patch below fixes the problem by replacing the previously used 'int' with 'off_t'.
+
+To reproduce this error, you could do the following:
+
+dd if=/dev/zero of=/var/log/libvirt/qemu/<name of VM>.log bs=1024 count=$((1024*2048))
+
+and you should get an error like this:
+
+error: Failed to start domain <name of VM>
+error: Unable to seek to -2147482651 in /var/log/libvirt/qemu/<name of VM>.log: Success
+(cherry picked from commit 0922ff2feaeca786f14f21a369f45aa0f7cc06dc)
+---
+ src/qemu/qemu_driver.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 744954d..e25f2f4 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3024,7 +3024,7 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+                               enum virVMOperationType vmop) {
+     int ret;
+     unsigned long long qemuCmdFlags;
+-    int pos = -1;
++    off_t pos = -1;
+     char ebuf[1024];
+     char *pidfile = NULL;
+     int logfile = -1;
+-- 
+1.7.4.1
+

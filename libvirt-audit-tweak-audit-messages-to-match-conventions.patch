@@ -1,0 +1,49 @@
+From 9280f92068f8da5bba061211dd979899384b5ebc Mon Sep 17 00:00:00 2001
+Message-Id: <9280f92068f8da5bba061211dd979899384b5ebc.1299776672.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 9 Mar 2011 15:46:56 -0700
+Subject: [PATCH] audit: tweak audit messages to match conventions
+
+https://bugzilla.redhat.com/show_bug.cgi?id=642785
+
+* src/qemu/qemu_audit.c (qemuDomainHostdevAudit): Avoid use of
+"type", which has a pre-defined meaning.
+(qemuDomainCgroupAudit): Likewise, as well as "item".
+(cherry picked from commit 30ad48836ed79adb91ee2aee5e1d5245e3620842)
+---
+ src/qemu/qemu_audit.c |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_audit.c b/src/qemu/qemu_audit.c
+index b1948c8..0f954c0 100644
+--- a/src/qemu/qemu_audit.c
++++ b/src/qemu/qemu_audit.c
+@@ -159,7 +159,7 @@ qemuDomainHostdevAudit(virDomainObjPtr vm,
+     }
+ 
+     VIR_AUDIT(VIR_AUDIT_RECORD_RESOURCE, success,
+-              "resrc=dev reason=%s %s uuid=%s type=%s %s",
++              "resrc=dev reason=%s %s uuid=%s bus=%s %s",
+               reason, vmname, uuidstr,
+               virDomainHostdevSubsysTypeToString(hostdev->source.subsys.type),
+               device);
+@@ -200,14 +200,14 @@ void qemuDomainCgroupAudit(virDomainObjPtr vm,
+         return;
+     }
+     if (name &&
+-        !(detail = virAuditEncode(STREQ(item, "path") ? "path" : "type",
++        !(detail = virAuditEncode(STREQ(item, "path") ? "path" : "category",
+                                   name))) {
+         VIR_WARN0("OOM while encoding audit message");
+         goto cleanup;
+     }
+ 
+     VIR_AUDIT(VIR_AUDIT_RECORD_RESOURCE, success,
+-              "resrc=cgroup reason=%s %s uuid=%s item=%s%s%s",
++              "resrc=cgroup reason=%s %s uuid=%s class=%s%s%s",
+               reason, vmname, uuidstr,
+               item, detail ? " " : "", detail ? detail : "");
+ 
+-- 
+1.7.4.1
+

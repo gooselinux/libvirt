@@ -1,0 +1,46 @@
+From 1887a7c78f106529ba4ef0c49d97300150e6b915 Mon Sep 17 00:00:00 2001
+Message-Id: <1887a7c78f106529ba4ef0c49d97300150e6b915.1300223308.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 11 Mar 2011 10:25:41 -0700
+Subject: [PATCH] qemu: fix -global argument usage
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673578
+
+* src/qemu/qemu_command.c (qemuBuildCommandLine): Pass two
+separate arguments, and fix indentation.
+(cherry picked from commit de6b8a0800cbd90aeb6af233cc591ae9d5a6974f)
+
+Conflicts:
+
+	src/qemu/qemu_command.c - due to upstream qemuCmdFlags refactor
+---
+ src/qemu/qemu_command.c |   13 +++++++------
+ 1 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index d1e7087..2b70ce9 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4012,12 +4012,13 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 if (def->videos[0]->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
+                     if (def->videos[0]->vram &&
+                         (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
+-                            if (qemuCmdFlags &QEMUD_CMD_FLAG_DEVICE_QXL_VGA)
+-                                virCommandAddArgFormat(cmd, "-global qxl-vga.vram_size=%u",
+-                                                       def->videos[0]->vram * 1024);
+-                            else
+-                                virCommandAddArgFormat(cmd, "-global qxl.vram_size=%u",
+-                                                       def->videos[0]->vram * 1024);
++                        virCommandAddArg(cmd, "-global");
++                        if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE_QXL_VGA)
++                            virCommandAddArgFormat(cmd, "qxl-vga.vram_size=%u",
++                                                   def->videos[0]->vram * 1024);
++                        else
++                            virCommandAddArgFormat(cmd, "qxl.vram_size=%u",
++                                                   def->videos[0]->vram * 1024);
+                     }
+                 }
+             }
+-- 
+1.7.4.1
+

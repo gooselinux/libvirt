@@ -1,0 +1,66 @@
+From 44dd7cb6255ef8926aced3c45636a1d09636ac1a Mon Sep 17 00:00:00 2001
+Message-Id: <44dd7cb6255ef8926aced3c45636a1d09636ac1a.1296819815.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Fri, 28 Jan 2011 12:02:45 +0800
+Subject: [PATCH] docs: Add docs for new extra parameter pkipath
+
+Docs for patch against BZ# 629510
+https://bugzilla.redhat.com/show_bug.cgi?id=629510
+
+* docs/remote.html.in
+(cherry picked from commit cc4447b68abf647ad41810b490c6a7b2d0291fd2)
+---
+ docs/remote.html.in |   30 ++++++++++++++++++++++++++++++
+ 1 files changed, 30 insertions(+), 0 deletions(-)
+
+diff --git a/docs/remote.html.in b/docs/remote.html.in
+index b0fdb7c..33dbba2 100644
+--- a/docs/remote.html.in
++++ b/docs/remote.html.in
+@@ -308,6 +308,21 @@ Note that parameter values must be
+         <td colspan="2"/>
+         <td> Example: <code>no_tty=1</code> </td>
+       </tr>
++      <tr>
++        <td>
++          <code>pkipath</code>
++        </td>
++        <td> tls</td>
++        <td>
++          Specifies x509 certificates path for the client. If any of
++          the CA certificate, client certificate, or client key is
++          missing, the connection will fail with a fatal error.
++        </td>
++      </tr>
++      <tr>
++        <td colspan="2"/>
++        <td> Example: <code>pkipath=/tmp/pki/client</code> </td>
++      </tr>
+     </table>
+     <h3>
+       <a name="Remote_certificates">Generating TLS certificates</a>
+@@ -372,6 +387,21 @@ next section.
+   </td>
+       </tr>
+     </table>
++    <p>
++      If 'pkipath' is specified in URI, then all the client
++      certificates must be found in the path specified, otherwise the
++      connection will fail with a fatal error. If 'pkipath' is not
++      specified:
++    </p>
++    <ul>
++      <li> For a non-root user, libvirt tries to find the certificates
++        in $HOME/.pki/libvirt. If any of the required certificates can
++        not be found, then the global default locations
++        (/etc/pki/CA/cacert.pem, /etc/pki/libvirt/private/clientkey,
++        /etc/pki/libvirt/clientcert.pem) will be used.
++      </li>
++      <li> For the root user, the global default locations will be used.</li>
++    </ul>
+     <h4>
+       <a name="Remote_TLS_background">Background to TLS certificates</a>
+     </h4>
+-- 
+1.7.4
+

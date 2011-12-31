@@ -1,0 +1,29 @@
+From 43161cea16f3e68a9878c3d679b6608bedbf1704 Mon Sep 17 00:00:00 2001
+Message-Id: <43161cea16f3e68a9878c3d679b6608bedbf1704.1298580377.git.jdenemar@redhat.com>
+From: Dan Kenigsberg <danken@redhat.com>
+Date: Mon, 21 Feb 2011 11:34:20 -0700
+Subject: [PATCH] virt-pki-validate: behave when CERTTOOL is missing
+
+https://bugzilla.redhat.com/show_bug.cgi?id=679153
+
+(cherry picked from commit 9b47915914a2754753c0401a56b67f4c908c94fb)
+---
+ tools/virt-pki-validate.in |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virt-pki-validate.in b/tools/virt-pki-validate.in
+index 207fa76..96659cf 100755
+--- a/tools/virt-pki-validate.in
++++ b/tools/virt-pki-validate.in
+@@ -14,7 +14,7 @@ PORT=16514
+ # First get certtool
+ #
+ CERTOOL=`which certtool 2>/dev/null`
+-if [ ! -x $CERTOOL ]
++if [ ! -x "$CERTOOL" ]
+ then
+     echo "Could not locate the certtool program"
+     echo "make sure the gnutls-utils (or gnutls-bin) package is installed"
+-- 
+1.7.4.1
+

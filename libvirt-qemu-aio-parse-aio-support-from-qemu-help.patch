@@ -1,0 +1,97 @@
+From 6f9708bf33b29720a15594e306a896faa0fb3480 Mon Sep 17 00:00:00 2001
+Message-Id: <6f9708bf33b29720a15594e306a896faa0fb3480.1296819816.git.jdenemar@redhat.com>
+From: Matthias Dahl <mdvirt@designassembly.de>
+Date: Fri, 28 Jan 2011 10:29:07 -0700
+Subject: [PATCH] qemu aio: parse aio support from qemu -help
+
+https://bugzilla.redhat.com/show_bug.cgi?id=591703
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit f19357ce3779c47bac5638c24179a34e12fac8e4)
+---
+ src/qemu/qemu_capabilities.c |    2 ++
+ src/qemu/qemu_capabilities.h |    3 ++-
+ tests/qemuhelptest.c         |   12 ++++++++----
+ 3 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index d4daddb..975d1ca 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -809,6 +809,8 @@ qemuCapsComputeCmdFlags(const char *help,
+             flags |= QEMUD_CMD_FLAG_DRIVE_FORMAT;
+         if (strstr(help, "readonly="))
+             flags |= QEMUD_CMD_FLAG_DRIVE_READONLY;
++        if (strstr(help, "aio=threads|native"))
++            flags |= QEMUD_CMD_FLAG_DRIVE_AIO;
+     }
+     if ((p = strstr(help, "-vga")) && !strstr(help, "-std-vga")) {
+         const char *nl = strstr(p, "\n");
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index 9148d90..59bb22a 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_capabilities.h: QEMU capabilities generation
+  *
+- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -85,6 +85,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_MIGRATE_QEMU_FD = (1LL << 48), /* -incoming fd:n */
+     QEMUD_CMD_FLAG_BOOTINDEX     = (1LL << 49), /* -device bootindex property */
+     QEMUD_CMD_FLAG_HDA_DUPLEX    = (1LL << 50), /* -device hda-duplex */
++    QEMUD_CMD_FLAG_DRIVE_AIO     = (1LL << 51), /* -drive aio= supported */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 5d78e2d..e9579de 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -309,7 +309,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NAME_PROCESS |
+             QEMUD_CMD_FLAG_SMBIOS_TYPE |
+             QEMUD_CMD_FLAG_VGA_NONE |
+-            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD,
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
++            QEMUD_CMD_FLAG_DRIVE_AIO,
+             12001, 0,  0);
+     DO_TEST("qemu-kvm-0.12.1.2-rhel60",
+             QEMUD_CMD_FLAG_VNC_COLON |
+@@ -349,7 +350,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_VGA_QXL |
+             QEMUD_CMD_FLAG_SPICE |
+             QEMUD_CMD_FLAG_VGA_NONE |
+-            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD,
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
++            QEMUD_CMD_FLAG_DRIVE_AIO,
+             12001, 1,  0);
+     DO_TEST("qemu-kvm-0.12.3",
+             QEMUD_CMD_FLAG_VNC_COLON |
+@@ -386,7 +388,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NAME_PROCESS |
+             QEMUD_CMD_FLAG_SMBIOS_TYPE |
+             QEMUD_CMD_FLAG_VGA_NONE |
+-            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD,
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
++            QEMUD_CMD_FLAG_DRIVE_AIO,
+             12003, 1,  0);
+     DO_TEST("qemu-kvm-0.13.0",
+             QEMUD_CMD_FLAG_VNC_COLON |
+@@ -431,7 +434,8 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_SMBIOS_TYPE |
+             QEMUD_CMD_FLAG_SPICE |
+             QEMUD_CMD_FLAG_VGA_NONE |
+-            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD,
++            QEMUD_CMD_FLAG_MIGRATE_QEMU_FD |
++            QEMUD_CMD_FLAG_DRIVE_AIO,
+             13000, 1,  0);
+ 
+     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+-- 
+1.7.4
+

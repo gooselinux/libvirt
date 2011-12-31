@@ -1,0 +1,41 @@
+From 40a9ad2aa615ee5ac830239bdb17a3efc2c0d0b3 Mon Sep 17 00:00:00 2001
+Message-Id: <40a9ad2aa615ee5ac830239bdb17a3efc2c0d0b3.1297957056.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 14 Feb 2011 16:17:00 -0700
+Subject: [PATCH] qemu: ignore failure of qemu -M ? on older qemu
+
+https://bugzilla.redhat.com/show_bug.cgi?id=676563
+
+Regression introduced in commit 2211518.
+
+* src/qemu/qemu_capabilities.c (qemuCapsProbeMachineTypes): Allow
+non-zero exit status.
+(cherry picked from commit e046d41f728c1fbc072de5cafb253de4a42efd35)
+---
+ src/qemu/qemu_capabilities.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 6d6ed8f..458f760 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -171,13 +171,15 @@ qemuCapsProbeMachineTypes(const char *binary,
+     char *output;
+     int ret = -1;
+     virCommandPtr cmd;
++    int status;
+ 
+     cmd = virCommandNewArgList(binary, "-M", "?", NULL);
+     virCommandAddEnvPassCommon(cmd);
+     virCommandSetOutputBuffer(cmd, &output);
+     virCommandClearCaps(cmd);
+ 
+-    if (virCommandRun(cmd, NULL) < 0)
++    /* Ignore failure from older qemu that did not understand '-M ?'.  */
++    if (virCommandRun(cmd, &status) < 0)
+         goto cleanup;
+ 
+     if (qemuCapsParseMachineTypesStr(output, machines, nmachines) < 0)
+-- 
+1.7.4.1
+

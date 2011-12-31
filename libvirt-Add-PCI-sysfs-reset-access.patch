@@ -1,0 +1,41 @@
+From d7d1ab41f90d89f989f394fe7b2a9d0861d93494 Mon Sep 17 00:00:00 2001
+Message-Id: <d7d1ab41f90d89f989f394fe7b2a9d0861d93494.1300791642.git.jdenemar@redhat.com>
+From: Alex Williamson <alex.williamson@redhat.com>
+Date: Fri, 18 Mar 2011 13:59:14 -0600
+Subject: [PATCH] Add PCI sysfs reset access
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=689002
+Upstream status: 2090b0f52d8270c38c6157b6f8fdd00fa265c213
+
+I'm proposing we make use of $PCIDIR/reset in qemu-kvm to reset
+devices on VM reset.  We need to add it to libvirt's list of
+files that get ownership for device assignment.
+
+Signed-off-by: Alex Williamson <alex.williamson@redhat.com>
+---
+ src/util/pci.c |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/util/pci.c b/src/util/pci.c
+index 095ad3f..8d2dbb0 100644
+--- a/src/util/pci.c
++++ b/src/util/pci.c
+@@ -1349,11 +1349,13 @@ int pciDeviceFileIterate(pciDevice *dev,
+ 
+     while ((ent = readdir(dir)) != NULL) {
+         /* Device assignment requires:
+-         *   $PCIDIR/config, $PCIDIR/resource, $PCIDIR/resourceNNN, $PCIDIR/rom
++         *   $PCIDIR/config, $PCIDIR/resource, $PCIDIR/resourceNNN,
++         *   $PCIDIR/rom, $PCIDIR/reset
+          */
+         if (STREQ(ent->d_name, "config") ||
+             STRPREFIX(ent->d_name, "resource") ||
+-            STREQ(ent->d_name, "rom")) {
++            STREQ(ent->d_name, "rom") ||
++            STREQ(ent->d_name, "reset")) {
+             if (virAsprintf(&file, "%s/%s", pcidir, ent->d_name) < 0) {
+                 virReportOOMError();
+                 goto cleanup;
+-- 
+1.7.4.1
+

@@ -1,0 +1,48 @@
+From 73230313275ff18e3174c6e01c2e6de032a8c9b7 Mon Sep 17 00:00:00 2001
+Message-Id: <73230313275ff18e3174c6e01c2e6de032a8c9b7.1297957056.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 17 Feb 2011 11:30:42 +0800
+Subject: [PATCH] storage: Create enough volumes for mpath pool
+
+"virStorageBackendCreateVols":
+  "names->next" serves as condition expression for "do...while",
+however, "names" was shifted before, it then results in one less
+loop, and thus, one less volume will be created for mpath pool,
+the patch is to fix it.
+
+BZ# https://bugzilla.redhat.com/show_bug.cgi?id=677231
+
+* src/storage/storage_backend_mpath.c
+(cherry picked from commit b9584195340ab2a785d71c0d6e12710c28bf43b6)
+---
+ src/storage/storage_backend_mpath.c |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/storage/storage_backend_mpath.c b/src/storage/storage_backend_mpath.c
+index be4db78..2e85561 100644
+--- a/src/storage/storage_backend_mpath.c
++++ b/src/storage/storage_backend_mpath.c
+@@ -212,6 +212,7 @@ virStorageBackendCreateVols(virStoragePoolObjPtr pool,
+     int retval = -1, is_mpath = 0;
+     char *map_device = NULL;
+     uint32_t minor = -1;
++    uint32_t next;
+ 
+     do {
+         is_mpath = virStorageBackendIsMultipath(names->name);
+@@ -243,9 +244,10 @@ virStorageBackendCreateVols(virStoragePoolObjPtr pool,
+ 
+         /* Given the way libdevmapper returns its data, I don't see
+          * any way to avoid this series of casts. */
+-        names = (struct dm_names *)(((char *)names) + names->next);
++        next = names->next;
++        names = (struct dm_names *)(((char *)names) + next);
+ 
+-    } while (names->next);
++    } while (next);
+ 
+     retval = 0;
+ out:
+-- 
+1.7.4.1
+

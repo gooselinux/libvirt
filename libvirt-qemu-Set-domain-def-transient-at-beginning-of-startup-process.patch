@@ -1,0 +1,149 @@
+From fbc70478a2525b087158597f223e0d3acbb07fde Mon Sep 17 00:00:00 2001
+Message-Id: <fbc70478a2525b087158597f223e0d3acbb07fde.1296166858.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Mon, 24 Jan 2011 14:13:35 -0500
+Subject: [PATCH] qemu: Set domain def transient at beginning of startup process
+
+https://bugzilla.redhat.com/show_bug.cgi?id=651415
+
+This will allow us to record transient runtime state in vm->def, like
+default VNC parameters. Accomplish this by adding an extra 'live' parameter
+to SetDefTransient, with similar semantics to the 'live' flag for
+AssignDef.
+(cherry picked from commit cb4c2694f166beca8f3e1fb37dedeec1ff3fbdf6)
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ src/conf/domain_conf.c |   11 ++++++++---
+ src/conf/domain_conf.h |    3 ++-
+ src/lxc/lxc_driver.c   |    2 +-
+ src/qemu/qemu_driver.c |   13 ++++++++-----
+ src/test/test_driver.c |    2 +-
+ src/uml/uml_driver.c   |    2 +-
+ 6 files changed, 21 insertions(+), 12 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 376bbd6..67bc70c 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1002,17 +1002,22 @@ virDomainObjPtr virDomainAssignDef(virCapsPtr caps,
+  *
+  * @param caps pointer to capabilities info
+  * @param domain domain object pointer
++ * @param live if true, run this operation even for an inactive domain.
++ *   this allows freely updated domain->def with runtime defaults before
++ *   starting the VM, which will be discarded on VM shutdown. Any cleanup
++ *   paths need to be sure to handle newDef if the domain is never started.
+  * @return 0 on success, -1 on failure
+  */
+ int
+ virDomainObjSetDefTransient(virCapsPtr caps,
+-                            virDomainObjPtr domain)
++                            virDomainObjPtr domain,
++                            bool live)
+ {
+     int ret = -1;
+     char *xml = NULL;
+     virDomainDefPtr newDef = NULL;
+ 
+-    if (!virDomainObjIsActive(domain))
++    if (!virDomainObjIsActive(domain) && !live)
+         return 0;
+ 
+     if (!domain->persistent)
+@@ -1047,7 +1052,7 @@ virDomainDefPtr
+ virDomainObjGetPersistentDef(virCapsPtr caps,
+                              virDomainObjPtr domain)
+ {
+-    if (virDomainObjSetDefTransient(caps, domain) < 0)
++    if (virDomainObjSetDefTransient(caps, domain, false) < 0)
+         return NULL;
+ 
+     if (domain->newDef)
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index d985ea2..dc42b12 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1131,7 +1131,8 @@ void virDomainObjAssignDef(virDomainObjPtr domain,
+                            const virDomainDefPtr def,
+                            bool live);
+ int virDomainObjSetDefTransient(virCapsPtr caps,
+-                                virDomainObjPtr domain);
++                                virDomainObjPtr domain,
++                                bool live);
+ virDomainDefPtr
+ virDomainObjGetPersistentDef(virCapsPtr caps,
+                              virDomainObjPtr domain);
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index eb58086..5eaccf8 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -1555,7 +1555,7 @@ static int lxcVmStart(virConnectPtr conn,
+     if (virDomainSaveConfig(driver->stateDir, vm->def) < 0)
+         goto cleanup;
+ 
+-    if (virDomainObjSetDefTransient(driver->caps, vm) < 0)
++    if (virDomainObjSetDefTransient(driver->caps, vm, false) < 0)
+         goto cleanup;
+ 
+     rc = 0;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 542ecf9..66ef78b 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3033,6 +3033,14 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+         return -1;
+     }
+ 
++    /* Do this upfront, so any part of the startup process can add
++     * runtime state to vm->def that won't be persisted. This let's us
++     * report implicit runtime defaults in the XML, like vnc listen/socket
++     */
++    DEBUG0("Setting current domain def as transient");
++    if (virDomainObjSetDefTransient(driver->caps, vm, true) < 0)
++        goto cleanup;
++
+     /* Must be run before security labelling */
+     DEBUG0("Preparing host devices");
+     if (qemuPrepareHostDevices(driver, vm->def) < 0)
+@@ -3329,11 +3337,6 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+     if (virDomainSaveStatus(driver->caps, driver->stateDir, vm) < 0)
+         goto cleanup;
+ 
+-    /* Do this last, since it depends on domain being active */
+-    DEBUG0("Setting running domain def as transient");
+-    if (virDomainObjSetDefTransient(driver->caps, vm) < 0)
+-        goto cleanup;
+-
+     virCommandFree(cmd);
+     VIR_FORCE_CLOSE(logfile);
+ 
+diff --git a/src/test/test_driver.c b/src/test/test_driver.c
+index ddff160..6550832 100644
+--- a/src/test/test_driver.c
++++ b/src/test/test_driver.c
+@@ -487,7 +487,7 @@ testDomainStartState(virConnectPtr conn,
+     dom->state = VIR_DOMAIN_RUNNING;
+     dom->def->id = privconn->nextDomID++;
+ 
+-    if (virDomainObjSetDefTransient(privconn->caps, dom) < 0) {
++    if (virDomainObjSetDefTransient(privconn->caps, dom, false) < 0) {
+         goto cleanup;
+     }
+ 
+diff --git a/src/uml/uml_driver.c b/src/uml/uml_driver.c
+index 92b5153..dbceb40 100644
+--- a/src/uml/uml_driver.c
++++ b/src/uml/uml_driver.c
+@@ -891,7 +891,7 @@ static int umlStartVMDaemon(virConnectPtr conn,
+     if (ret < 0)
+         goto cleanup;
+ 
+-    ret = virDomainObjSetDefTransient(driver->caps, vm);
++    ret = virDomainObjSetDefTransient(driver->caps, vm, false);
+ cleanup:
+     virCommandFree(cmd);
+ 
+-- 
+1.7.4.rc3
+

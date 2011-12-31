@@ -1,0 +1,43 @@
+From 5dd4e2b402067ce7994e165c86cf0ed16b6f90c9 Mon Sep 17 00:00:00 2001
+Message-Id: <5dd4e2b402067ce7994e165c86cf0ed16b6f90c9.1302097026.git.jdenemar@redhat.com>
+From: Hu Tao <hutao@cn.fujitsu.com>
+Date: Thu, 31 Mar 2011 17:25:00 -0600
+Subject: [PATCH] qemu: unlock qemu driver before return from domain save
+
+https://bugzilla.redhat.com/show_bug.cgi?id=688774
+
+qemuDriverUnlock() wasn't called on 2 exit paths
+* src/qemu/qemu_driver.c: fix qemudDomainSave() to always unlock
+  the driver before exiting on error
+(cherry picked from commit 025e19981008662dc230562b5e9d8faa86027384)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - line numbers differ due to upstream file split
+---
+ src/qemu/qemu_driver.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 65c68f0..250a8be 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5041,13 +5041,13 @@ static int qemudDomainSave(virDomainPtr dom, const char *path)
+             qemuReportError(VIR_ERR_OPERATION_FAILED,
+                             "%s", _("Invalid save image format specified "
+                                     "in configuration file"));
+-            return -1;
++            goto cleanup;
+         }
+         if (!qemudCompressProgramAvailable(compressed)) {
+             qemuReportError(VIR_ERR_OPERATION_FAILED,
+                             "%s", _("Compression program for image format "
+                                     "in configuration file isn't available"));
+-            return -1;
++            goto cleanup;
+         }
+     }
+ 
+-- 
+1.7.4.1
+

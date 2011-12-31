@@ -1,0 +1,291 @@
+From db8a716329a0db6195dfe879436ac06ff6201d7f Mon Sep 17 00:00:00 2001
+Message-Id: <db8a716329a0db6195dfe879436ac06ff6201d7f.1295285119.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Fri, 14 Jan 2011 15:06:08 -0500
+Subject: [PATCH] Add XML config switch to enable/disable vhost-net support
+
+This patch is in response to
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=643050
+
+Upstream commit 175077fd707db6ad87d6e2a079e82bc290ac2421
+
+The existing libvirt support for the vhost-net backend to the virtio
+network driver happens automatically - if the vhost-net device is
+available, it is always enabled, otherwise the standard userland
+virtio backend is used.
+
+This patch makes it possible to force whether or not vhost-net is used
+with a bit of XML. Adding a <driver> element to the interface XML, eg:
+
+     <interface type="network">
+       <model type="virtio"/>
+       <driver name="vhost"/>
+
+will force use of vhost-net (if it's not available, the domain will
+fail to start). if driver name="qemu", vhost-net will not be used even
+if it is available.
+
+If there is no <driver name='xxx'/> in the config, libvirt will revert
+to the pre-existing automatic behavior - use vhost-net if it's
+available, and userland backend if vhost-net isn't available.
+---
+ docs/schemas/domain.rng |   13 +++++++++
+ src/conf/domain_conf.c  |   29 +++++++++++++++++++-
+ src/conf/domain_conf.h  |   10 +++++++
+ src/qemu/qemu_command.c |   67 ++++++++++++++++++++++++++++++++++++++--------
+ src/qemu/qemu_command.h |    3 --
+ 5 files changed, 106 insertions(+), 16 deletions(-)
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index c5bd5eb..3bc2f21 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1005,6 +1005,19 @@
+         </element>
+       </optional>
+       <optional>
++        <element name="driver">
++          <optional>
++            <attribute name="name">
++              <choice>
++                <value>qemu</value>
++                <value>vhost</value>
++              </choice>
++            </attribute>
++          </optional>
++          <empty/>
++        </element>
++      </optional>
++      <optional>
+         <ref name="address"/>
+       </optional>
+       <optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 5b649dc..f0aade4 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -184,6 +184,11 @@ VIR_ENUM_IMPL(virDomainNet, VIR_DOMAIN_NET_TYPE_LAST,
+               "internal",
+               "direct")
+ 
++VIR_ENUM_IMPL(virDomainNetBackend, VIR_DOMAIN_NET_BACKEND_TYPE_LAST,
++              "default",
++              "qemu",
++              "vhost")
++
+ VIR_ENUM_IMPL(virDomainChrChannelTarget,
+               VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_LAST,
+               "guestfwd",
+@@ -2290,6 +2295,7 @@ virDomainNetDefParseXML(virCapsPtr caps,
+     char *address = NULL;
+     char *port = NULL;
+     char *model = NULL;
++    char *backend = NULL;
+     char *filter = NULL;
+     char *internal = NULL;
+     char *devaddr = NULL;
+@@ -2372,6 +2378,8 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                 script = virXMLPropString(cur, "path");
+             } else if (xmlStrEqual (cur->name, BAD_CAST "model")) {
+                 model = virXMLPropString(cur, "type");
++            } else if (xmlStrEqual (cur->name, BAD_CAST "driver")) {
++                backend = virXMLPropString(cur, "name");
+             } else if (xmlStrEqual (cur->name, BAD_CAST "filterref")) {
+                 filter = virXMLPropString(cur, "filter");
+                 VIR_FREE(filterparams);
+@@ -2559,6 +2567,19 @@ virDomainNetDefParseXML(virCapsPtr caps,
+         model = NULL;
+     }
+ 
++    if ((backend != NULL) &&
++        (def->model && STREQ(def->model, "virtio"))) {
++        int b;
++        if (((b = virDomainNetBackendTypeFromString(backend)) < 0) ||
++            (b == VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT)) {
++            virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                 _("Unknown interface <driver name='%s'> "
++                                   "has been specified"),
++                                 backend);
++            goto error;
++        }
++        def->backend = b;
++    }
+     if (filter != NULL) {
+         switch (def->type) {
+         case VIR_DOMAIN_NET_TYPE_ETHERNET:
+@@ -2585,6 +2606,7 @@ cleanup:
+     VIR_FREE(script);
+     VIR_FREE(bridge);
+     VIR_FREE(model);
++    VIR_FREE(backend);
+     VIR_FREE(filter);
+     VIR_FREE(type);
+     VIR_FREE(internal);
+@@ -6279,9 +6301,14 @@ virDomainNetDefFormat(virBufferPtr buf,
+     if (def->ifname)
+         virBufferEscapeString(buf, "      <target dev='%s'/>\n",
+                               def->ifname);
+-    if (def->model)
++    if (def->model) {
+         virBufferEscapeString(buf, "      <model type='%s'/>\n",
+                               def->model);
++        if (STREQ(def->model, "virtio") && def->backend) {
++            virBufferVSprintf(buf, "      <driver name='%s'/>\n",
++                              virDomainNetBackendTypeToString(def->backend));
++        }
++    }
+     if (def->filter) {
+         virBufferEscapeString(buf, "      <filterref filter='%s'",
+                               def->filter);
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 38af95a..d948f4d 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -292,6 +292,14 @@ enum virDomainNetType {
+     VIR_DOMAIN_NET_TYPE_LAST,
+ };
+ 
++/* the backend driver used for virtio interfaces */
++enum virDomainNetBackendType {
++    VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT, /* prefer kernel, fall back to user */
++    VIR_DOMAIN_NET_BACKEND_TYPE_QEMU,    /* userland */
++    VIR_DOMAIN_NET_BACKEND_TYPE_VHOST,   /* kernel */
++
++    VIR_DOMAIN_NET_BACKEND_TYPE_LAST,
++};
+ 
+ /* the mode type for macvtap devices */
+ enum virDomainNetdevMacvtapType {
+@@ -310,6 +318,7 @@ struct _virDomainNetDef {
+     enum virDomainNetType type;
+     unsigned char mac[VIR_MAC_BUFLEN];
+     char *model;
++    enum virDomainNetBackendType backend;
+     union {
+         struct {
+             char *dev;
+@@ -1265,6 +1274,7 @@ VIR_ENUM_DECL(virDomainControllerModel)
+ VIR_ENUM_DECL(virDomainFS)
+ VIR_ENUM_DECL(virDomainFSAccessMode)
+ VIR_ENUM_DECL(virDomainNet)
++VIR_ENUM_DECL(virDomainNetBackend)
+ VIR_ENUM_DECL(virDomainChrDevice)
+ VIR_ENUM_DECL(virDomainChrChannelTarget)
+ VIR_ENUM_DECL(virDomainChrConsoleTarget)
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 00be069..26ed284 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -302,24 +302,58 @@ cleanup:
+ }
+ 
+ 
+-int
++static int
+ qemuOpenVhostNet(virDomainNetDefPtr net,
+-                 unsigned long long qemuCmdFlags)
++                 unsigned long long qemuCmdFlags,
++                 int *vhostfd)
+ {
+ 
+-    /* If qemu supports vhost-net mode (including the -netdev command
+-     * option), the nic model is virtio, and we can open
+-     * /dev/vhost_net, assume that vhost-net mode is available and
+-     * return the fd to /dev/vhost_net. Otherwise, return -1.
+-     */
++    *vhostfd = -1;   /* assume we won't use vhost */
+ 
++    /* If the config says explicitly to not use vhost, return now */
++    if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_QEMU) {
++       return 0;
++    }
++
++    /* If qemu doesn't support vhost-net mode (including the -netdev command
++     * option), don't try to open the device.
++     */
+     if (!(qemuCmdFlags & QEMUD_CMD_FLAG_VNET_HOST &&
+           qemuCmdFlags & QEMUD_CMD_FLAG_NETDEV &&
+-          qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE &&
+-          net->model && STREQ(net->model, "virtio")))
+-        return -1;
++          qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE)) {
++        if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            "%s", _("vhost-net is not supported with "
++                                    "this QEMU binary"));
++            return -1;
++        }
++        return 0;
++    }
+ 
+-    return open("/dev/vhost-net", O_RDWR, 0);
++    /* If the nic model isn't virtio, don't try to open. */
++    if (!(net->model && STREQ(net->model, "virtio"))) {
++        if (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            "%s", _("vhost-net is only supported for "
++                                    "virtio network interfaces"));
++            return -1;
++        }
++        return 0;
++    }
++
++    *vhostfd = open("/dev/vhost-net", O_RDWR);
++
++    /* If the config says explicitly to use vhost and we couldn't open it,
++     * report an error.
++     */
++    if ((*vhostfd < 0) &&
++        (net->backend == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST)) {
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        "%s", _("vhost-net was requested for an interface, "
++                                "but is unavailable"));
++        return -1;
++    }
++    return 0;
+ }
+ 
+ 
+@@ -3291,7 +3325,10 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+                 /* Attempt to use vhost-net mode for these types of
+                    network device */
+-                int vhostfd = qemuOpenVhostNet(net, qemuCmdFlags);
++                int vhostfd;
++
++                if (qemuOpenVhostNet(net, qemuCmdFlags, &vhostfd) < 0)
++                    goto error;
+                 if (vhostfd >= 0) {
+                     virCommandTransferFD(cmd, vhostfd);
+ 
+@@ -4626,6 +4663,12 @@ qemuParseCommandLineNet(virCapsPtr caps,
+         } else if (STREQ(keywords[i], "model")) {
+             def->model = values[i];
+             values[i] = NULL;
++        } else if (STREQ(keywords[i], "vhost")) {
++            if ((values[i] == NULL) || STREQ(values[i], "on")) {
++                def->backend = VIR_DOMAIN_NET_BACKEND_TYPE_VHOST;
++            } else if (STREQ(keywords[i], "off")) {
++                def->backend = VIR_DOMAIN_NET_BACKEND_TYPE_QEMU;
++            }
+         }
+     }
+ 
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 4c42a10..5439184 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -116,9 +116,6 @@ int qemuNetworkIfaceConnect(virConnectPtr conn,
+                             unsigned long long qemCmdFlags)
+     ATTRIBUTE_NONNULL(1);
+ 
+-int qemuOpenVhostNet(virDomainNetDefPtr net,
+-                     unsigned long long qemuCmdFlags);
+-
+ int qemuPhysIfaceConnect(virConnectPtr conn,
+                          struct qemud_driver *driver,
+                          virDomainNetDefPtr net,
+-- 
+1.7.4.rc2
+

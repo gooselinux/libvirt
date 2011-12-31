@@ -1,0 +1,93 @@
+From c07910d580688f0cd5804da26d0dd9be19a1c101 Mon Sep 17 00:00:00 2001
+Message-Id: <c07910d580688f0cd5804da26d0dd9be19a1c101.1296819815.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 28 Jan 2011 15:34:23 -0700
+Subject: [PATCH] qemu: fix augeas support for vnc_auto_unix_socket
+
+https://bugzilla.redhat.com/show_bug.cgi?id=651415
+
+Fixes test failure that was overlooked after commit 1e1f7a8950.
+
+* daemon/Makefile.am (check-local): Let 'make check' fail on error.
+* daemon/test_libvirtd.aug: Move qemu-specific option...
+* src/qemu/test_libvirtd_qemu.aug: ...into correct test.
+* src/qemu/libvirtd_qemu.aug: Parse new option.
+(cherry picked from commit 6fc1159d9499aae870cf285203465555dae6ce42)
+---
+ daemon/Makefile.am              |    5 +++--
+ daemon/test_libvirtd.aug        |    6 ------
+ src/qemu/libvirtd_qemu.aug      |    1 +
+ src/qemu/test_libvirtd_qemu.aug |    4 ++++
+ 4 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/daemon/Makefile.am b/daemon/Makefile.am
+index 3ffb7be..cdf0f75 100644
+--- a/daemon/Makefile.am
++++ b/daemon/Makefile.am
+@@ -301,8 +301,9 @@ libvirtd.init: libvirtd.init.in $(top_builddir)/config.status
+ 	    mv $@-t $@
+ 
+ check-local:
+-	test -x '$(AUGPARSE)' \
+-	  && '$(AUGPARSE)' -I $(srcdir) $(srcdir)/test_libvirtd.aug || :
++	$(AM_V_GEN)if test -x '$(AUGPARSE)'; then \
++	  '$(AUGPARSE)' -I $(srcdir) $(srcdir)/test_libvirtd.aug; \
++	fi
+ 
+ else
+ 
+diff --git a/daemon/test_libvirtd.aug b/daemon/test_libvirtd.aug
+index 31fa643..5f8b644 100644
+--- a/daemon/test_libvirtd.aug
++++ b/daemon/test_libvirtd.aug
+@@ -271,9 +271,6 @@ log_filters=\"a\"
+ 
+ # Auditing:
+ audit_level = 2
+-
+-# VNC socket
+-vnc_auto_unix_socket = 1
+ "
+ 
+    test Libvirtd.lns get conf =
+@@ -552,6 +549,3 @@ vnc_auto_unix_socket = 1
+ 	{ "#empty" }
+         { "#comment" = "Auditing:" }
+         { "audit_level" = "2" }
+-        { "#empty" }
+-        { "#comment" = "VNC socket:" }
+-        { "vnc_auto_unix_socket" = "1" }
+diff --git a/src/qemu/libvirtd_qemu.aug b/src/qemu/libvirtd_qemu.aug
+index 2f37015..affd74e 100644
+--- a/src/qemu/libvirtd_qemu.aug
++++ b/src/qemu/libvirtd_qemu.aug
+@@ -23,6 +23,7 @@ module Libvirtd_qemu =
+ 
+    (* Config entry grouped by function - same order as example config *)
+    let vnc_entry = str_entry "vnc_listen"
++                 | bool_entry "vnc_auto_unix_socket"
+                  | bool_entry "vnc_tls"
+                  | str_entry "vnc_tls_x509_cert_dir"
+                  | bool_entry "vnc_tls_x509_verify"
+diff --git a/src/qemu/test_libvirtd_qemu.aug b/src/qemu/test_libvirtd_qemu.aug
+index b4d8833..8e477f5 100644
+--- a/src/qemu/test_libvirtd_qemu.aug
++++ b/src/qemu/test_libvirtd_qemu.aug
+@@ -109,6 +109,8 @@ vnc_allow_host_audio = 1
+ clear_emulator_capabilities = 0
+ 
+ allow_disk_format_probing = 1
++
++vnc_auto_unix_socket = 1
+ "
+ 
+    test Libvirtd_qemu.lns get conf =
+@@ -228,3 +230,5 @@ allow_disk_format_probing = 1
+ { "clear_emulator_capabilities" = "0" }
+ { "#empty" }
+ { "allow_disk_format_probing" = "1" }
++{ "#empty" }
++{ "vnc_auto_unix_socket" = "1" }
+-- 
+1.7.4
+

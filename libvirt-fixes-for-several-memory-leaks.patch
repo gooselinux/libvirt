@@ -1,0 +1,265 @@
+From f25a2c080a74fd52c154fc3b0c829f18fc2c223e Mon Sep 17 00:00:00 2001
+Message-Id: <f25a2c080a74fd52c154fc3b0c829f18fc2c223e.1299265003.git.jdenemar@redhat.com>
+From: Phil Petty <phpetty@cisco.com>
+Date: Fri, 4 Mar 2011 10:17:02 -0700
+Subject: [PATCH] fixes for several memory leaks
+
+https://bugzilla.redhat.com/show_bug.cgi?id=682249
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 5a814012359a74922892737e1e5b1ee94ba74e49)
+---
+ AUTHORS                                |    1 +
+ src/conf/secret_conf.c                 |    3 ++-
+ src/nwfilter/nwfilter_gentech_driver.c |    4 ++--
+ src/remote/remote_driver.c             |    6 ++++++
+ src/util/conf.c                        |   17 +++++++++--------
+ src/util/storage_file.c                |    7 ++++---
+ src/util/xml.c                         |    5 +++--
+ tools/virsh.c                          |   11 ++++++++---
+ 8 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 3988177..a179014 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -146,6 +146,7 @@ Patches have also been contributed by:
+   Matthias Dahl        <mdvirt@designassembly.de>
+   Niels de Vos         <ndevos@redhat.com>
+   Gui Jianfeng         <guijianfeng@cn.fujitsu.com>
++  Phil Petty           <phpetty@cisco.com>
+ 
+   [....send patches to get your name here....]
+ 
+diff --git a/src/conf/secret_conf.c b/src/conf/secret_conf.c
+index bbdad89..fc4ae82 100644
+--- a/src/conf/secret_conf.c
++++ b/src/conf/secret_conf.c
+@@ -1,7 +1,7 @@
+ /*
+  * secret_conf.c: internal <secret> XML handling
+  *
+- * Copyright (C) 2009 Red Hat, Inc.
++ * Copyright (C) 2009, 2011 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -182,6 +182,7 @@ secretXMLParseNode(xmlDocPtr xml, xmlNodePtr root)
+ 
+  cleanup:
+     VIR_FREE(prop);
++    VIR_FREE(uuidstr);
+     virSecretDefFree(def);
+     xmlXPathFreeContext(ctxt);
+     return ret;
+diff --git a/src/nwfilter/nwfilter_gentech_driver.c b/src/nwfilter/nwfilter_gentech_driver.c
+index fcd479c..0c6935e 100644
+--- a/src/nwfilter/nwfilter_gentech_driver.c
++++ b/src/nwfilter/nwfilter_gentech_driver.c
+@@ -1,6 +1,7 @@
+ /*
+  * nwfilter_gentech_driver.c: generic technology driver
+  *
++ * Copyright (C) 2011 Red Hat, Inc.
+  * Copyright (C) 2010 IBM Corp.
+  * Copyright (C) 2010 Stefan Berger
+  *
+@@ -662,8 +663,6 @@ virNWFilterInstantiate(virConnectPtr conn,
+         }
+ 
+         virNWFilterUnlockIface(ifname);
+-
+-        VIR_FREE(ptrs);
+     }
+ 
+ err_exit:
+@@ -672,6 +671,7 @@ err_exit:
+         virNWFilterRuleInstFree(insts[j]);
+ 
+     VIR_FREE(insts);
++    VIR_FREE(ptrs);
+ 
+     virNWFilterHashTableFree(missing_vars);
+ 
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index f99f564..6199ab1 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -479,22 +479,27 @@ doRemoteOpen (virConnectPtr conn,
+         for (i = 0; i < vars->n; i++) {
+             var = &vars->p[i];
+             if (STRCASEEQ (var->name, "name")) {
++                VIR_FREE(name);
+                 name = strdup (var->value);
+                 if (!name) goto out_of_memory;
+                 var->ignore = 1;
+             } else if (STRCASEEQ (var->name, "command")) {
++                VIR_FREE(command);
+                 command = strdup (var->value);
+                 if (!command) goto out_of_memory;
+                 var->ignore = 1;
+             } else if (STRCASEEQ (var->name, "socket")) {
++                VIR_FREE(sockname);
+                 sockname = strdup (var->value);
+                 if (!sockname) goto out_of_memory;
+                 var->ignore = 1;
+             } else if (STRCASEEQ (var->name, "auth")) {
++                VIR_FREE(authtype);
+                 authtype = strdup (var->value);
+                 if (!authtype) goto out_of_memory;
+                 var->ignore = 1;
+             } else if (STRCASEEQ (var->name, "netcat")) {
++                VIR_FREE(netcat);
+                 netcat = strdup (var->value);
+                 if (!netcat) goto out_of_memory;
+                 var->ignore = 1;
+@@ -511,6 +516,7 @@ doRemoteOpen (virConnectPtr conn,
+                 else
+                     priv->debugLog = stderr;
+             } else if (STRCASEEQ(var->name, "pkipath")) {
++                VIR_FREE(pkipath);
+                 pkipath = strdup(var->value);
+                 if (!pkipath) goto out_of_memory;
+                 var->ignore = 1;
+diff --git a/src/util/conf.c b/src/util/conf.c
+index d9a7603..71a344f 100644
+--- a/src/util/conf.c
++++ b/src/util/conf.c
+@@ -1,7 +1,7 @@
+ /**
+  * conf.c: parser for a subset of the Python encoded Xen configuration files
+  *
+- * Copyright (C) 2006, 2007, 2008, 2009, 2010 Red Hat, Inc.
++ * Copyright (C) 2006-2011 Red Hat, Inc.
+  *
+  * See COPYING.LIB for the License of this software
+  *
+@@ -648,22 +648,23 @@ virConfParseStatement(virConfParserCtxtPtr ctxt)
+ 
+     SKIP_BLANKS_AND_EOL;
+     if (CUR == '#') {
+-        return(virConfParseComment(ctxt));
++        return virConfParseComment(ctxt);
+     }
+     name = virConfParseName(ctxt);
+     if (name == NULL)
+-        return(-1);
++        return -1;
+     SKIP_BLANKS;
+     if (CUR != '=') {
+         virConfError(ctxt, VIR_ERR_CONF_SYNTAX, _("expecting an assignment"));
+-        return(-1);
++        VIR_FREE(name);
++        return -1;
+     }
+     NEXT;
+     SKIP_BLANKS;
+     value = virConfParseValue(ctxt);
+     if (value == NULL) {
+         VIR_FREE(name);
+-        return(-1);
++        return -1;
+     }
+     SKIP_BLANKS;
+     if (CUR == '#') {
+@@ -675,16 +676,16 @@ virConfParseStatement(virConfParserCtxtPtr ctxt)
+             virReportOOMError();
+             VIR_FREE(name);
+             virConfFreeValue(value);
+-            return(-1);
++            return -1;
+         }
+     }
+     if (virConfAddEntry(ctxt->conf, name, value, comm) == NULL) {
+         VIR_FREE(name);
+         virConfFreeValue(value);
+         VIR_FREE(comm);
+-        return(-1);
++        return -1;
+     }
+-    return(0);
++    return 0;
+ }
+ 
+ /**
+diff --git a/src/util/storage_file.c b/src/util/storage_file.c
+index 4faa99d..6a55191 100644
+--- a/src/util/storage_file.c
++++ b/src/util/storage_file.c
+@@ -1,7 +1,7 @@
+ /*
+  * storage_file.c: file utility functions for FS storage backend
+  *
+- * Copyright (C) 2007-2010 Red Hat, Inc.
++ * Copyright (C) 2007-2011 Red Hat, Inc.
+  * Copyright (C) 2007-2008 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -838,8 +838,9 @@ virStorageFileGetMetadataFromFD(const char *path,
+ 
+     if (format < 0 ||
+         format >= VIR_STORAGE_FILE_LAST) {
+-        virReportSystemError(EINVAL, _("unknown storage file format %d"), format);
+-        return -1;
++        virReportSystemError(EINVAL, _("unknown storage file format %d"),
++                             format);
++        goto cleanup;
+     }
+ 
+     ret = virStorageFileGetMetadataFromBuf(format, path, head, len, meta);
+diff --git a/src/util/xml.c b/src/util/xml.c
+index ff340d8..2c50e14 100644
+--- a/src/util/xml.c
++++ b/src/util/xml.c
+@@ -105,9 +105,10 @@ virXPathStringLimit(const char *xpath,
+ 
+     if (tmp != NULL && strlen(tmp) >= maxlen) {
+         virXMLError(VIR_ERR_INTERNAL_ERROR,
+-                    _("\'%s\' value longer than %zd bytes in virXPathStringLimit()"),
++                    _("\'%s\' value longer than %zd bytes"),
+                     xpath, maxlen);
+-            return NULL;
++        VIR_FREE(tmp);
++        return NULL;
+     }
+ 
+     return tmp;
+diff --git a/tools/virsh.c b/tools/virsh.c
+index c696cec..543a1b7 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -9451,6 +9451,8 @@ cmdCd(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
+ {
+     const char *dir;
+     int found;
++    int ret = TRUE;
++    bool dir_malloced = false;
+ 
+     if (!ctl->imode) {
+         vshError(ctl, "%s", _("cd: command valid only in interactive mode"));
+@@ -9461,16 +9463,19 @@ cmdCd(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
+     if (!found) {
+         uid_t uid = geteuid();
+         dir = virGetUserDirectory(uid);
++        dir_malloced = !!dir;
+     }
+     if (!dir)
+         dir = "/";
+ 
+-    if (chdir (dir) == -1) {
++    if (chdir(dir) == -1) {
+         vshError(ctl, _("cd: %s: %s"), strerror(errno), dir);
+-        return FALSE;
++        ret = FALSE;
+     }
+ 
+-    return TRUE;
++    if (dir_malloced)
++        VIR_FREE(dir);
++    return ret;
+ }
+ 
+ #endif
+-- 
+1.7.4.1
+

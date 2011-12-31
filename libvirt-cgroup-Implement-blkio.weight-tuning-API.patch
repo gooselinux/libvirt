@@ -1,0 +1,123 @@
+From 3271bb79d32fb661662114c280701665567b8018 Mon Sep 17 00:00:00 2001
+Message-Id: <3271bb79d32fb661662114c280701665567b8018.1297440281.git.jdenemar@redhat.com>
+From: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+Date: Tue, 8 Feb 2011 14:56:39 +0800
+Subject: [PATCH] cgroup: Implement blkio.weight tuning API.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=632492
+
+Implement blkio.weight tuning API.
+
+Acked-by: Daniel P. Berrange <berrange@redhat.com>
+Signed-off-by: Gui Jianfeng <guijianfeng@cn.fujitsu.com>
+(cherry picked from commit c3658ab54348e863e31e0f1c0e98e69ee9c73da3)
+---
+ src/libvirt_private.syms |    2 ++
+ src/util/cgroup.c        |   41 ++++++++++++++++++++++++++++++++++++++++-
+ src/util/cgroup.h        |    4 ++++
+ 3 files changed, 46 insertions(+), 1 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 3a7484b..f594f67 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -66,6 +66,7 @@ virCgroupDenyDevicePath;
+ virCgroupForDomain;
+ virCgroupForDriver;
+ virCgroupFree;
++virCgroupGetBlkioWeight;
+ virCgroupGetCpuShares;
+ virCgroupGetCpuacctUsage;
+ virCgroupGetFreezerState;
+@@ -75,6 +76,7 @@ virCgroupGetMemoryUsage;
+ virCgroupGetSwapHardLimit;
+ virCgroupMounted;
+ virCgroupRemove;
++virCgroupSetBlkioWeight;
+ virCgroupSetCpuShares;
+ virCgroupSetFreezerState;
+ virCgroupSetMemory;
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index 309f4e9..de1fd8e 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -1,7 +1,7 @@
+ /*
+  * cgroup.c: Tools for managing cgroups
+  *
+- * Copyright (C) 2010 Red Hat, Inc.
++ * Copyright (C) 2010-2011 Red Hat, Inc.
+  * Copyright IBM Corp. 2008
+  *
+  * See COPYING.LIB for the License of this software
+@@ -851,6 +851,45 @@ int virCgroupForDomain(virCgroupPtr driver ATTRIBUTE_UNUSED,
+ #endif
+ 
+ /**
++ * virCgroupSetBlkioWeight:
++ *
++ * @group: The cgroup to change io weight for
++ * @weight: The Weight for this cgroup
++ *
++ * Returns: 0 on success
++ */
++int virCgroupSetBlkioWeight(virCgroupPtr group, unsigned int weight)
++{
++    if (weight > 1000 || weight < 100)
++        return -EINVAL;
++
++    return virCgroupSetValueU64(group,
++                                VIR_CGROUP_CONTROLLER_BLKIO,
++                                "blkio.weight",
++                                weight);
++}
++
++/**
++ * virCgroupGetBlkioWeight:
++ *
++ * @group: The cgroup to get weight for
++ * @Weight: Pointer to returned weight
++ *
++ * Returns: 0 on success
++ */
++int virCgroupGetBlkioWeight(virCgroupPtr group, unsigned int *weight)
++{
++    unsigned long long tmp;
++    int ret;
++    ret = virCgroupGetValueU64(group,
++                               VIR_CGROUP_CONTROLLER_BLKIO,
++                               "blkio.weight", &tmp);
++    if (ret == 0)
++        *weight = tmp;
++    return ret;
++}
++
++/**
+  * virCgroupSetMemory:
+  *
+  * @group: The cgroup to change memory for
+diff --git a/src/util/cgroup.h b/src/util/cgroup.h
+index 67b1299..f1bdd0f 100644
+--- a/src/util/cgroup.h
++++ b/src/util/cgroup.h
+@@ -1,6 +1,7 @@
+ /*
+  * cgroup.h: Interface to tools for managing cgroups
+  *
++ * Copyright (C) 2011 Red Hat, Inc.
+  * Copyright IBM Corp. 2008
+  *
+  * See COPYING.LIB for the License of this software
+@@ -41,6 +42,9 @@ int virCgroupForDomain(virCgroupPtr driver,
+ 
+ int virCgroupAddTask(virCgroupPtr group, pid_t pid);
+ 
++int virCgroupSetBlkioWeight(virCgroupPtr group, unsigned int weight);
++int virCgroupGetBlkioWeight(virCgroupPtr group, unsigned int *weight);
++
+ int virCgroupSetMemory(virCgroupPtr group, unsigned long long kb);
+ int virCgroupGetMemoryUsage(virCgroupPtr group, unsigned long *kb);
+ 
+-- 
+1.7.4
+

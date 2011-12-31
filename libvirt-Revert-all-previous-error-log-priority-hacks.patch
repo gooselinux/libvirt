@@ -1,0 +1,112 @@
+From 13f2632eac80a0917f5baf6743005ba452164abd Mon Sep 17 00:00:00 2001
+Message-Id: <13f2632eac80a0917f5baf6743005ba452164abd.1302097026.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Thu, 31 Mar 2011 15:31:18 +0100
+Subject: [PATCH] Revert all previous error log priority hacks
+
+https://bugzilla.redhat.com/show_bug.cgi?id=587603
+
+This reverts the additions in commit
+
+  abff683f78ffd01df5005fb7a457c0b38b8eb6e1
+
+taking us back to state where all errors are fully logged
+in both libvirtd and normal clients.
+
+THe intent was to stop VIR_ERR_NO_DOMAIN (No such domain
+with UUID XXXX) messages from client apps polluting syslog
+The change affected all error codes, but more seriously,
+it also impacted errors from internal libvirtd infrastructure
+For example guest autostart no longer logged errors. The
+libvirtd network code no longer logged some errors. This
+makes debugging incredibly hard
+
+* daemon/libvirtd.c: Remove error log priority filter
+* src/util/virterror.c, src/util/virterror_internal.h: Remove
+  callback for overriding log priority
+(cherry picked from commit dbfca3ff70cffccd4d7b638028ca7ddc2fba3c86)
+---
+ daemon/libvirtd.c             |    4 ----
+ src/libvirt_private.syms      |    1 -
+ src/util/virterror.c          |   14 +-------------
+ src/util/virterror_internal.h |    1 -
+ 4 files changed, 1 insertions(+), 19 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 2b43f31..36099b5 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -3100,10 +3100,6 @@ int main(int argc, char **argv) {
+         exit(EXIT_FAILURE);
+     }
+ 
+-    /* Set error logging priority to debug, so client errors don't
+-     * show up as errors in the daemon log */
+-    virErrorSetLogPriority(VIR_LOG_DEBUG);
+-
+     while (1) {
+         int optidx = 0;
+         int c;
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 88b28e1..7ae39b5 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -914,7 +914,6 @@ virAuditSend;
+ # virterror_internal.h
+ virDispatchError;
+ virErrorMsg;
+-virErrorSetLogPriority;
+ virRaiseErrorFull;
+ virReportErrorHelper;
+ virReportOOMErrorFull;
+diff --git a/src/util/virterror.c b/src/util/virterror.c
+index 7543603..db89b48 100644
+--- a/src/util/virterror.c
++++ b/src/util/virterror.c
+@@ -26,7 +26,6 @@ virThreadLocal virLastErr;
+ 
+ virErrorFunc virErrorHandler = NULL;     /* global error handler */
+ void *virUserData = NULL;        /* associated data */
+-static int virErrorLogPriority = -1;
+ 
+ /*
+  * Macro used to format the message as a string in virRaiseError
+@@ -725,13 +724,8 @@ virRaiseErrorFull(virConnectPtr conn ATTRIBUTE_UNUSED,
+     /*
+      * Hook up the error or warning to the logging facility
+      * XXXX should we include filename as 'category' instead of domain name ?
+-     *
+-     * When an explicit error log priority is set then use it, otherwise
+-     * translate the error level to the log priority. This is used by libvirtd
+-     * to log client errors at debug priority.
+      */
+-    priority = virErrorLogPriority == -1 ? virErrorLevelPriority(level)
+-                                         : virErrorLogPriority;
++    priority = virErrorLevelPriority(level);
+     virLogMessage(virErrorDomainName(domain), priority,
+                   funcname, linenr, 1, "%s", str);
+ 
+@@ -1357,9 +1351,3 @@ void virReportOOMErrorFull(int domcode,
+                       domcode, VIR_ERR_NO_MEMORY, VIR_ERR_ERROR,
+                       virerr, NULL, NULL, -1, -1, virerr, NULL);
+ }
+-
+-void
+-virErrorSetLogPriority(int priority)
+-{
+-    virErrorLogPriority = priority;
+-}
+diff --git a/src/util/virterror_internal.h b/src/util/virterror_internal.h
+index 2dd2b4a..601a884 100644
+--- a/src/util/virterror_internal.h
++++ b/src/util/virterror_internal.h
+@@ -89,6 +89,5 @@ void virReportOOMErrorFull(int domcode,
+ int virSetError(virErrorPtr newerr);
+ void virDispatchError(virConnectPtr conn);
+ const char *virStrerror(int theerrno, char *errBuf, size_t errBufLen);
+-void virErrorSetLogPriority(int priority);
+ 
+ #endif
+-- 
+1.7.4.1
+

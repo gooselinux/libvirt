@@ -1,0 +1,137 @@
+From e103b1a2a57193cf79b5b0e892c0ebdb24d41bc8 Mon Sep 17 00:00:00 2001
+Message-Id: <e103b1a2a57193cf79b5b0e892c0ebdb24d41bc8.1302097026.git.jdenemar@redhat.com>
+From: Stefan Berger <stefanb@us.ibm.com>
+Date: Tue, 29 Mar 2011 11:19:02 -0400
+Subject: [PATCH] nwfilter: enable rejection of packets
+
+This patch resolves:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=681948
+
+and is a direct cherry-pick of upstream:
+
+   commit 912d170f87b3d147bfde987249a727f7a7c7f1d7
+   Author: Stefan Berger <stefanb@us.ibm.com>
+   Date:   Fri Feb 18 20:13:40 2011 -0500
+
+It adds the possibility to not just drop packets, but to also
+have them rejected where iptables at least sends an ICMP msg back to
+the originator. On ebtables this again maps into dropping packets
+since rejecting is not supported.
+---
+ docs/formatnwfilter.html.in               |    8 +++++---
+ docs/schemas/nwfilter.rng                 |    1 +
+ src/conf/nwfilter_conf.c                  |    6 ++++--
+ src/conf/nwfilter_conf.h                  |    1 +
+ src/nwfilter/nwfilter_ebiptables_driver.c |   15 +++++++++++++--
+ 5 files changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/docs/formatnwfilter.html.in b/docs/formatnwfilter.html.in
+index 6cc433b..31f105e 100644
+--- a/docs/formatnwfilter.html.in
++++ b/docs/formatnwfilter.html.in
+@@ -260,9 +260,11 @@
+     </p>
+     <ul>
+      <li>
+-        action -- mandatory; must either be <code>drop</code> or <code>accept</code> if
+-        the evaluation of the filtering rule is supposed to drop or accept
+-        a packet
++        action -- mandatory; must either be <code>drop</code>,
++        <code>reject</code><span class="since">(since 0.8.9)</span>,
++        or <code>accept</code> if
++        the evaluation of the filtering rule is supposed to drop,
++        reject (using ICMP message), or accept a packet
+      </li>
+      <li>
+         direction -- mandatory; must either be <code>in</code>, <code>out</code> or
+diff --git a/docs/schemas/nwfilter.rng b/docs/schemas/nwfilter.rng
+index 5b865ce..c2625b0 100644
+--- a/docs/schemas/nwfilter.rng
++++ b/docs/schemas/nwfilter.rng
+@@ -839,6 +839,7 @@
+     <choice>
+       <value>drop</value>
+       <value>accept</value>
++      <value>reject</value>
+     </choice>
+   </define>
+ 
+diff --git a/src/conf/nwfilter_conf.c b/src/conf/nwfilter_conf.c
+index 6fd07d4..6dab405 100644
+--- a/src/conf/nwfilter_conf.c
++++ b/src/conf/nwfilter_conf.c
+@@ -53,11 +53,13 @@
+ 
+ VIR_ENUM_IMPL(virNWFilterRuleAction, VIR_NWFILTER_RULE_ACTION_LAST,
+               "drop",
+-              "accept");
++              "accept",
++              "reject");
+ 
+ VIR_ENUM_IMPL(virNWFilterJumpTarget, VIR_NWFILTER_RULE_ACTION_LAST,
+               "DROP",
+-              "ACCEPT");
++              "ACCEPT",
++              "REJECT");
+ 
+ VIR_ENUM_IMPL(virNWFilterRuleDirection, VIR_NWFILTER_RULE_DIRECTION_LAST,
+               "in",
+diff --git a/src/conf/nwfilter_conf.h b/src/conf/nwfilter_conf.h
+index 4d76c4c..02a544e 100644
+--- a/src/conf/nwfilter_conf.h
++++ b/src/conf/nwfilter_conf.h
+@@ -291,6 +291,7 @@ struct _udpliteHdrFilterDef {
+ enum virNWFilterRuleActionType {
+     VIR_NWFILTER_RULE_ACTION_DROP = 0,
+     VIR_NWFILTER_RULE_ACTION_ACCEPT,
++    VIR_NWFILTER_RULE_ACTION_REJECT,
+ 
+     VIR_NWFILTER_RULE_ACTION_LAST,
+ };
+diff --git a/src/nwfilter/nwfilter_ebiptables_driver.c b/src/nwfilter/nwfilter_ebiptables_driver.c
+index b75b7ba..b6af16c 100644
+--- a/src/nwfilter/nwfilter_ebiptables_driver.c
++++ b/src/nwfilter/nwfilter_ebiptables_driver.c
+@@ -1516,7 +1516,7 @@ _iptablesCreateRuleInstance(int directionIn,
+     if (rule->action == VIR_NWFILTER_RULE_ACTION_ACCEPT)
+         target = accept_target;
+     else {
+-        target = "DROP";
++        target = virNWFilterJumpTargetTypeToString(rule->action);
+         skipMatch = defMatch;
+     }
+ 
+@@ -1880,6 +1880,7 @@ ebtablesCreateRuleInstance(char chainPrefix,
+          number[20];
+     char chain[MAX_CHAINNAME_LENGTH];
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
++    const char *target;
+ 
+     if (!ebtables_cmd_path) {
+         virNWFilterReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+@@ -2295,10 +2296,20 @@ ebtablesCreateRuleInstance(char chainPrefix,
+         return -1;
+     }
+ 
++    switch (rule->action) {
++    case VIR_NWFILTER_RULE_ACTION_REJECT:
++        /* REJECT not supported */
++        target = virNWFilterJumpTargetTypeToString(
++                                     VIR_NWFILTER_RULE_ACTION_DROP);
++    break;
++    default:
++        target = virNWFilterJumpTargetTypeToString(rule->action);
++    }
++
+     virBufferVSprintf(&buf,
+                       " -j %s" CMD_DEF_POST CMD_SEPARATOR
+                       CMD_EXEC,
+-                      virNWFilterJumpTargetTypeToString(rule->action));
++                      target);
+ 
+     if (virBufferError(&buf)) {
+         virBufferFreeAndReset(&buf);
+-- 
+1.7.4.1
+

@@ -1,0 +1,176 @@
+From 36eb5e516d587ec26170cb735e71089b7a1c49a3 Mon Sep 17 00:00:00 2001
+Message-Id: <36eb5e516d587ec26170cb735e71089b7a1c49a3.1300293192.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Tue, 15 Mar 2011 13:14:11 -0400
+Subject: [PATCH] network driver: Fix indentation from previous commit
+
+This is a cosmetic followon to the previous patch, which fixed a
+regression introduced in upstream commit ad48df, reported on the
+libvirt-users list:
+
+  https://www.redhat.com/archives/libvirt-users/2011-March/msg00018.html
+
+and bug filed against RHEL6:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=687291
+
+Upstream commit:
+
+  commit e368e71040de75f4021784f792d96e6674029f45
+  Author: Laine Stump <laine@laine.org>
+  Date:   Fri Mar 11 12:07:09 2011 -0500
+
+The previous commit put a large portion of networkBuildDnsmasqArgv
+inside an if { } block. This readjusts the indentation.
+---
+ src/network/bridge_driver.c |  122 +++++++++++++++++++++---------------------
+ 1 files changed, 61 insertions(+), 61 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 6867a8f..b93aae1 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -499,79 +499,79 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+     }
+ 
+     if (ipdef) {
+-    for (r = 0 ; r < ipdef->nranges ; r++) {
+-        char *saddr = virSocketFormatAddr(&ipdef->ranges[r].start);
+-        if (!saddr)
+-            goto cleanup;
+-        char *eaddr = virSocketFormatAddr(&ipdef->ranges[r].end);
+-        if (!eaddr) {
++        for (r = 0 ; r < ipdef->nranges ; r++) {
++            char *saddr = virSocketFormatAddr(&ipdef->ranges[r].start);
++            if (!saddr)
++                goto cleanup;
++            char *eaddr = virSocketFormatAddr(&ipdef->ranges[r].end);
++            if (!eaddr) {
++                VIR_FREE(saddr);
++                goto cleanup;
++            }
++            virCommandAddArg(cmd, "--dhcp-range");
++            virCommandAddArgFormat(cmd, "%s,%s", saddr, eaddr);
+             VIR_FREE(saddr);
+-            goto cleanup;
++            VIR_FREE(eaddr);
++            nbleases += virSocketGetRange(&ipdef->ranges[r].start,
++                                          &ipdef->ranges[r].end);
+         }
+-        virCommandAddArg(cmd, "--dhcp-range");
+-        virCommandAddArgFormat(cmd, "%s,%s", saddr, eaddr);
+-        VIR_FREE(saddr);
+-        VIR_FREE(eaddr);
+-        nbleases += virSocketGetRange(&ipdef->ranges[r].start,
+-                                      &ipdef->ranges[r].end);
+-    }
+ 
+-    /*
+-     * For static-only DHCP, i.e. with no range but at least one host element,
+-     * we have to add a special --dhcp-range option to enable the service in
+-     * dnsmasq.
+-     */
+-    if (!ipdef->nranges && ipdef->nhosts) {
+-        char *bridgeaddr = virSocketFormatAddr(&ipdef->address);
+-        if (!bridgeaddr)
+-            goto cleanup;
+-        virCommandAddArg(cmd, "--dhcp-range");
+-        virCommandAddArgFormat(cmd, "%s,static", bridgeaddr);
+-        VIR_FREE(bridgeaddr);
+-    }
++        /*
++         * For static-only DHCP, i.e. with no range but at least one host element,
++         * we have to add a special --dhcp-range option to enable the service in
++         * dnsmasq.
++         */
++        if (!ipdef->nranges && ipdef->nhosts) {
++            char *bridgeaddr = virSocketFormatAddr(&ipdef->address);
++            if (!bridgeaddr)
++                goto cleanup;
++            virCommandAddArg(cmd, "--dhcp-range");
++            virCommandAddArgFormat(cmd, "%s,static", bridgeaddr);
++            VIR_FREE(bridgeaddr);
++        }
+ 
+-    if (ipdef->nranges > 0) {
+-        virCommandAddArgFormat(cmd, "--dhcp-lease-max=%d", nbleases);
+-    }
++        if (ipdef->nranges > 0) {
++            virCommandAddArgFormat(cmd, "--dhcp-lease-max=%d", nbleases);
++        }
++
++        if (ipdef->nranges || ipdef->nhosts)
++            virCommandAddArg(cmd, "--dhcp-no-override");
+ 
+-    if (ipdef->nranges || ipdef->nhosts)
+-        virCommandAddArg(cmd, "--dhcp-no-override");
++        if (ipdef->nhosts > 0) {
++            dnsmasqContext *dctx = dnsmasqContextNew(network->def->name,
++                                                     DNSMASQ_STATE_DIR);
++            if (dctx == NULL) {
++                virReportOOMError();
++                goto cleanup;
++            }
+ 
+-    if (ipdef->nhosts > 0) {
+-        dnsmasqContext *dctx = dnsmasqContextNew(network->def->name,
+-                                                 DNSMASQ_STATE_DIR);
+-        if (dctx == NULL) {
+-            virReportOOMError();
+-            goto cleanup;
++            if (networkSaveDnsmasqHostsfile(ipdef, dctx, false) == 0) {
++                virCommandAddArgPair(cmd, "--dhcp-hostsfile",
++                                     dctx->hostsfile->path);
++            }
++            dnsmasqContextFree(dctx);
+         }
+ 
+-        if (networkSaveDnsmasqHostsfile(ipdef, dctx, false) == 0) {
+-            virCommandAddArgPair(cmd, "--dhcp-hostsfile",
+-                                 dctx->hostsfile->path);
++        if (ipdef->tftproot) {
++            virCommandAddArgList(cmd, "--enable-tftp",
++                                 "--tftp-root", ipdef->tftproot,
++                                 NULL);
+         }
+-        dnsmasqContextFree(dctx);
+-    }
+-
+-    if (ipdef->tftproot) {
+-        virCommandAddArgList(cmd, "--enable-tftp",
+-                             "--tftp-root", ipdef->tftproot,
+-                             NULL);
+-    }
+-    if (ipdef->bootfile) {
+-        virCommandAddArg(cmd, "--dhcp-boot");
+-        if (VIR_SOCKET_HAS_ADDR(&ipdef->bootserver)) {
+-            char *bootserver = virSocketFormatAddr(&ipdef->bootserver);
++        if (ipdef->bootfile) {
++            virCommandAddArg(cmd, "--dhcp-boot");
++            if (VIR_SOCKET_HAS_ADDR(&ipdef->bootserver)) {
++                char *bootserver = virSocketFormatAddr(&ipdef->bootserver);
+ 
+-            if (!bootserver)
+-                goto cleanup;
+-            virCommandAddArgFormat(cmd, "%s%s%s",
+-                               ipdef->bootfile, ",,", bootserver);
+-            VIR_FREE(bootserver);
+-        } else {
+-            virCommandAddArg(cmd, ipdef->bootfile);
++                if (!bootserver)
++                    goto cleanup;
++                virCommandAddArgFormat(cmd, "%s%s%s",
++                                       ipdef->bootfile, ",,", bootserver);
++                VIR_FREE(bootserver);
++            } else {
++                virCommandAddArg(cmd, ipdef->bootfile);
++            }
+         }
+     }
+-    }
+ 
+     ret = 0;
+ cleanup:
+-- 
+1.7.4.1
+

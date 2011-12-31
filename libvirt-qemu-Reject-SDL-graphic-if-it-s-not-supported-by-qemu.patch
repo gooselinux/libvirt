@@ -1,0 +1,49 @@
+From b112e577042efc3e77e96e7a5c933968606a32cb Mon Sep 17 00:00:00 2001
+Message-Id: <b112e577042efc3e77e96e7a5c933968606a32cb.1295522811.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 18 Jan 2011 18:49:46 +0800
+Subject: [PATCH] qemu: Reject SDL graphic if it's not supported by qemu
+
+If the emulator doesn't support SDL graphic, we should reject
+the use of SDL graphic xml with error messages, but not ignore
+it silently, and pretend things are fine.
+
+"-sdl" flag was exposed explicitly by qemu since 0.10.0, more detail:
+http://www.redhat.com/archives/libvir-list/2011-January/msg00442.html
+
+And we already have capability flag "QEMUD_CMD_FLAG_0_10", which
+could be used to prevent the patch affecting the older versions
+of QEMU.
+
+BZ# 633326
+
+https://bugzilla.redhat.com/show_bug.cgi?id=633326
+
+* src/qemu/qemu_command.c
+(cherry picked from commit 0444ce1b001dc6427e97959108a320dbe80e501b)
+---
+ src/qemu/qemu_command.c |    8 ++++++++
+ 1 files changed, 8 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 692232b..48b97f6 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3617,6 +3617,14 @@ qemuBuildCommandLine(virConnectPtr conn,
+         }
+     } else if ((def->ngraphics == 1) &&
+                def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SDL) {
++        if ((qemuCmdFlags & QEMUD_CMD_FLAG_0_10) &&
++            !(qemuCmdFlags & QEMUD_CMD_FLAG_SDL)) {
++            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                            _("sdl not supported by '%s'"),
++                            def->emulator);
++            goto error;
++        }
++
+         if (def->graphics[0]->data.sdl.xauth)
+             virCommandAddEnvPair(cmd, "XAUTHORITY",
+                                  def->graphics[0]->data.sdl.xauth);
+-- 
+1.7.4.rc2
+

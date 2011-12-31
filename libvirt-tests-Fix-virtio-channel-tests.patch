@@ -1,0 +1,63 @@
+From d8dad3352d7138e5da91cce54cd909e4464f85fd Mon Sep 17 00:00:00 2001
+Message-Id: <d8dad3352d7138e5da91cce54cd909e4464f85fd.1296166858.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 27 Jan 2011 19:00:36 +0100
+Subject: [PATCH] tests: Fix virtio channel tests
+
+https://bugzilla.redhat.com/show_bug.cgi?id=670394
+
+As noticed by Eric, commit 8e28c5d40200b4c5d483bd585d237b9d870372e5,
+which fixed generation of virtio-serial port numbers, forgot to adjust
+test files which resulted in make check failure.
+(cherry picked from commit cedf97e75a5d1bab974237274c1d4da0800615ce)
+---
+ .../qemuxml2argv-channel-virtio-auto.args          |    2 +-
+ .../qemuxml2xmlout-channel-virtio-auto.xml         |    8 ++++----
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+index 78bfe88..0893432 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-auto.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x2 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x3 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=0,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=0,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=0,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -device virtio-serial-pci,id=virtio-serial0,max_ports=16,vectors=4,bus=pci.0,addr=0x2 -device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa -device virtio-serial-pci,id=virtio-serial2,bus=pci.0,addr=0x3 -hda /dev/HostVG/QEMUGuest1 -chardev pty,id=channel0 -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=channel0,name=org.linux-kvm.port.0 -chardev pty,id=channel1 -device virtserialport,bus=virtio-serial1.0,nr=1,chardev=channel1,name=org.linux-kvm.port.foo -chardev pty,id=channel2 -device virtserialport,bus=virtio-serial1.0,nr=3,chardev=channel2,name=org.linux-kvm.port.bar -chardev pty,id=channel3 -device virtserialport,bus=virtio-serial0.0,nr=2,chardev=channel3,name=org.linux-kvm.port.wizz -chardev pty,id=channel4 -device virtserialport,bus=virtio-serial1.0,nr=4,chardev=channel4,name=org.linux-kvm.port.ooh -chardev pty,id=channel5 -device virtserialport,bus=virtio-serial2.0,nr=1,chardev=channel5,name=org.linux-kvm.port.lla -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-auto.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-auto.xml
+index 7990374..ea79fba 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-auto.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-auto.xml
+@@ -27,11 +27,11 @@
+     <controller type='virtio-serial' index='2'/>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.0'/>
+-      <address type='virtio-serial' controller='0' bus='0' port='0'/>
++      <address type='virtio-serial' controller='0' bus='0' port='1'/>
+     </channel>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.foo'/>
+-      <address type='virtio-serial' controller='1' bus='0' port='0'/>
++      <address type='virtio-serial' controller='1' bus='0' port='1'/>
+     </channel>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.bar'/>
+@@ -39,7 +39,7 @@
+     </channel>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.wizz'/>
+-      <address type='virtio-serial' controller='0' bus='0' port='1'/>
++      <address type='virtio-serial' controller='0' bus='0' port='2'/>
+     </channel>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.ooh'/>
+@@ -47,7 +47,7 @@
+     </channel>
+     <channel type='pty'>
+       <target type='virtio' name='org.linux-kvm.port.lla'/>
+-      <address type='virtio-serial' controller='2' bus='0' port='0'/>
++      <address type='virtio-serial' controller='2' bus='0' port='1'/>
+     </channel>
+     <memballoon model='virtio'/>
+   </devices>
+-- 
+1.7.4.rc3
+

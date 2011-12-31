@@ -1,0 +1,37 @@
+From 21ce9628efcab10904a1e5eaf37cb63d55e22b74 Mon Sep 17 00:00:00 2001
+Message-Id: <21ce9628efcab10904a1e5eaf37cb63d55e22b74.1296166858.git.jdenemar@redhat.com>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Tue, 25 Jan 2011 19:52:16 +0100
+Subject: [PATCH] virsh: require --mac to avoid detach-interface ambiguity
+
+virsh simply refutes to detach-interface in case when multiple interfaces
+are attached and --mac is not specified.
+
+Addresses BZ # 671050
+  https://bugzilla.redhat.com/show_bug.cgi?id=671050
+
+(cherry picked from commit cee47aace104346ef975cb1fb3f7126a88c03244)
+---
+ tools/virsh.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 55e2a68..1d0a77f 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -8529,6 +8529,12 @@ cmdDetachInterface(vshControl *ctl, const vshCmd *cmd)
+         goto cleanup;
+     }
+ 
++    if ((!mac) && (obj->nodesetval->nodeNr > 1)) {
++        vshError(ctl, _("Domain has %d interfaces. Please specify which one "
++                        "to detach using --mac"), obj->nodesetval->nodeNr);
++        goto cleanup;
++    }
++
+     if (!mac)
+         goto hit;
+ 
+-- 
+1.7.4.rc3
+

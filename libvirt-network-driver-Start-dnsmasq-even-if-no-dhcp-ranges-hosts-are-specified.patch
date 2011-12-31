@@ -1,0 +1,138 @@
+From df5c9096237c354cc383649a71cc3a80d9e56a40 Mon Sep 17 00:00:00 2001
+Message-Id: <df5c9096237c354cc383649a71cc3a80d9e56a40.1300293192.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Tue, 15 Mar 2011 13:14:10 -0400
+Subject: [PATCH] network driver: Start dnsmasq even if no dhcp ranges/hosts are specified.
+
+This (and the following cosmetic / formatting-only patch) resolve the
+regression reported in:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=687291
+
+This is a simple cherry-pick of the following upstream commit:
+
+  commit 7892edc9cc45e4fb1079b627bda3f571ac27041f
+  Author: Laine Stump <laine@laine.org>
+  Date:   Fri Mar 11 11:47:58 2011 -0500
+
+The regression was introduced upstream in commit ad48df, and reported on
+the libvirt-users list:
+
+  https://www.redhat.com/archives/libvirt-users/2011-March/msg00018.html
+
+The problem in that commit was that we began searching a list of ip
+address definitions (rather than just having one) to look for a dhcp
+range or static host; when we didn't find any, our pointer (ipdef) was
+left at NULL, and when ipdef was NULL, we returned without starting up
+dnsmasq.
+
+Previously dnsmasq was started even without any dhcp ranges or static
+entries, because it's still useful for DNS services.
+
+Another problem I noticed while investigating was that, if there are
+IPv6 addresses, but no IPv4 addresses of any kind, we would jump out
+at an ever higher level in the call chain.
+
+This patch does the following:
+
+1) networkBuildDnsmasqArgv() = all uses of ipdef are protected from
+   NULL dereference. (this patch doesn't change indentation, to make
+   review easier. The next patch will change just the
+   indentation). ipdef is intended to point to the first IPv4 address
+   with DHCP info (or the first IPv4 address if none of them have any
+   dhcp info).
+
+2) networkStartDhcpDaemon() = if the loop looking for an ipdef with
+   DHCP info comes up empty, we then grab the first IPv4 def from the
+   list. Also, instead of returning if there are no IPv4 defs, we just
+   return if there are no IP defs at all (either v4 or v6). This way a
+   network that is IPv6-only will still get dnsmasq listening for DNS
+   queries.
+
+3) in networkStartNetworkDaemon() - we will startup dhcp not just if there
+   are any IPv4 addresses, but also if there are any IPv6 addresses.
+---
+ src/network/bridge_driver.c |   23 +++++++++++++++++------
+ 1 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index be4e083..6867a8f 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -440,12 +440,9 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+                         virCommandPtr cmd) {
+     int r, ret = -1;
+     int nbleases = 0;
+-    char *bridgeaddr;
+     int ii;
+     virNetworkIpDefPtr tmpipdef;
+ 
+-    if (!(bridgeaddr = virSocketFormatAddr(&ipdef->address)))
+-        goto cleanup;
+     /*
+      * NB, be careful about syntax for dnsmasq options in long format.
+      *
+@@ -501,6 +498,7 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+         VIR_FREE(ipaddr);
+     }
+ 
++    if (ipdef) {
+     for (r = 0 ; r < ipdef->nranges ; r++) {
+         char *saddr = virSocketFormatAddr(&ipdef->ranges[r].start);
+         if (!saddr)
+@@ -524,8 +522,12 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+      * dnsmasq.
+      */
+     if (!ipdef->nranges && ipdef->nhosts) {
++        char *bridgeaddr = virSocketFormatAddr(&ipdef->address);
++        if (!bridgeaddr)
++            goto cleanup;
+         virCommandAddArg(cmd, "--dhcp-range");
+         virCommandAddArgFormat(cmd, "%s,static", bridgeaddr);
++        VIR_FREE(bridgeaddr);
+     }
+ 
+     if (ipdef->nranges > 0) {
+@@ -569,10 +571,10 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+             virCommandAddArg(cmd, ipdef->bootfile);
+         }
+     }
++    }
+ 
+     ret = 0;
+ cleanup:
+-    VIR_FREE(bridgeaddr);
+     return ret;
+ }
+ 
+@@ -594,7 +596,16 @@ networkStartDhcpDaemon(virNetworkObjPtr network)
+         if (ipdef->nranges || ipdef->nhosts)
+             break;
+     }
++    /* If no IPv4 addresses had dhcp info, pick the first (if there were any). */
+     if (!ipdef)
++        ipdef = virNetworkDefGetIpByIndex(network->def, AF_INET, 0);
++
++    /* If there are no IP addresses at all (v4 or v6), return now, since
++     * there won't be any address for dnsmasq to listen on anyway.
++     * If there are any addresses, even if no dhcp ranges or static entries,
++     * we should continue and run dnsmasq, just for the DNS capabilities.
++     */
++    if (!virNetworkDefGetIpByIndex(network->def, AF_UNSPEC, 0))
+         return 0;
+ 
+     if ((err = virFileMakePath(NETWORK_PID_DIR)) != 0) {
+@@ -1677,8 +1688,8 @@ networkStartNetworkDaemon(struct network_driver *driver,
+     }
+ 
+ 
+-    /* start dnsmasq if there are any IPv4 addresses */
+-    if (v4present && networkStartDhcpDaemon(network) < 0)
++    /* start dnsmasq if there are any IP addresses (v4 or v6) */
++    if ((v4present || v6present) && networkStartDhcpDaemon(network) < 0)
+         goto err3;
+ 
+     /* start radvd if there are any ipv6 addresses */
+-- 
+1.7.4.1
+

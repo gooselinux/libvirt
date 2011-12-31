@@ -1,0 +1,91 @@
+From a9619d3cc8b47614f40d0bbd17a113849850c6aa Mon Sep 17 00:00:00 2001
+Message-Id: <a9619d3cc8b47614f40d0bbd17a113849850c6aa.1301393957.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Wed, 23 Mar 2011 23:28:16 +0800
+Subject: [PATCH] util: Fix return value for virJSONValueFromString if it fails
+
+Problem:
+  "parser.head" is not NULL even if it's free'ed by "virJSONValueFree",
+returning "parser.head" when "virJSONValueFromString" fails will cause
+unexpected errors (libvirtd will crash sometimes), e.g.
+  In function "qemuMonitorJSONArbitraryCommand":
+
+        if (!(cmd = virJSONValueFromString(cmd_str)))
+            goto cleanup;
+
+        if (qemuMonitorJSONCommand(mon, cmd, &reply) < 0)
+            goto cleanup;
+
+        ......
+
+     cleanup:
+        virJSONValueFree(cmd);
+
+  It will continues to send command to monitor even if "virJSONValueFromString"
+is failed, and more worse, it trys to free "cmd" again.
+
+  Crash example:
+{"error":{"class":"QMPBadInputObject","desc":"Expected 'execute' in QMP input","data":{"expected":"execute"}}}
+{"error":{"class":"QMPBadInputObject","desc":"Expected 'execute' in QMP input","data":{"expected":"execute"}}}
+error: server closed connection:
+error: unable to connect to '/var/run/libvirt/libvirt-sock', libvirtd may need to be started: Connection refused
+error: failed to connect to the hypervisor
+
+  This fix is to:
+    1) return NULL for failure of "virJSONValueFromString",
+    2) and it seems "virJSONValueFree" uses incorrect loop index for type
+       of "VIR_JSON_TYPE_OBJECT", fix it together.
+
+* src/util/json.c
+(cherry picked from commit 93e8b8778ae4eb7e2f1d8eae5159a5f3e0e9ed70)
+
+BZ# 688723
+https://bugzilla.redhat.com/show_bug.cgi?id=688723
+
+NB, as it's a late crash fix for RHEL6.1, please review it carefully, :-)
+---
+ src/util/json.c |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/util/json.c b/src/util/json.c
+index b700734..1e1d8ef 100644
+--- a/src/util/json.c
++++ b/src/util/json.c
+@@ -65,7 +65,7 @@ void virJSONValueFree(virJSONValuePtr value)
+ 
+     switch (value->type) {
+     case VIR_JSON_TYPE_OBJECT:
+-        for (i = 0 ; i < value->data.array.nvalues ; i++) {
++        for (i = 0 ; i < value->data.object.npairs; i++) {
+             VIR_FREE(value->data.object.pairs[i].key);
+             virJSONValueFree(value->data.object.pairs[i].value);
+         }
+@@ -928,6 +928,7 @@ virJSONValuePtr virJSONValueFromString(const char *jsonstring)
+     yajl_parser_config cfg = { 1, 1 };
+     yajl_handle hand;
+     virJSONParser parser = { NULL, NULL, 0 };
++    virJSONValuePtr ret = NULL;
+ 
+     VIR_DEBUG("string=%s", jsonstring);
+ 
+@@ -948,6 +949,8 @@ virJSONValuePtr virJSONValueFromString(const char *jsonstring)
+         goto cleanup;
+     }
+ 
++    ret = parser.head;
++
+ cleanup:
+     yajl_free(hand);
+ 
+@@ -961,7 +964,7 @@ cleanup:
+ 
+     VIR_DEBUG("result=%p", parser.head);
+ 
+-    return parser.head;
++    return ret;
+ }
+ 
+ 
+-- 
+1.7.4.1
+

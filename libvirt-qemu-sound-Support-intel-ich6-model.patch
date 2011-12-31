@@ -1,0 +1,281 @@
+From 4c3fdd4f9b4aa00a0f77351abd0e0cbe86e63c40 Mon Sep 17 00:00:00 2001
+Message-Id: <4c3fdd4f9b4aa00a0f77351abd0e0cbe86e63c40.1296166858.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Mon, 24 Jan 2011 14:24:28 -0500
+Subject: [PATCH] qemu: sound: Support intel 'ich6' model
+
+https://bugzilla.redhat.com/show_bug.cgi?id=648486
+
+In QEMU, the card itself is a PCI device, but it requires a codec
+(either -device hda-output or -device hda-duplex) to actually output
+sound. Specifying <sound model='ich6'/> gives us -device intel-hda
+-device hda-duplex I think it's important that a simple <sound model='ich6'/>
+sets up a useful codec, to have consistent behavior with all other sound cards.
+
+This is basically Dan's proposal of
+
+    <sound model='ich6'>
+        <codec type='output' slot='0'/>
+        <codec type='duplex' slot='3'/>
+    </sound>
+
+without the codec bits implemented.
+
+The important thing is to keep a consistent API here, we don't want some
+<sound> devs require tweaking codecs but not others. Steps I see to
+accomplishing this:
+
+    - every <sound> device has a <codec type='default'/> (unless codecs are
+        manually specified)
+    - <codec type='none'/> is required to specify 'no codecs'
+    - new audio settings like mic=on|off could then be exposed in
+        <sound> or <codec> in a consistent manner for all sound models
+
+v2:
+    Use model='ich6'
+
+v3:
+    Use feature detection, from eblake
+    Set codec id, bus, and cad values
+
+v4:
+    intel-hda isn't supported if -device isn't available
+
+v5:
+    Comment spelling fixes
+(cherry picked from commit 6cabc0b0d0fbc35a68bf1c0646898ac148d2fa3f)
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ docs/formatdomain.html.in                          |    5 +-
+ docs/schemas/domain.rng                            |    1 +
+ src/conf/domain_conf.c                             |    3 +-
+ src/conf/domain_conf.h                             |    1 +
+ src/qemu/qemu_capabilities.c                       |    5 ++
+ src/qemu/qemu_capabilities.h                       |    1 +
+ src/qemu/qemu_command.c                            |   56 +++++++++++++++++++-
+ .../qemuxml2argv-sound-device.args                 |    2 +-
+ .../qemuxml2argvdata/qemuxml2argv-sound-device.xml |    1 +
+ tests/qemuxml2argvtest.c                           |    2 +-
+ 10 files changed, 70 insertions(+), 7 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 67679c4..ed0eab1 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1704,8 +1704,9 @@ qemu-kvm -net nic,model=? /dev/null
+         The <code>sound</code> element has one mandatory attribute,
+         <code>model</code>, which specifies what real sound device is emulated.
+         Valid values are specific to the underlying hypervisor, though typical
+-        choices are 'es1370', 'sb16', and 'ac97'
+-        (<span class="since">'ac97' only since 0.6.0</span>)
++        choices are 'es1370', 'sb16', 'ac97', and 'ich6'
++        (<span class="since">
++         'ac97' only since 0.6.0, 'ich6' only since 0.8.8</span>)
+       </dd>
+     </dl>
+ 
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 59001a2..8585533 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1524,6 +1524,7 @@
+           <value>es1370</value>
+           <value>pcspk</value>
+           <value>ac97</value>
++          <value>ich6</value>
+         </choice>
+       </attribute>
+       <optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index ccfae26..f5c6621 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -232,7 +232,8 @@ VIR_ENUM_IMPL(virDomainSoundModel, VIR_DOMAIN_SOUND_MODEL_LAST,
+               "sb16",
+               "es1370",
+               "pcspk",
+-              "ac97")
++              "ac97",
++              "ich6")
+ 
+ VIR_ENUM_IMPL(virDomainMemballoonModel, VIR_DOMAIN_MEMBALLOON_MODEL_LAST,
+               "virtio",
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 7430ba3..ce790a5 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -474,6 +474,7 @@ enum virDomainSoundModel {
+     VIR_DOMAIN_SOUND_MODEL_ES1370,
+     VIR_DOMAIN_SOUND_MODEL_PCSPK,
+     VIR_DOMAIN_SOUND_MODEL_AC97,
++    VIR_DOMAIN_SOUND_MODEL_ICH6,
+ 
+     VIR_DOMAIN_SOUND_MODEL_LAST
+ };
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 34bdf3c..d4daddb 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1079,6 +1079,11 @@ cleanup:
+ int
+ qemuCapsParseDeviceStr(const char *str, unsigned long long *flags)
+ {
++    /* Which devices exist. */
++    if (strstr(str, "name \"hda-duplex\""))
++        *flags |= QEMUD_CMD_FLAG_HDA_DUPLEX;
++
++    /* Features of given devices. */
+     if (strstr(str, "pci-assign.configfd"))
+         *flags |= QEMUD_CMD_FLAG_PCI_CONFIGFD;
+     if (strstr(str, "virtio-blk-pci.bootindex"))
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index e9e2da0..9148d90 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -84,6 +84,7 @@ enum qemuCapsFlags {
+     QEMUD_CMD_FLAG_VGA_NONE      = (1LL << 47), /* The 'none' arg for '-vga' */
+     QEMUD_CMD_FLAG_MIGRATE_QEMU_FD = (1LL << 48), /* -incoming fd:n */
+     QEMUD_CMD_FLAG_BOOTINDEX     = (1LL << 49), /* -device bootindex property */
++    QEMUD_CMD_FLAG_HDA_DUPLEX    = (1LL << 50), /* -device hda-duplex */
+ };
+ 
+ virCapsPtr qemuCapsInit(virCapsPtr old_caps);
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 173adee..85abc53 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1774,11 +1774,13 @@ qemuBuildSoundDevStr(virDomainSoundDefPtr sound)
+         goto error;
+     }
+ 
+-    /* Hack for 2 wierdly unusal devices name in QEMU */
++    /* Hack for weirdly unusual devices name in QEMU */
+     if (STREQ(model, "es1370"))
+         model = "ES1370";
+     else if (STREQ(model, "ac97"))
+         model = "AC97";
++    else if (STREQ(model, "ich6"))
++        model = "intel-hda";
+ 
+     virBufferVSprintf(&buf, "%s", model);
+     virBufferVSprintf(&buf, ",id=%s", sound->info.alias);
+@@ -1797,6 +1799,29 @@ error:
+     return NULL;
+ }
+ 
++static char *
++qemuBuildSoundCodecStr(virDomainSoundDefPtr sound,
++                       const char *codec)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++    int cad = 0;
++
++    virBufferVSprintf(&buf, "%s", codec);
++    virBufferVSprintf(&buf, ",id=%s-codec%d", sound->info.alias, cad);
++    virBufferVSprintf(&buf, ",bus=%s.0", sound->info.alias);
++    virBufferVSprintf(&buf, ",cad=%d", cad);
++
++    if (virBufferError(&buf)) {
++        virReportOOMError();
++        goto error;
++    }
++
++    return virBufferContentAndReset(&buf);
++
++error:
++    virBufferFreeAndReset(&buf);
++    return NULL;
++}
+ 
+ static char *
+ qemuBuildVideoDevStr(virDomainVideoDefPtr video)
+@@ -3825,11 +3850,29 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     virCommandAddArgList(cmd, "-soundhw", "pcspk", NULL);
+                 } else {
+                     virCommandAddArg(cmd, "-device");
+-
+                     if (!(str = qemuBuildSoundDevStr(sound)))
+                         goto error;
+ 
+                     virCommandAddArg(cmd, str);
++
++                    if (sound->model == VIR_DOMAIN_SOUND_MODEL_ICH6) {
++                        char *codecstr = NULL;
++                        if (!(qemuCmdFlags & QEMUD_CMD_FLAG_HDA_DUPLEX)) {
++                            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                    _("this QEMU binary lacks hda support"));
++                            goto error;
++                        }
++
++                        virCommandAddArg(cmd, "-device");
++                        if (!(codecstr = qemuBuildSoundCodecStr(sound,
++                                                            "hda-duplex"))) {
++                            goto error;
++                        }
++
++                        virCommandAddArg(cmd, codecstr);
++                        VIR_FREE(codecstr);
++                    }
++
+                     VIR_FREE(str);
+                 }
+             }
+@@ -3848,6 +3891,13 @@ qemuBuildCommandLine(virConnectPtr conn,
+                                     "%s", _("invalid sound model"));
+                     goto error;
+                 }
++
++                if (sound->model == VIR_DOMAIN_SOUND_MODEL_ICH6) {
++                    qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                    _("this QEMU binary lacks hda support"));
++                    goto error;
++                }
++
+                 strncat(modstr, model, size);
+                 size -= strlen(model);
+                 if (i < (def->nsounds - 1))
+@@ -5683,6 +5733,8 @@ virDomainDefPtr qemuParseCommandLine(virCapsPtr caps,
+                     type = VIR_DOMAIN_SOUND_MODEL_ES1370;
+                 } else if (STRPREFIX(start, "ac97")) {
+                     type = VIR_DOMAIN_SOUND_MODEL_AC97;
++                } else if (STRPREFIX(start, "hda")) {
++                    type = VIR_DOMAIN_SOUND_MODEL_ICH6;
+                 }
+ 
+                 if (type != -1) {
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.args b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.args
+index 6b2e697..4c5172f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.args
+@@ -1 +1 @@
+-LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -soundhw pcspk -device ES1370,id=sound1,bus=pci.0,addr=0x2 -device sb16,id=sound2 -device AC97,id=sound3,bus=pci.0,addr=0x3 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -hda /dev/HostVG/QEMUGuest1 -usb -soundhw pcspk -device ES1370,id=sound1,bus=pci.0,addr=0x2 -device sb16,id=sound2 -device AC97,id=sound3,bus=pci.0,addr=0x3 -device intel-hda,id=sound4,bus=pci.0,addr=0x4 -device hda-duplex,id=sound4-codec0,bus=sound4.0,cad=0 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x5
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
+index c725346..fbca4fe 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-sound-device.xml
+@@ -22,6 +22,7 @@
+     <sound model='es1370'/>
+     <sound model='sb16'/>
+     <sound model='ac97'/>
++    <sound model='ich6'/>
+     <memballoon model='virtio'/>
+   </devices>
+ </domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index eb210f8..72915ec 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -424,7 +424,7 @@ mymain(int argc, char **argv)
+             QEMUD_CMD_FLAG_NODEFCONFIG, false);
+     DO_TEST("sound", 0, false);
+     DO_TEST("sound-device", QEMUD_CMD_FLAG_DEVICE |
+-            QEMUD_CMD_FLAG_NODEFCONFIG, false);
++            QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_HDA_DUPLEX, false);
+     DO_TEST("fs9p", QEMUD_CMD_FLAG_DEVICE |
+             QEMUD_CMD_FLAG_NODEFCONFIG | QEMUD_CMD_FLAG_FSDEV, false);
+ 
+-- 
+1.7.4.rc3
+

@@ -1,0 +1,41 @@
+From edc7da62179ab0361fccc38fcf45c359d9ac83a9 Mon Sep 17 00:00:00 2001
+Message-Id: <edc7da62179ab0361fccc38fcf45c359d9ac83a9.1296819815.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Tue, 1 Feb 2011 16:58:59 +0800
+Subject: [PATCH] qemu: Build command line for incoming tunneled migration
+
+Command line building for incoming tunneled migration is missed,
+as a result, all the tunneled migration will fail with "unknown
+migration protocol".
+
+BZ# 672199
+https://bugzilla.redhat.com/show_bug.cgi?id=672199
+
+* src/qemu/qemu_command.c
+(cherry picked from commit 16be54e8989aa5a4cbc1ba74375f6d0c8255a1e9)
+---
+ src/qemu/qemu_command.c |    8 ++++++++
+ 1 files changed, 8 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 139224b..3d2bd94 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4056,6 +4056,14 @@ qemuBuildCommandLine(virConnectPtr conn,
+             }
+             virCommandAddArg(cmd, migrateFrom);
+             virCommandPreserveFD(cmd, migrateFd);
++        } else if (STRPREFIX(migrateFrom, "unix")) {
++            if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_UNIX)) {
++                qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                "%s", _("UNIX migration is not supported "
++                                        "with this QEMU binary"));
++                goto error;
++            }
++            virCommandAddArg(cmd, migrateFrom);
+         } else {
+             qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                             "%s", _("unknown migration protocol"));
+-- 
+1.7.4
+

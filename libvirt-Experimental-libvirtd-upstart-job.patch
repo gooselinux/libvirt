@@ -1,0 +1,106 @@
+From 76cbcc864966d701b3c0e30999c4e40baa1e300e Mon Sep 17 00:00:00 2001
+Message-Id: <76cbcc864966d701b3c0e30999c4e40baa1e300e.1303134272.git.jdenemar@redhat.com>
+From: Alan Pevec <apevec@redhat.com>
+Date: Fri, 18 Feb 2011 19:45:49 +0100
+Subject: [PATCH] Experimental libvirtd upstart job
+
+https://bugzilla.redhat.com/show_bug.cgi?id=678084
+
+To install it, disable libvirtd sysv initscript:
+    chkconfig libvirtd off
+    service libvirtd stop
+
+and enable libvirtd upstart job:
+    cp  /usr/share/doc/libvirt-*/libvirtd.upstart \
+        /etc/init/libvirtd.conf
+    initctl reload-configuration
+    initctl start libvirtd
+
+Test:
+    initctl status libvirtd
+libvirtd start/running, process 3929
+    killall -9 libvirtd
+    initctl status libvirtd
+libvirtd start/running, process 4047
+
+I looked into the possibility to use the upstart script from Ubuntu or
+at least getting inspiration from it but that's not possible. "expect
+daemon" is a nice thing but it only works if the process is defined with
+exec stanza instead of script ... no script. Unfortunately, with exec
+stanza environment variables can only be set within upstart script
+(i.e., configuration in /etc/sysconfig/libvirtd can't work). Hence, we
+need to use script stanza, source sysconfig, and execute libvirtd
+without --daemon. For similar reasons we can't use limit stanza and need
+to handle DAEMON_COREFILE_LIMIT in job's script.
+(cherry picked from commit 16d6b0d80afabe455f5d00e4a696913c281d0649)
+---
+ daemon/Makefile.am      |    1 +
+ daemon/libvirtd.upstart |   46 ++++++++++++++++++++++++++++++++++++++++++++++
+ libvirt.spec.in         |    1 +
+ 3 files changed, 48 insertions(+), 0 deletions(-)
+ create mode 100644 daemon/libvirtd.upstart
+
+diff --git a/daemon/Makefile.am b/daemon/Makefile.am
+index 397332e..110e240 100644
+--- a/daemon/Makefile.am
++++ b/daemon/Makefile.am
+@@ -27,6 +27,7 @@ EXTRA_DIST =						\
+ 	remote_generate_stubs.pl			\
+ 	libvirtd.conf					\
+ 	libvirtd.init.in				\
++	libvirtd.upstart				\
+ 	libvirtd.policy-0				\
+ 	libvirtd.policy-1				\
+ 	libvirtd.sasl					\
+diff --git a/daemon/libvirtd.upstart b/daemon/libvirtd.upstart
+new file mode 100644
+index 0000000..fd1d951
+--- /dev/null
++++ b/daemon/libvirtd.upstart
+@@ -0,0 +1,46 @@
++# libvirtd upstart job
++#
++# XXX wait for rc to get all dependent initscripts started
++# from sysv libvirtd initscript: Required-Start: $network messagebus
++start on stopped rc RUNLEVEL=[345]
++stop on runlevel [!345]
++
++respawn
++
++script
++    LIBVIRTD_CONFIG=
++    LIBVIRTD_ARGS=
++    KRB5_KTNAME=/etc/libvirt/krb5.tab
++
++    if [ -f /etc/sysconfig/libvirtd ]; then
++        . /etc/sysconfig/libvirtd
++    fi
++
++    export QEMU_AUDIO_DRV
++    export SDL_AUDIODRIVER
++    export KRB5_KTNAME
++
++    LIBVIRTD_CONFIG_ARGS=
++    if [ -n "$LIBVIRTD_CONFIG" ]; then
++        LIBVIRTD_CONFIG_ARGS="--config $LIBVIRTD_CONFIG"
++    fi
++
++    # DAEMON_COREFILE_LIMIT from /etc/sysconfig/libvirtd is not handled
++    # automatically
++    if [ -n "$DAEMON_COREFILE_LIMIT" ]; then
++        ulimit -c "$DAEMON_COREFILE_LIMIT"
++    fi
++
++    # Clean up a pidfile that might be left around
++    rm -f /var/run/libvirtd.pid
++
++    mkdir -p /var/cache/libvirt
++    rm -rf /var/cache/libvirt/*
++
++    exec /usr/sbin/libvirtd $LIBVIRTD_CONFIG_ARGS $LIBVIRTD_ARGS
++end script
++
++post-stop script
++    rm -f $PIDFILE
++    rm -rf /var/cache/libvirt/*
++end script

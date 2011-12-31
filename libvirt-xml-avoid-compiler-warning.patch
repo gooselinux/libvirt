@@ -1,0 +1,33 @@
+From 4c59ffe3d2a5973a9d3f1058b21ac0996fe1bbf3 Mon Sep 17 00:00:00 2001
+Message-Id: <4c59ffe3d2a5973a9d3f1058b21ac0996fe1bbf3.1299265003.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 4 Mar 2011 10:17:01 -0700
+Subject: [PATCH] xml: avoid compiler warning
+
+Prereq to avoid merge conflict for:
+https://bugzilla.redhat.com/show_bug.cgi?id=682249
+
+Detected by clang.
+
+* src/util/xml.c (virXPathStringLimit): Use %zd, not obsolete %Zd.
+(cherry picked from commit 83a0489a21c79cea2aa86c3c937c135295257a56)
+---
+ src/util/xml.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/util/xml.c b/src/util/xml.c
+index de5e9de..ff340d8 100644
+--- a/src/util/xml.c
++++ b/src/util/xml.c
+@@ -105,7 +105,7 @@ virXPathStringLimit(const char *xpath,
+ 
+     if (tmp != NULL && strlen(tmp) >= maxlen) {
+         virXMLError(VIR_ERR_INTERNAL_ERROR,
+-                    _("\'%s\' value longer than %Zd bytes in virXPathStringLimit()"),
++                    _("\'%s\' value longer than %zd bytes in virXPathStringLimit()"),
+                     xpath, maxlen);
+             return NULL;
+     }
+-- 
+1.7.4.1
+

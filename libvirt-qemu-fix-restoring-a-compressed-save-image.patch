@@ -1,0 +1,84 @@
+From 586987b3fed5d7fb34d089d5229e27c8425fffbc Mon Sep 17 00:00:00 2001
+Message-Id: <586987b3fed5d7fb34d089d5229e27c8425fffbc.1301393957.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 28 Mar 2011 11:53:00 -0600
+Subject: [PATCH] qemu: fix restoring a compressed save image
+
+https://bugzilla.redhat.com/show_bug.cgi?id=691034
+
+Latent bug introduced in commit 2d6a581960 (Aug 2009), but not exposed
+until commit 1859939a (Jan 2011).  Basically, when virExec creates a
+pipe, it always marks libvirt's side as cloexec.  If libvirt then
+wants to hand that pipe to another child process, things work great if
+the fd is dup2()'d onto stdin or stdout (as with stdin: or exec:
+migration), but if the pipe is instead used as-is (such as with fd:
+migration) then qemu sees EBADF because the fd was closed at exec().
+
+This is a minimal fix for the problem at hand; it is slightly racy,
+but no more racy than the rest of libvirt fd handling, including the
+case of uncompressed save images.  A more invasive fix, but ultimately
+safer at avoiding leaking unintended fds, would be to _always and
+atomically_ open all fds as cloexec in libvirt (thanks to primitives
+like open(O_CLOEXEC), pipe2(), accept4(), ...), then teach virExec to
+clear that bit for all fds explicitly marked to be handed to the child
+only after forking.
+
+* src/qemu/qemu_command.c (qemuBuildCommandLine): Clear cloexec
+flag.
+* tests/qemuxml2argvtest.c (testCompareXMLToArgvFiles): Tweak test.
+(cherry picked from commit d51023d4c28c3c7e717cf349f1bcfed4af044bc4)
+---
+ src/qemu/qemu_command.c  |   16 ++++++++++++++++
+ tests/qemuxml2argvtest.c |    2 +-
+ 2 files changed, 17 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 5ed6b30..d9bed01 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4299,6 +4299,14 @@ qemuBuildCommandLine(virConnectPtr conn,
+         } else if (STREQ(migrateFrom, "stdio")) {
+             if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_FD) {
+                 virCommandAddArgFormat(cmd, "fd:%d", migrateFd);
++                /* migrateFd might be cloexec, but qemu must inherit
++                 * it if vmop indicates qemu will be executed */
++                if (vmop != VIR_VM_OP_NO_OP &&
++                    virSetInherit(migrateFd, true) < 0) {
++                    qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                    _("Failed to clear cloexec flag"));
++                    goto error;
++                }
+                 virCommandPreserveFD(cmd, migrateFd);
+             } else if (qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_EXEC) {
+                 virCommandAddArg(cmd, "exec:cat");
+@@ -4328,6 +4336,14 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 goto error;
+             }
+             virCommandAddArg(cmd, migrateFrom);
++            /* migrateFd might be cloexec, but qemu must inherit
++             * it if vmop indicates qemu will be executed */
++            if (vmop != VIR_VM_OP_NO_OP &&
++                virSetInherit(migrateFd, true) < 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                _("Failed to clear cloexec flag"));
++                goto error;
++            }
+             virCommandPreserveFD(cmd, migrateFd);
+         } else if (STRPREFIX(migrateFrom, "unix")) {
+             if (!(qemuCmdFlags & QEMUD_CMD_FLAG_MIGRATE_QEMU_UNIX)) {
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index ba0e724..fda03cd 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -123,7 +123,7 @@ static int testCompareXMLToArgvFiles(const char *xml,
+     if (!(cmd = qemuBuildCommandLine(conn, &driver,
+                                      vmdef, &monitor_chr, false, flags,
+                                      migrateFrom, migrateFd, NULL,
+-                                     VIR_VM_OP_CREATE)))
++                                     VIR_VM_OP_NO_OP)))
+         goto fail;
+ 
+     if (!!virGetLastError() != expectError) {
+-- 
+1.7.4.1
+

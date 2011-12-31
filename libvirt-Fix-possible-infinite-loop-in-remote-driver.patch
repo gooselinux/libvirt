@@ -1,0 +1,34 @@
+From 4d871294ee5f08157f5016ddce0646b9f12b70e5 Mon Sep 17 00:00:00 2001
+Message-Id: <4d871294ee5f08157f5016ddce0646b9f12b70e5.1302705456.git.jdenemar@redhat.com>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Tue, 12 Apr 2011 18:03:00 +0200
+Subject: [PATCH] Fix possible infinite loop in remote driver
+
+When we take out completed calls from queue we might end up
+in circular pointer. We don't want pointer to previous item
+point to element taken out.
+(cherry picked from commit 50e4b9195d2d8b46969940336b44221b500a2de3)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=691514
+---
+ src/remote/remote_driver.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index ac62730..65f7344 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -10316,8 +10316,9 @@ remoteIOEventLoop(virConnectPtr conn,
+                  */
+                 DEBUG("Waking up sleep %d %p %p", tmp->proc_nr, tmp, priv->waitDispatch);
+                 virCondSignal(&tmp->cond);
++            } else {
++                prev = tmp;
+             }
+-            prev = tmp;
+             tmp = tmp->next;
+         }
+ 
+-- 
+1.7.5.rc1
+

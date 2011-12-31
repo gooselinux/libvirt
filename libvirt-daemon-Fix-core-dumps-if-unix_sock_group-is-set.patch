@@ -1,0 +1,69 @@
+From 3747b67c3ca60cf2582ac7200baada746d144c08 Mon Sep 17 00:00:00 2001
+Message-Id: <3747b67c3ca60cf2582ac7200baada746d144c08.1295285119.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 7 Jan 2011 12:34:12 +0100
+Subject: [PATCH] daemon: Fix core dumps if unix_sock_group is set
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=623166
+
+Setting unix_sock_group to something else than default "root" in
+/etc/libvirt/libvirtd.conf prevents system libvirtd from dumping core on
+crash. This is because we used setgid(unix_sock_group) before binding to
+/var/run/libvirt/libvirt-sock* and setgid() back to original group.
+However, if a process changes its effective or filesystem group ID, it
+will be forbidden from leaving core dumps unless fs.suid_dumpable sysctl
+is set to something else then 0 (and it is 0 by default).
+
+Changing socket's group ownership after bind works better. And we can do
+so without introducing a race condition since we loosen access rights by
+changing the group from root to something else.
+(cherry picked from commit 5e5acbc8d67e1ac074320176bbc3682b9ba934c0)
+---
+ daemon/libvirtd.c |   17 ++++++++---------
+ 1 files changed, 8 insertions(+), 9 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index c3fdfec..2b43f31 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -539,7 +539,6 @@ static int qemudListenUnix(struct qemud_server *server,
+                            char *path, int readonly, int auth) {
+     struct qemud_socket *sock;
+     mode_t oldmask;
+-    gid_t oldgrp;
+     char ebuf[1024];
+ 
+     if (VIR_ALLOC(sock) < 0) {
+@@ -576,21 +575,21 @@ static int qemudListenUnix(struct qemud_server *server,
+     if (sock->addr.data.un.sun_path[0] == '@')
+         sock->addr.data.un.sun_path[0] = '\0';
+ 
+-    oldgrp = getgid();
+     oldmask = umask(readonly ? ~unix_sock_ro_mask : ~unix_sock_rw_mask);
+-    if (server->privileged && setgid(unix_sock_gid)) {
+-        VIR_ERROR(_("Failed to set group ID to %d"), unix_sock_gid);
+-        goto cleanup;
+-    }
+-
+     if (bind(sock->fd, &sock->addr.data.sa, sock->addr.len) < 0) {
+         VIR_ERROR(_("Failed to bind socket to '%s': %s"),
+                   path, virStrerror(errno, ebuf, sizeof ebuf));
+         goto cleanup;
+     }
+     umask(oldmask);
+-    if (server->privileged && setgid(oldgrp)) {
+-        VIR_ERROR(_("Failed to restore group ID to %d"), oldgrp);
++
++    /* chown() doesn't work for abstract sockets but we use them only
++     * if libvirtd runs unprivileged
++     */
++    if (server->privileged && chown(path, -1, unix_sock_gid)) {
++        VIR_ERROR(_("Failed to change group ID of '%s' to %d: %s"),
++                  path, unix_sock_gid,
++                  virStrerror(errno, ebuf, sizeof ebuf));
+         goto cleanup;
+     }
+ 
+-- 
+1.7.4.rc2
+

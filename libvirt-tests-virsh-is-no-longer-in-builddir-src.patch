@@ -1,0 +1,37 @@
+From 8eaf20b693d6f98f060d6f94e348c0eb832393fd Mon Sep 17 00:00:00 2001
+Message-Id: <8eaf20b693d6f98f060d6f94e348c0eb832393fd.1295522811.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 18 Jan 2011 11:11:35 -0700
+Subject: [PATCH] tests: virsh is no longer in builddir/src
+
+Provided as a dependency for patches fixing
+  https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+Commit 870dba0 (Mar 2008) added builddir/src to PATH to pick
+up virsh.  Later, virsh was moved to tools; commit db68d6b
+(Oct 2009) noticed this, but only added the new location rather
+than deleting the old location.
+
+* tests/Makefile.am (path_add): Drop now-useless directory.
+Suggested by Daniel P. Berrange.
+(cherry picked from commit 90c2a138464311613ada8e38a89fc2b7869558d5)
+---
+ tests/Makefile.am |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 697b401..345cf46 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -214,7 +214,7 @@ TESTS += interfacexml2xmltest
+ 
+ TESTS += cputest
+ 
+-path_add = $$abs_top_builddir/src$(PATH_SEPARATOR)$$abs_top_builddir/daemon$(PATH_SEPARATOR)$$abs_top_builddir/tools
++path_add = $$abs_top_builddir/daemon$(PATH_SEPARATOR)$$abs_top_builddir/tools
+ 
+ # NB, automake < 1.10 does not provide the real
+ # abs_top_{src/build}dir or builddir variables, so don't rely
+-- 
+1.7.4.rc2
+

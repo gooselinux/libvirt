@@ -1,0 +1,49 @@
+From f2b78fe205ff524fbdb68938b198372d97bca22b Mon Sep 17 00:00:00 2001
+Message-Id: <f2b78fe205ff524fbdb68938b198372d97bca22b.1299776672.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 10 Mar 2011 10:01:57 -0700
+Subject: [PATCH] qemu: don't request cgroup ACL access for /dev/net/tun
+
+https://bugzilla.redhat.com/show_bug.cgi?id=683305
+
+Since libvirt always passes /dev/net/tun to qemu via fd, we should
+never trigger the cases where qemu tries to directly open the
+device.  Therefore, it is safer to deny the cgroup device ACL.
+
+* src/qemu/qemu_cgroup.c (defaultDeviceACL): Remove /dev/net/tun.
+* src/qemu/qemu.conf (cgroup_device_acl): Reflect this change.
+(cherry picked from commit c52cbe487c1694a6f4c1c17eb96ee015bb46e8a4)
+---
+ src/qemu/qemu.conf     |    2 +-
+ src/qemu/qemu_cgroup.c |    2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu.conf b/src/qemu/qemu.conf
+index 66310d4..df99f60 100644
+--- a/src/qemu/qemu.conf
++++ b/src/qemu/qemu.conf
+@@ -181,7 +181,7 @@
+ #    "/dev/null", "/dev/full", "/dev/zero",
+ #    "/dev/random", "/dev/urandom",
+ #    "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
+-#    "/dev/rtc", "/dev/hpet", "/dev/net/tun",
++#    "/dev/rtc", "/dev/hpet",
+ #]
+ 
+ 
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 2e7ccf1..893354b 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -37,7 +37,7 @@ static const char *const defaultDeviceACL[] = {
+     "/dev/null", "/dev/full", "/dev/zero",
+     "/dev/random", "/dev/urandom",
+     "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
+-    "/dev/rtc", "/dev/hpet", "/dev/net/tun",
++    "/dev/rtc", "/dev/hpet",
+     NULL,
+ };
+ #define DEVICE_PTY_MAJOR 136
+-- 
+1.7.4.1
+

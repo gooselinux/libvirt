@@ -1,0 +1,94 @@
+From 137eec578839de07322fe71630993fbb92411f97 Mon Sep 17 00:00:00 2001
+Message-Id: <137eec578839de07322fe71630993fbb92411f97.1296166858.git.jdenemar@redhat.com>
+From: Cole Robinson <crobinso@redhat.com>
+Date: Mon, 24 Jan 2011 14:13:37 -0500
+Subject: [PATCH] qemu: Add conf option to auto setup VNC unix sockets
+
+https://bugzilla.redhat.com/show_bug.cgi?id=651415
+
+If vnc_auto_unix_socket is enabled, any VNC devices without a hardcoded
+listen or socket value will be setup to serve over a unix socket in
+/var/lib/libvirt/qemu/$vmname.vnc.
+
+We store the generated socket path in the transient VM definition at
+CLI build time.
+(cherry picked from commit a942ea069225589b494ff95edc1cf3b9c6888c16)
+
+Signed-off-by: Cole Robinson <crobinso@redhat.com>
+---
+ src/qemu/qemu.conf      |    8 ++++++++
+ src/qemu/qemu_command.c |   10 +++++++++-
+ src/qemu/qemu_conf.c    |    4 ++++
+ src/qemu/qemu_conf.h    |    1 +
+ 4 files changed, 22 insertions(+), 1 deletions(-)
+
+diff --git a/src/qemu/qemu.conf b/src/qemu/qemu.conf
+index ba41f80..ae6136f 100644
+--- a/src/qemu/qemu.conf
++++ b/src/qemu/qemu.conf
+@@ -11,6 +11,14 @@
+ #
+ # vnc_listen = "0.0.0.0"
+ 
++# Enable this option to have VNC served over an automatically created
++# unix socket. This prevents unprivileged access from users on the
++# host machine, though most VNC clients do not support it.
++#
++# This will only be enabled for VNC configurations that do not have
++# a hardcoded 'listen' or 'socket' value.
++#
++# vnc_auto_unix_socket = 1
+ 
+ # Enable use of TLS encryption on the VNC server. This requires
+ # a VNC client which supports the VeNCrypt protocol extension.
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 0f317f5..173adee 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3568,7 +3568,15 @@ qemuBuildCommandLine(virConnectPtr conn,
+         def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC) {
+         virBuffer opt = VIR_BUFFER_INITIALIZER;
+ 
+-        if (def->graphics[0]->data.vnc.socket) {
++        if (def->graphics[0]->data.vnc.socket ||
++            driver->vncAutoUnixSocket) {
++
++            if (!def->graphics[0]->data.vnc.socket &&
++                virAsprintf(&def->graphics[0]->data.vnc.socket,
++                            "%s/%s.vnc", driver->libDir, def->name) == -1) {
++                goto no_memory;
++            }
++
+             virBufferVSprintf(&opt, "unix:%s",
+                               def->graphics[0]->data.vnc.socket);
+ 
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index e1502dc..9f9e99e 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -138,6 +138,10 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
+         return -1;                                                      \
+     }
+ 
++    p = virConfGetValue (conf, "vnc_auto_unix_socket");
++    CHECK_TYPE ("vnc_auto_unix_socket", VIR_CONF_LONG);
++    if (p) driver->vncAutoUnixSocket = p->l;
++
+     p = virConfGetValue (conf, "vnc_tls");
+     CHECK_TYPE ("vnc_tls", VIR_CONF_LONG);
+     if (p) driver->vncTLS = p->l;
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index 83ddedd..a9f2696 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -82,6 +82,7 @@ struct qemud_driver {
+     char *cacheDir;
+     char *saveDir;
+     char *snapshotDir;
++    unsigned int vncAutoUnixSocket : 1;
+     unsigned int vncTLS : 1;
+     unsigned int vncTLSx509verify : 1;
+     unsigned int vncSASL : 1;
+-- 
+1.7.4.rc3
+

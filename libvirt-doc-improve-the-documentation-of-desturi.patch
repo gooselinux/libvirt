@@ -1,0 +1,55 @@
+From 021f423c77308c069b9ca149e3a4069817cdd26f Mon Sep 17 00:00:00 2001
+Message-Id: <021f423c77308c069b9ca149e3a4069817cdd26f.1296819815.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 12 Jan 2011 14:12:39 +0800
+Subject: [PATCH] doc: improve the documentation of desturi
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673434
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+(cherry picked from commit 2fd1a2525b78adb3c2d73cd55c278462f74f4953)
+---
+ tools/virsh.c   |    2 +-
+ tools/virsh.pod |   13 +++++++++++++
+ 2 files changed, 14 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 1d0a77f..507d340 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -3375,7 +3375,7 @@ static const vshCmdOptDef opts_migrate[] = {
+     {"copy-storage-all", VSH_OT_BOOL, 0, N_("migration with non-shared storage with full disk copy")},
+     {"copy-storage-inc", VSH_OT_BOOL, 0, N_("migration with non-shared storage with incremental copy (same base image shared between source and destination)")},
+     {"domain", VSH_OT_DATA, VSH_OFLAG_REQ, N_("domain name, id or uuid")},
+-    {"desturi", VSH_OT_DATA, VSH_OFLAG_REQ, N_("connection URI of the destination host")},
++    {"desturi", VSH_OT_DATA, VSH_OFLAG_REQ, N_("connection URI of the destination host as seen from the client(normal migration) or source(p2p migration)")},
+     {"migrateuri", VSH_OT_DATA, 0, N_("migration URI, usually can be omitted")},
+     {"dname", VSH_OT_DATA, 0, N_("rename to new name during migration (if supported)")},
+     {NULL, 0, 0, NULL}
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index c4cb97c..811ff2d 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -505,6 +505,19 @@ I<migrateuri> is the migration URI, which usually can be omitted.
+ I<dname> is used for renaming the domain to new name during migration, which
+ also usually can be omitted.
+ 
++B<Note>: The I<desturi> parameter for normal migration and peer2peer migration
++has different semantics:
++
++=over 4
++
++=item * normal migration: the I<desturi> is an address of the target host as
++seen from the client machine.
++
++=item * peer2peer migration: the I<desturi> is an address of the target host as
++seen from the source machine.
++
++=back
++
+ =item B<migrate-setmaxdowntime> I<domain-id> I<downtime>
+ 
+ Set maximum tolerable downtime for a domain which is being live-migrated to
+-- 
+1.7.4
+

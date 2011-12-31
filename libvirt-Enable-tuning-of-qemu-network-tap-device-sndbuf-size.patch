@@ -1,0 +1,254 @@
+From 52dcc06c022af88ff5eb81059a42be24357d1ee9 Mon Sep 17 00:00:00 2001
+Message-Id: <52dcc06c022af88ff5eb81059a42be24357d1ee9.1295285119.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Fri, 14 Jan 2011 15:06:10 -0500
+Subject: [PATCH] Enable tuning of qemu network tap device "sndbuf" size
+
+This is in response to a request in:
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=665293
+
+Upstream commit fe053dbea761573c96617b01f41f1fd3e50b1330
+
+NOTE: This patch requires Patch 2/3 (util: add missing string->integer
+conversion functions).
+
+In short, under heavy load, it's possible for qemu's networking to
+lock up due to the tap device's default 1MB sndbuf being
+inadequate. adding "sndbuf=0" to the qemu commandline -netdevice
+option will alleviate this problem (sndbuf=0 actually sets it to
+0xffffffff).
+
+Because we must be able to explicitly specify "0" as a value, the
+standard practice of "0 means not specified" won't work here. Instead,
+virDomainNetDef also has a sndbuf_specified, which defaults to 0, but
+is set to 1 if some value was given.
+
+The sndbuf value is put inside a <tune> element of each <interface> in
+the domain. The intent is that further tunable settings will also be
+placed inside this element.
+
+     <interface type='network'>
+       ...
+       <tune>
+         <sndbuf>0</sndbuf>
+       ...
+       </tune>
+     </interface>
+---
+ docs/schemas/domain.rng |   10 ++++++++++
+ src/conf/domain_conf.c  |   35 +++++++++++++++++++++++++++++++++--
+ src/conf/domain_conf.h  |    4 ++++
+ src/qemu/qemu_command.c |   19 +++++++++++++++++--
+ 4 files changed, 64 insertions(+), 4 deletions(-)
+
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 3bc2f21..0bcfdfc 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -1025,6 +1025,16 @@
+           <ref name="filterref-node-attributes"/>
+         </element>
+       </optional>
++      <optional>
++        <element name="tune">
++          <optional>
++            <!-- size of send buffer for network tap devices -->
++            <element name="sndbuf">
++              <ref name="unsignedInt"/>
++            </element>
++          </optional>
++        </element>
++      </optional>
+     </interleave>
+   </define>
+   <define name="virtualPortProfile">
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index f0aade4..4f34703 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -2282,6 +2282,7 @@ err_exit:
+ static virDomainNetDefPtr
+ virDomainNetDefParseXML(virCapsPtr caps,
+                         xmlNodePtr node,
++                        xmlXPathContextPtr ctxt,
+                         int flags ATTRIBUTE_UNUSED) {
+     virDomainNetDefPtr def;
+     xmlNodePtr cur;
+@@ -2303,12 +2304,16 @@ virDomainNetDefParseXML(virCapsPtr caps,
+     virNWFilterHashTablePtr filterparams = NULL;
+     virVirtualPortProfileParams virtPort;
+     bool virtPortParsed = false;
++    xmlNodePtr oldnode = ctxt->node;
++    int ret;
+ 
+     if (VIR_ALLOC(def) < 0) {
+         virReportOOMError();
+         return NULL;
+     }
+ 
++    ctxt->node = node;
++
+     type = virXMLPropString(node, "type");
+     if (type != NULL) {
+         if ((int)(def->type = virDomainNetTypeFromString(type)) < 0) {
+@@ -2596,7 +2601,17 @@ virDomainNetDefParseXML(virCapsPtr caps,
+         }
+     }
+ 
++    ret = virXPathULong("string(./tune/sndbuf)", ctxt, &def->tune.sndbuf);
++    if (ret >= 0) {
++        def->tune.sndbuf_specified = true;
++    } else if (ret == -2) {
++        virDomainReportError(VIR_ERR_XML_ERROR, "%s",
++                             _("sndbuf must be a positive integer"));
++        goto error;
++    }
++
+ cleanup:
++    ctxt->node = oldnode;
+     VIR_FREE(macaddr);
+     VIR_FREE(network);
+     VIR_FREE(address);
+@@ -4309,6 +4324,7 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+ {
+     xmlDocPtr xml;
+     xmlNodePtr node;
++    xmlXPathContextPtr ctxt = NULL;
+     virDomainDeviceDefPtr dev = NULL;
+ 
+     if (!(xml = xmlReadDoc(BAD_CAST xmlStr, "device.xml", NULL,
+@@ -4325,6 +4341,13 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+         goto error;
+     }
+ 
++    ctxt = xmlXPathNewContext(xml);
++    if (ctxt == NULL) {
++        virReportOOMError();
++        goto error;
++    }
++    ctxt->node = node;
++
+     if (VIR_ALLOC(dev) < 0) {
+         virReportOOMError();
+         goto error;
+@@ -4340,7 +4363,7 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "interface")) {
+         dev->type = VIR_DOMAIN_DEVICE_NET;
+-        if (!(dev->data.net = virDomainNetDefParseXML(caps, node, flags)))
++        if (!(dev->data.net = virDomainNetDefParseXML(caps, node, ctxt, flags)))
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "input")) {
+         dev->type = VIR_DOMAIN_DEVICE_INPUT;
+@@ -4378,11 +4401,12 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+     }
+ 
+     xmlFreeDoc(xml);
+-
++    xmlXPathFreeContext(ctxt);
+     return dev;
+ 
+   error:
+     xmlFreeDoc(xml);
++    xmlXPathFreeContext(ctxt);
+     VIR_FREE(dev);
+     return NULL;
+ }
+@@ -5053,6 +5077,7 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     for (i = 0 ; i < n ; i++) {
+         virDomainNetDefPtr net = virDomainNetDefParseXML(caps,
+                                                          nodes[i],
++                                                         ctxt,
+                                                          flags);
+         if (!net)
+             goto error;
+@@ -6321,6 +6346,12 @@ virDomainNetDefFormat(virBufferPtr buf,
+         VIR_FREE(attrs);
+     }
+ 
++    if (def->tune.sndbuf_specified) {
++        virBufferAddLit(buf,   "      <tune>\n");
++        virBufferVSprintf(buf, "        <sndbuf>%lu</sndbuf>\n", def->tune.sndbuf);
++        virBufferAddLit(buf,   "      </tune>\n");
++    }
++
+     if (virDomainDeviceInfoFormat(buf, &def->info, flags) < 0)
+         return -1;
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index d948f4d..f612fb6 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -346,6 +346,10 @@ struct _virDomainNetDef {
+             virVirtualPortProfileParams virtPortProfile;
+         } direct;
+     } data;
++    struct {
++        bool sndbuf_specified;
++        unsigned long sndbuf;
++    } tune;
+     char *ifname;
+     virDomainDeviceInfo info;
+     char *filter;
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 26ed284..104c219 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -1584,6 +1584,7 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
+                     const char *tapfd,
+                     const char *vhostfd)
+ {
++    bool is_tap = false;
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+ 
+     switch (net->type) {
+@@ -1593,6 +1594,7 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
+         virBufferAddLit(&buf, "tap");
+         virBufferVSprintf(&buf, "%cfd=%s", type_sep, tapfd);
+         type_sep = ',';
++        is_tap = true;
+         break;
+ 
+     case VIR_DOMAIN_NET_TYPE_ETHERNET:
+@@ -1606,6 +1608,7 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
+                               net->data.ethernet.script);
+             type_sep = ',';
+         }
++        is_tap = true;
+         break;
+ 
+     case VIR_DOMAIN_NET_TYPE_CLIENT:
+@@ -1659,8 +1662,11 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
+                           type_sep, net->info.alias);
+     }
+ 
+-    if (vhostfd && *vhostfd) {
+-        virBufferVSprintf(&buf, ",vhost=on,vhostfd=%s", vhostfd);
++    if (is_tap) {
++        if (vhostfd && *vhostfd)
++            virBufferVSprintf(&buf, ",vhost=on,vhostfd=%s", vhostfd);
++        if (net->tune.sndbuf_specified)
++            virBufferVSprintf(&buf, ",sndbuf=%lu", net->tune.sndbuf);
+     }
+ 
+     if (virBufferError(&buf)) {
+@@ -4669,6 +4675,15 @@ qemuParseCommandLineNet(virCapsPtr caps,
+             } else if (STREQ(keywords[i], "off")) {
+                 def->backend = VIR_DOMAIN_NET_BACKEND_TYPE_QEMU;
+             }
++        } else if (STREQ(keywords[i], "sndbuf") && values[i]) {
++            if (virStrToLong_ul(values[i], NULL, 10, &def->tune.sndbuf) < 0) {
++                qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                                _("cannot parse sndbuf size in '%s'"), val);
++                virDomainNetDefFree(def);
++                def = NULL;
++                goto cleanup;
++            }
++            def->tune.sndbuf_specified = true;
+         }
+     }
+ 
+-- 
+1.7.4.rc2
+

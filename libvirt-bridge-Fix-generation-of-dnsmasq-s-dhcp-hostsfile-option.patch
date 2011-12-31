@@ -1,0 +1,56 @@
+From 21c3dced9f64906ebece5b9d76fb6c52830f1974 Mon Sep 17 00:00:00 2001
+Message-Id: <21c3dced9f64906ebece5b9d76fb6c52830f1974.1294615754.git.jdenemar@redhat.com>
+From: Kay Schubert <kayegypt@web.de>
+Date: Thu, 6 Jan 2011 09:14:58 +0100
+Subject: [PATCH] bridge: Fix generation of dnsmasq's --dhcp-hostsfile option
+
+I added a host definition to a network definition:
+
+<network>
+  <name>Lokal</name>
+  <uuid>2074f379-b82c-423f-9ada-305d8088daaa</uuid>
+  <bridge name='virbr1' stp='on' delay='0' />
+  <ip address='192.168.180.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.180.128' end='192.168.180.254' />
+      <host mac='23:74:00:03:42:02' name='somevm' ip='192.168.180.10' />
+    </dhcp>
+  </ip>
+</network>
+
+But due to the wrong if-statement the argument --dhcp-hostsfile doesn't get
+added to the dnsmasq command. The patch below fixes it for me.
+(cherry picked from commit a43c7338d8772aa3a5bc0ec5914d3c28c20447c3)
+---
+ AUTHORS                     |    1 +
+ src/network/bridge_driver.c |    2 +-
+ 2 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index b204bd6..721b8f8 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -142,6 +142,7 @@ Patches have also been contributed by:
+   Josh Durgin          <joshd@hq.newdream.net>
+   Roopa Prabhu         <roprabhu@cisco.com>
+   Paweł Krześniak      <pawel.krzesniak@gmail.com>
++  Kay Schubert         <kayegypt@web.de>
+ 
+   [....send patches to get your name here....]
+ 
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 7d43ef5..4c64a74 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -524,7 +524,7 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+             goto cleanup;
+         }
+ 
+-        if (networkSaveDnsmasqHostsfile(ipdef, dctx, false) < 0) {
++        if (networkSaveDnsmasqHostsfile(ipdef, dctx, false) == 0) {
+             virCommandAddArgPair(cmd, "--dhcp-hostsfile",
+                                  dctx->hostsfile->path);
+         }
+-- 
+1.7.4.rc1
+

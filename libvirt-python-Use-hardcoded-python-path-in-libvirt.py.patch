@@ -1,0 +1,85 @@
+From e0d62ca3f3b7797b78b670806949a1c5e9c03859 Mon Sep 17 00:00:00 2001
+Message-Id: <e0d62ca3f3b7797b78b670806949a1c5e9c03859.1300223308.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 11 Mar 2011 13:44:20 +0100
+Subject: [PATCH] python: Use hardcoded python path in libvirt.py
+
+https://bugzilla.redhat.com/show_bug.cgi?id=684204
+
+This partially reverts (and fixes that part in a different way) commit
+e4384459c93e3e786aa483c7f077d1d22148f689, which replaced
+``/usr/bin/python'' with ``/usr/bin/env python'' in all examples or
+scripts used during build to generate other files.
+
+However, python bindings module is compiled and linked against a
+specific python discovered or explicitly provided in configure phase.
+Thus libvirt.py, which is generated and installed into the system,
+should use the same python binary for which the module has been built.
+
+The hunk in Makefile.am replaces $(srcdir) with $(PYTHON), which might
+seem wrong but it is not. generator.py didn't use any of its command
+line arguments so passing $(srcdir) to it was redundant.
+(cherry picked from commit c51f08272af7a1a890ccf10d421b8948777c3a33)
+---
+ python/Makefile.am         |    2 +-
+ python/generator.py        |    7 ++++++-
+ python/libvirt-override.py |    5 -----
+ 3 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/python/Makefile.am b/python/Makefile.am
+index eda2866..432ad70 100644
+--- a/python/Makefile.am
++++ b/python/Makefile.am
+@@ -53,7 +53,7 @@ GENERATED= libvirt-export.c \
+ 	   libvirt.py
+ 
+ generated.stamp: $(srcdir)/$(GENERATE) $(API_DESC)
+-	$(PYTHON) $(srcdir)/$(GENERATE) $(srcdir)
++	$(PYTHON) $(srcdir)/$(GENERATE) $(PYTHON)
+ 	touch $@
+ 
+ $(GENERATED): generated.stamp
+diff --git a/python/generator.py b/python/generator.py
+index 15751bd..2d4f942 100755
+--- a/python/generator.py
++++ b/python/generator.py
+@@ -14,6 +14,11 @@ import re
+ if __name__ == "__main__":
+     # launched as a script
+     srcPref = os.path.dirname(sys.argv[0])
++    if len(sys.argv) > 1:
++        python = sys.argv[1]
++    else:
++        print "Python binary not specified"
++        sys.exit(1)
+ else:
+     # imported
+     srcPref = os.path.dirname(__file__)
+@@ -1010,7 +1015,7 @@ def buildWrappers():
+     classes = open("libvirt.py", "w")
+ 
+     extra = open(os.path.join(srcPref,"libvirt-override.py"), "r")
+-    classes.write("#!/usr/bin/env python\n")
++    classes.write("#! " + python + " -i\n")
+     classes.write("#\n")
+     classes.write("# WARNING WARNING WARNING WARNING\n")
+     classes.write("#\n")
+diff --git a/python/libvirt-override.py b/python/libvirt-override.py
+index 909ebe3..d544a0e 100644
+--- a/python/libvirt-override.py
++++ b/python/libvirt-override.py
+@@ -2,11 +2,6 @@
+ # Manually written part of python bindings for libvirt
+ #
+ 
+-# Specify -i commandline option after python was started
+-if __name__ == "__main__":
+-    import os
+-    os.environ["PYTHONINSPECT"] = "1"
+-
+ # On cygwin, the DLL is called cygvirtmod.dll
+ try:
+     import libvirtmod
+-- 
+1.7.4.1
+

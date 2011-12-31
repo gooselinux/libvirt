@@ -1,0 +1,39 @@
+From f45f669652ba1dc917929fe3ede25c34d8c65380 Mon Sep 17 00:00:00 2001
+Message-Id: <f45f669652ba1dc917929fe3ede25c34d8c65380.1296166858.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 27 Jan 2011 17:12:26 +0800
+Subject: [PATCH] storage: Round up capacity for LVM volume creation
+
+If vol->capacity is odd, the capacity will be rounded down
+by devision, this patch is to round it up instead of rounding
+down, to be safer in case of one writes to the volume with the
+size he used to create.
+
+BZ# 670529
+https://bugzilla.redhat.com/show_bug.cgi?id=670529
+
+- src/storage/storage_backend_logical.c: make sure size is not rounded down
+(cherry picked from commit 6002e0406c338668ea0ecbfeb6c1ef20a8b67efe)
+---
+ src/storage/storage_backend_logical.c |    5 ++++-
+ 1 files changed, 4 insertions(+), 1 deletions(-)
+
+diff --git a/src/storage/storage_backend_logical.c b/src/storage/storage_backend_logical.c
+index 203fe5d..389ecd7 100644
+--- a/src/storage/storage_backend_logical.c
++++ b/src/storage/storage_backend_logical.c
+@@ -604,7 +604,10 @@ virStorageBackendLogicalCreateVol(virConnectPtr conn,
+         cmdargv = cmdargvsnap;
+     }
+ 
+-    snprintf(size, sizeof(size)-1, "%lluK", vol->capacity/1024);
++    unsigned long long int capacity;
++    capacity = (vol->capacity + 1023) /1024;
++
++    snprintf(size, sizeof(size)-1, "%lluK", capacity);
+     size[sizeof(size)-1] = '\0';
+ 
+     vol->type = VIR_STORAGE_VOL_BLOCK;
+-- 
+1.7.4.rc3
+

@@ -1,0 +1,78 @@
+From 8a1fb2faaee74c1c64934c8d9b37d7d3e434725a Mon Sep 17 00:00:00 2001
+Message-Id: <8a1fb2faaee74c1c64934c8d9b37d7d3e434725a.1297440281.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Mon, 7 Feb 2011 17:25:06 +0000
+Subject: [PATCH] Support SCSI RAID type & lower log level for unknown types
+
+https://bugzilla.redhat.com/show_bug.cgi?id=675771
+
+The Linux kernel headers don't have a value for SCSI type 12,
+but HAL source code shows this to be a 'raid'. Add workaround
+for this type. Lower log level for unknown types since
+this is not a fatal error condition. Include the device sysfs
+path in the log output to allow identification of which device
+has problems.
+
+* src/node_device/node_device_udev.c: Add SCSI RAID type
+(cherry picked from commit cd782cc391e4aca6beedaadbdd7e5d5ce331b312)
+---
+ src/node_device/node_device_udev.c |   15 ++++++++++++---
+ 1 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/src/node_device/node_device_udev.c b/src/node_device/node_device_udev.c
+index 379af86..4f33591 100644
+--- a/src/node_device/node_device_udev.c
++++ b/src/node_device/node_device_udev.c
+@@ -41,6 +41,10 @@
+ 
+ #define VIR_FROM_THIS VIR_FROM_NODEDEV
+ 
++#ifndef TYPE_RAID
++# define TYPE_RAID 12
++#endif
++
+ struct _udevPrivate {
+     struct udev_monitor *udev_monitor;
+     int watch;
+@@ -704,7 +708,8 @@ out:
+ }
+ 
+ 
+-static int udevGetSCSIType(unsigned int type, char **typestring)
++static int udevGetSCSIType(virNodeDeviceDefPtr def,
++                           unsigned int type, char **typestring)
+ {
+     int ret = 0;
+     int foundtype = 1;
+@@ -739,6 +744,9 @@ static int udevGetSCSIType(unsigned int type, char **typestring)
+     case TYPE_ENCLOSURE:
+         *typestring = strdup("enclosure");
+         break;
++    case TYPE_RAID:
++        *typestring = strdup("raid");
++        break;
+     case TYPE_NO_LUN:
+     default:
+         foundtype = 0;
+@@ -750,7 +758,8 @@ static int udevGetSCSIType(unsigned int type, char **typestring)
+             ret = -1;
+             virReportOOMError();
+         } else {
+-            VIR_ERROR(_("Failed to find SCSI device type %d"), type);
++            VIR_DEBUG("Failed to find SCSI device type %d for %s",
++                      type, def->sysfs_path);
+         }
+     }
+ 
+@@ -795,7 +804,7 @@ static int udevProcessSCSIDevice(struct udev_device *device ATTRIBUTE_UNUSED,
+ 
+     switch (udevGetUintSysfsAttr(device, "type", &tmp, 0)) {
+     case PROPERTY_FOUND:
+-        if (udevGetSCSIType(tmp, &data->scsi.type) == -1) {
++        if (udevGetSCSIType(def, tmp, &data->scsi.type) == -1) {
+             goto out;
+         }
+         break;
+-- 
+1.7.4
+

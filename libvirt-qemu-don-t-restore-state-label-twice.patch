@@ -1,0 +1,38 @@
+From 8cbaad30cda54554030e7b18eebb6cad1295891e Mon Sep 17 00:00:00 2001
+Message-Id: <8cbaad30cda54554030e7b18eebb6cad1295891e.1301393957.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 28 Mar 2011 13:22:59 -0600
+Subject: [PATCH] qemu: don't restore state label twice
+
+https://bugzilla.redhat.com/show_bug.cgi?id=690737
+
+Otherwise, if something like doStopVcpus fails after the first
+restore, a second restore is attempted and throws a useless
+warning.
+
+* src/qemu/qemu_driver.c (qemudDomainSaveFlag): Avoid second
+restore of state label.
+(cherry picked from commit 96d567862a079aca7edda88ad76f075b312c4862)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c - upstream refactored security driver context
+---
+ src/qemu/qemu_driver.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e25f2f4..fffce1e 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4940,6 +4940,7 @@ static int qemudDomainSaveFlag(struct qemud_driver *driver, virDomainPtr dom,
+         driver->securityDriver->domainRestoreSavedStateLabel(driver->securityDriver,
+                                                              vm, path) == -1)
+         VIR_WARN("failed to restore save state label on %s", path);
++    bypassSecurityDriver = true;
+ 
+     if (cgroup != NULL) {
+         rc = virCgroupDenyDevicePath(cgroup, path,
+-- 
+1.7.4.1
+

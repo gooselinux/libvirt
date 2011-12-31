@@ -1,0 +1,74 @@
+From 39cfb874ce687b821f506974a3ae3980398bb75d Mon Sep 17 00:00:00 2001
+Message-Id: <39cfb874ce687b821f506974a3ae3980398bb75d.1299265003.git.jdenemar@redhat.com>
+From: Laine Stump <laine@redhat.com>
+Date: Fri, 4 Mar 2011 08:29:16 -0500
+Subject: [PATCH] qemu: avoid corruption of domain hashtable and misuse of freed domains
+
+This was also found while investigating
+
+   https://bugzilla.redhat.com/show_bug.cgi?id=670848
+
+and has been commited to upstream libvirt as:
+
+   commit f8ac67909de87c2e0bd926850efa887ffc32f2c3
+   Date:   Thu Mar 3 13:21:07 2011 -0500
+
+The RHEL6.1 version of the patch couldn't be cherry-picked because the
+code has been moved around too much, but the fix is identical.
+
+An EOF on a domain's monitor socket results in an event being queued
+to handle the EOF. The handler calls qemuProcessHandleMonitorEOF. If
+it is a transient domain, this leads to a call to
+virDomainRemoveInactive, which removes the domain from the driver's
+hashtable and unref's it. Nowhere in this code is the qemu driver lock
+acquired.
+
+However, all modifications to the driver's domain hashtable *must* be
+done while holding the driver lock, otherwise the hashtable can become
+corrupt, and (even more likely) another thread could call a different
+hashtable function and acquire a pointer to the domain that is in the
+process of being destroyed.
+
+To prevent such a disaster, qemuProcessHandleMonitorEOF must get the
+qemu driver lock *before* it gets the DomainObj's lock, and hold it
+until it is finished with the DomainObj. This guarantees that nobody
+else modifies the hashtable at the same time, and that anyone who had
+already gotten the DomainObj from the hashtable prior to this call has
+finished with it before we remove/destroy it.
+---
+ src/qemu/qemu_driver.c |    5 +++--
+ 1 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 8e40903..f5b259e 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -736,11 +736,13 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ 
+     VIR_DEBUG("Received EOF on %p '%s'", vm, vm->def->name);
+ 
++    qemuDriverLock(driver);
+     virDomainObjLock(vm);
+ 
+     if (!virDomainObjIsActive(vm)) {
+         VIR_DEBUG("Domain %p is not active, ignoring EOF", vm);
+         virDomainObjUnlock(vm);
++        qemuDriverUnlock(driver);
+         return;
+     }
+ 
+@@ -766,10 +768,9 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+         virDomainObjUnlock(vm);
+ 
+     if (event) {
+-        qemuDriverLock(driver);
+         qemuDomainEventQueue(driver, event);
+-        qemuDriverUnlock(driver);
+     }
++    qemuDriverUnlock(driver);
+ }
+ 
+ 
+-- 
+1.7.4.1
+

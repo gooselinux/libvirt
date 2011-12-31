@@ -1,0 +1,50 @@
+From dd3145df34296dd52ab8e9d04e034ee166d6804e Mon Sep 17 00:00:00 2001
+Message-Id: <dd3145df34296dd52ab8e9d04e034ee166d6804e.1302705456.git.jdenemar@redhat.com>
+From: Hu Tao <hutao@cn.fujitsu.com>
+Date: Fri, 18 Mar 2011 17:14:13 -0600
+Subject: [PATCH] Don't return an error on failure to create blkio controller
+
+https://bugzilla.redhat.com/show_bug.cgi?id=689030
+
+This patch enables cgroup controllers as much as possible by skipping
+the creation of blkio controller when running with old kernels that
+doesn't support multi-level directory for blkio controller.
+
+Signed-off-by: Hu Tao <hutao@cn.fujitsu.com>
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit ae5155768f5bc7af6450c657e1f2fe1f4a129c57)
+---
+ src/util/cgroup.c |   17 ++++++++++++++---
+ 1 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/util/cgroup.c b/src/util/cgroup.c
+index 94ac66e..ef323c0 100644
+--- a/src/util/cgroup.c
++++ b/src/util/cgroup.c
+@@ -510,9 +510,20 @@ static int virCgroupMakeGroup(virCgroupPtr parent, virCgroupPtr group,
+         if (access(path, F_OK) != 0) {
+             if (!create ||
+                 mkdir(path, 0755) < 0) {
+-                rc = -errno;
+-                VIR_FREE(path);
+-                break;
++                /* With a kernel that doesn't support multi-level directory
++                 * for blkio controller, libvirt will fail and disable all
++                 * other controllers even though they are available. So
++                 * treat blkio as unmounted if mkdir fails. */
++                if (i == VIR_CGROUP_CONTROLLER_BLKIO) {
++                    rc = 0;
++                    VIR_FREE(group->controllers[i].mountPoint);
++                    VIR_FREE(path);
++                    continue;
++                } else {
++                    rc = -errno;
++                    VIR_FREE(path);
++                    break;
++                }
+             }
+             if (group->controllers[VIR_CGROUP_CONTROLLER_CPUSET].mountPoint != NULL &&
+                 (i == VIR_CGROUP_CONTROLLER_CPUSET ||
+-- 
+1.7.5.rc1
+

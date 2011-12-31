@@ -1,0 +1,58 @@
+From e5184dd7de818e4a30cb303cfd9c3c9015db1ee2 Mon Sep 17 00:00:00 2001
+Message-Id: <e5184dd7de818e4a30cb303cfd9c3c9015db1ee2.1299265003.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 3 Mar 2011 14:10:51 +0100
+Subject: [PATCH] util: Allow removing hash entries in virHashForEach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=681459
+
+This fixes a possible crash of libvirtd during its startup. When qemu
+driver reconnects to running domains, it iterates over all domain
+objects in a hash. When reconnecting to an associated qemu monitor
+fails and the domain is transient, it's immediately removed from the
+hash. Despite the fact that it's explicitly forbidden to do so. If
+libvirtd is lucky enough, virHashForEach will access random memory when
+the callback finishes and the deamon will crash.
+
+Since it's trivial to fix virHashForEach to allow removal of hash
+entries while iterating through them, I went this way instead of fixing
+qemuReconnectDomain callback (and possibly others) to avoid deleting the
+entries.
+(cherry picked from commit 9677cd33eea4c65d78ba463b46b8b45ed2da1709)
+---
+ src/util/hash.c |    8 ++++----
+ 1 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/util/hash.c b/src/util/hash.c
+index 5c56dae..bb37146 100644
+--- a/src/util/hash.c
++++ b/src/util/hash.c
+@@ -476,9 +476,8 @@ virHashRemoveEntry(virHashTablePtr table, const char *name,
+  * @data: opaque data to pass to the iterator
+  *
+  * Iterates over every element in the hash table, invoking the
+- * 'iter' callback. The callback must not call any other virHash*
+- * functions, and in particular must not attempt to remove the
+- * element.
++ * 'iter' callback. The callback is allowed to remove the element using
++ * virHashRemoveEntry but calling other virHash* functions is prohibited.
+  *
+  * Returns number of items iterated over upon completion, -1 on failure
+  */
+@@ -491,11 +490,12 @@ int virHashForEach(virHashTablePtr table, virHashIterator iter, void *data) {
+     for (i = 0 ; i < table->size ; i++) {
+         virHashEntryPtr entry = table->table + i;
+         while (entry) {
++            virHashEntryPtr next = entry->next;
+             if (entry->valid) {
+                 iter(entry->payload, entry->name, data);
+                 count++;
+             }
+-            entry = entry->next;
++            entry = next;
+         }
+     }
+     return (count);
+-- 
+1.7.4.1
+

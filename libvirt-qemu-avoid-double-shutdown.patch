@@ -1,0 +1,56 @@
+From bab51d5e28e3cf42ee1953719c220c432063ebfd Mon Sep 17 00:00:00 2001
+Message-Id: <bab51d5e28e3cf42ee1953719c220c432063ebfd.1296819816.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 3 Feb 2011 09:11:55 -0700
+Subject: [PATCH] qemu: avoid double shutdown
+
+https://bugzilla.redhat.com/show_bug.cgi?id=673588
+
+* src/qemu/qemu_driver.c (qemudShutdownVMDaemon): Check that vm is
+still active.
+Reported by Wen Congyang as follows:
+
+Steps to reproduce this bug:
+
+1. use gdb to debug libvirtd, and set breakpoint in the function
+   qemuConnectMonitor()
+2. start a vm, and the libvirtd will be stopped in qemuConnectMonitor()
+3. kill -STOP $(cat /var/run/libvirt/qemu/<domain>.pid)
+4. continue to run libvirtd in gdb, and libvirtd will be blocked in the
+   function qemuMonitorSetCapabilities()
+5. kill -9 $(cat /var/run/libvirt/qemu/<domain>.pid)
+
+Here is log of the qemu:
+=========
+LC_ALL=C PATH=/sbin:/usr/sbin:/bin:/usr/bin ...
+char device redirected to /dev/pts/3
+2011-01-27 09:38:48.101: shutting down
+2011-01-27 09:41:26.401: shutting down
+=========
+
+The vm is shut down twice. I do not know whether this behavior has
+side effect, but I think we should shutdown the vm only once.
+(cherry picked from commit 9962e406c664ed5521f5aca500c860a331cb3979)
+---
+ src/qemu/qemu_driver.c |    5 +++++
+ 1 files changed, 5 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index d26df73..e59990a 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -3401,6 +3401,11 @@ static void qemudShutdownVMDaemon(struct qemud_driver *driver,
+     VIR_DEBUG("Shutting down VM '%s' pid=%d migrated=%d",
+               vm->def->name, vm->pid, migrated);
+ 
++    if (!virDomainObjIsActive(vm)) {
++        VIR_DEBUG("VM '%s' not active", vm->def->name);
++        return;
++    }
++
+     if ((logfile = qemudLogFD(driver, vm->def->name, true)) < 0) {
+         /* To not break the normal domain shutdown process, skip the
+          * timestamp log writing if failed on opening log file. */
+-- 
+1.7.4
+

@@ -1,0 +1,83 @@
+From 0d9c6cd0a4ac091627b80b2a9f3644da37379584 Mon Sep 17 00:00:00 2001
+Message-Id: <0d9c6cd0a4ac091627b80b2a9f3644da37379584.1301393957.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 28 Mar 2011 11:52:59 -0600
+Subject: [PATCH] util: allow clearing cloexec bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=691034
+
+* src/util/util.h (virSetInherit): New prototype.
+* src/util/util.c (virSetCloseExec): Move guts...
+(virSetInherit): ...to new function, and allow clearing.
+* src/libvirt_private.syms (util.h): Export it.
+(cherry picked from commit 296eb0bbe3b8695bc6ebeeaa5510cebe81a5778b)
+---
+ src/libvirt_private.syms |    1 +
+ src/util/util.c          |   14 +++++++++++---
+ src/util/util.h          |    1 +
+ 3 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 8d3c53d..88b28e1 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -878,6 +878,7 @@ virRandomInitialize;
+ virRun;
+ virRunWithHook;
+ virSetCloseExec;
++virSetInherit;
+ virSetNonBlock;
+ virSetUIDGID;
+ virSkipSpaces;
+diff --git a/src/util/util.c b/src/util/util.c
+index 0fd1c8d..85dc5a2 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -263,13 +263,21 @@ int virSetNonBlock(int fd) {
+ }
+ 
+ 
++int virSetCloseExec(int fd)
++{
++    return virSetInherit(fd, false);
++}
++
+ #ifndef WIN32
+ 
+-int virSetCloseExec(int fd) {
++int virSetInherit(int fd, bool inherit) {
+     int flags;
+     if ((flags = fcntl(fd, F_GETFD)) < 0)
+         return -1;
+-    flags |= FD_CLOEXEC;
++    if (inherit)
++        flags &= ~FD_CLOEXEC;
++    else
++        flags |= FD_CLOEXEC;
+     if ((fcntl(fd, F_SETFD, flags)) < 0)
+         return -1;
+     return 0;
+@@ -879,7 +887,7 @@ virRunWithHook(const char *const*argv,
+ 
+ #else /* WIN32 */
+ 
+-int virSetCloseExec(int fd ATTRIBUTE_UNUSED)
++int virSetInherit(int fd ATTRIBUTE_UNUSED, bool inherit ATTRIBUTE_UNUSED)
+ {
+     return -1;
+ }
+diff --git a/src/util/util.h b/src/util/util.h
+index c822174..80272b1 100644
+--- a/src/util/util.h
++++ b/src/util/util.h
+@@ -51,6 +51,7 @@ enum {
+ };
+ 
+ int virSetNonBlock(int fd) ATTRIBUTE_RETURN_CHECK;
++int virSetInherit(int fd, bool inherit) ATTRIBUTE_RETURN_CHECK;
+ int virSetCloseExec(int fd) ATTRIBUTE_RETURN_CHECK;
+ 
+ /* This will execute in the context of the first child
+-- 
+1.7.4.1
+

@@ -1,0 +1,105 @@
+From 0eef097d5b5c73edc529c3ce2563bbf1f35fe298 Mon Sep 17 00:00:00 2001
+Message-Id: <0eef097d5b5c73edc529c3ce2563bbf1f35fe298.1300293192.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Tue, 15 Mar 2011 13:14:12 -0400
+Subject: [PATCH] network driver: Use a separate dhcp leases file for each network
+
+This patch fixes:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=687551
+
+also documented in the following upstream libvirt bug reports:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=537335
+  https://bugzilla.redhat.com/show_bug.cgi?id=663664
+  https://bugzilla.redhat.com/show_bug.cgi?id=674356
+
+It is a cherry-pick of the following upstream commit:
+
+  commit 13c00dde3171b3a38d23cceb3f9151cb6cac3dad
+  Author: Laine Stump <laine@laine.org>
+  Date:   Fri Mar 11 13:20:48 2011 -0500
+
+By default, all dnsmasq processes share the same leases file. libvirt
+also uses the --dhcp-lease-max option to control the maximum number of
+leases allowed. The problem is that libvirt puts in a number equal to
+the number of addresses in the range for the one network handled by a
+single instance of dnsmasq, but dnsmasq checks the total number of
+leases in the file (which could potentially contain many more).
+
+The solution is to tell each instance of dnsmasq to create and use its
+own leases file. (/var/lib/libvirt/network/<net-name>.leases).
+
+This file is created by dnsmasq when it starts, but not deleted when
+it exists. This is fine when the network is just being stopped, but if
+the leases file was left around when a network was undefined, we could
+end up with an ever-increasing number of dead files - instead, we
+explicitly unlink the leases file when a network is undefined.
+
+Note that Ubuntu carries a patch against an older version of libvirt for this:
+
+hhttps://bugs.launchpad.net/ubuntu/+source/libvirt/+bug/713071
+ttp://bazaar.launchpad.net/~serge-hallyn/ubuntu/maverick/libvirt/bugall/revision/109
+
+I was certain I'd also seen discussion of this on libvir-list or
+libvirt-users, but couldn't find it.
+---
+ src/network/bridge_driver.c |   22 ++++++++++++++++++++++
+ 1 files changed, 22 insertions(+), 0 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index b93aae1..855c4d6 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -109,6 +109,16 @@ static void networkReloadIptablesRules(struct network_driver *driver);
+ static struct network_driver *driverState = NULL;
+ 
+ static char *
++networkDnsmasqLeaseFileName(const char *netname)
++{
++    char *leasefile;
++
++    virAsprintf(&leasefile, DNSMASQ_STATE_DIR "/%s.leases",
++                netname);
++    return leasefile;
++}
++
++static char *
+ networkRadvdPidfileBasename(const char *netname)
+ {
+     /* this is simple but we want to be sure it's consistently done */
+@@ -531,6 +541,11 @@ networkBuildDnsmasqArgv(virNetworkObjPtr network,
+         }
+ 
+         if (ipdef->nranges > 0) {
++            char *leasefile = networkDnsmasqLeaseFileName(network->def->name);
++            if (!leasefile)
++                goto cleanup;
++            virCommandAddArgFormat(cmd, "--dhcp-leasefile=%s", leasefile);
++            VIR_FREE(leasefile);
+             virCommandAddArgFormat(cmd, "--dhcp-lease-max=%d", nbleases);
+         }
+ 
+@@ -2195,12 +2210,19 @@ static int networkUndefine(virNetworkPtr net) {
+     }
+ 
+     if (dhcp_present) {
++        char *leasefile;
+         dnsmasqContext *dctx = dnsmasqContextNew(network->def->name, DNSMASQ_STATE_DIR);
+         if (dctx == NULL)
+             goto cleanup;
+ 
+         dnsmasqDelete(dctx);
+         dnsmasqContextFree(dctx);
++
++        leasefile = networkDnsmasqLeaseFileName(network->def->name);
++        if (!leasefile)
++            goto cleanup;
++        unlink(leasefile);
++        VIR_FREE(leasefile);
+     }
+ 
+     if (v6present) {
+-- 
+1.7.4.1
+

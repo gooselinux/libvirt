@@ -1,0 +1,111 @@
+From a7fd08f39fd1b2a443d31a9c569b1f8ade6b665e Mon Sep 17 00:00:00 2001
+Message-Id: <a7fd08f39fd1b2a443d31a9c569b1f8ade6b665e.1295285120.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 13 Jan 2011 11:46:43 +0100
+Subject: [PATCH] tests: Add tests for per-device boot elements
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+(cherry picked from commit e182ba872bdf3a7647afd31501b6dd0f33bab4ed)
+---
+ .../qemuxml2argvdata/qemuxml2argv-boot-order.args  |    1 +
+ tests/qemuxml2argvdata/qemuxml2argv-boot-order.xml |   52 ++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |    2 +
+ tests/qemuxml2xmltest.c                            |    1 +
+ 4 files changed, 56 insertions(+), 0 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-boot-order.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-boot-order.xml
+
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-boot-order.args b/tests/qemuxml2argvdata/qemuxml2argv-boot-order.args
+new file mode 100644
+index 0000000..ab6e947
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-boot-order.args
+@@ -0,0 +1 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -drive file=/dev/HostVG/QEMUGuest1,if=none,id=drive-ide0-0-0 -device ide-drive,bus=ide.0,unit=0,drive=drive-ide0-0-0,id=ide0-0-0 -drive file=sheepdog:example.org:6000:image,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,bus=pci.0,addr=0x3,drive=drive-virtio-disk0,id=virtio-disk0,bootindex=3 -drive file=/root/boot.iso,if=none,media=cdrom,id=drive-ide0-1-0 -device ide-drive,bus=ide.1,unit=0,drive=drive-ide0-1-0,id=ide0-1-0,bootindex=1 -drive file=/dev/null,if=none,id=drive-fdc0-0-1 -global isa-fdc.driveB=drive-fdc0-0-1 -global isa-fdc.bootindexB=4 -device virtio-net-pci,vlan=0,id=net0,mac=00:11:22:33:44:55,bus=pci.0,addr=0x2,bootindex=2 -net user,vlan=0,name=hostnet0 -usb -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-boot-order.xml b/tests/qemuxml2argvdata/qemuxml2argv-boot-order.xml
+new file mode 100644
+index 0000000..eabbe87
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-boot-order.xml
+@@ -0,0 +1,52 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory>219200</memory>
++  <currentMemory>219200</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' unit='0'/>
++    </disk>
++    <disk type='network' device='disk'>
++      <driver name='qemu' type='raw'/>
++      <source protocol='sheepdog' name='image'>
++        <host name='example.org' port='6000'/>
++      </source>
++      <target dev='vda' bus='virtio'/>
++      <boot order='3'/>
++    </disk>
++    <disk type='file' device='cdrom'>
++      <source file='/root/boot.iso'/>
++      <target dev='hdc' bus='ide'/>
++      <boot order='1'/>
++      <readonly/>
++      <address type='drive' controller='0' bus='1' unit='0'/>
++    </disk>
++    <disk type='file' device='floppy'>
++      <driver name='qemu' type='raw'/>
++      <source file='/dev/null'/>
++      <target dev='fdb' bus='fdc'/>
++      <boot order='4'/>
++      <address type='drive' controller='0' bus='0' unit='1'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <controller type='fdc' index='0'/>
++    <interface type='user'>
++      <mac address='00:11:22:33:44:55'/>
++      <model type='virtio'/>
++      <boot order='2'/>
++    </interface>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 1afd1dd..2834cdb 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -252,6 +252,8 @@ mymain(int argc, char **argv)
+     DO_TEST("boot-floppy", 0, false);
+     DO_TEST("boot-multi", QEMUD_CMD_FLAG_BOOT_MENU, false);
+     DO_TEST("boot-menu-disable", QEMUD_CMD_FLAG_BOOT_MENU, false);
++    DO_TEST("boot-order", QEMUD_CMD_FLAG_BOOTINDEX |
++            QEMUD_CMD_FLAG_DRIVE | QEMUD_CMD_FLAG_DEVICE, false);
+     DO_TEST("bootloader", QEMUD_CMD_FLAG_DOMID, true);
+     DO_TEST("clock-utc", 0, false);
+     DO_TEST("clock-localtime", 0, false);
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index e24a990..3572605 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -127,6 +127,7 @@ mymain(int argc, char **argv)
+     DO_TEST("boot-floppy");
+     DO_TEST("boot-multi");
+     DO_TEST("boot-menu-disable");
++    DO_TEST("boot-order");
+     DO_TEST("bootloader");
+     DO_TEST("clock-utc");
+     DO_TEST("clock-localtime");
+-- 
+1.7.4.rc2
+

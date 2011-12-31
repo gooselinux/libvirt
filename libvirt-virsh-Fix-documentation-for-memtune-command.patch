@@ -1,0 +1,102 @@
+From 343b1413bd6b0e70a6012400bd79107e3cb868a2 Mon Sep 17 00:00:00 2001
+Message-Id: <343b1413bd6b0e70a6012400bd79107e3cb868a2.1302097026.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 31 Mar 2011 11:48:17 +0200
+Subject: [PATCH] virsh: Fix documentation for memtune command
+
+https://bugzilla.redhat.com/show_bug.cgi?id=680190
+
+Commit 78ba748ef14c520ff1c4af2b5b0a44586ac49c8c claims to fix
+documentation for swap_hard_limit virsh memtune option but it only fixes
+documentation in formatdomain.html and libvirt.h. This patch completes
+the task by fixing "virsh help memtune" output and memtune section of
+virsh man page.
+(cherry picked from commit 1e8f20799c3eac29d4634e3e001f6ffc9d9b198d)
+---
+ docs/formatdomain.html.in |    6 +++++-
+ tools/virsh.c             |    2 +-
+ tools/virsh.pod           |   34 ++++++++++++++++++++++++++++++++--
+ 3 files changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index bf99316..9b10a31 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -236,7 +236,11 @@
+       <dt><code>memtune</code></dt>
+       <dd> The optional <code>memtune</code> element provides details
+         regarding the memory tunable parameters for the domain. If this is
+-        omitted, it defaults to the OS provided defaults.</dd>
++        omitted, it defaults to the OS provided defaults. For QEMU/KVMi, the
++        parameters are applied to the QEMU process as a whole. Thus, when
++        counting them, one needs to add up guest RAM, guest video RAM, and
++        some memory overhead of QEMU itself. The last piece is hard to
++        determine so one needs guess and try.</dd>
+       <dt><code>hard_limit</code></dt>
+       <dd> The optional <code>hard_limit</code> element is the maximum memory
+ 	the guest can use. The units for this value are kilobytes (i.e. blocks
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 08e5b49..db358a5 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -3020,7 +3020,7 @@ static const vshCmdOptDef opts_memtune[] = {
+     {"soft-limit", VSH_OT_INT, VSH_OFLAG_NONE,
+      N_("Memory during contention in kilobytes")},
+     {"swap-hard-limit", VSH_OT_INT, VSH_OFLAG_NONE,
+-     N_("Max swap in kilobytes")},
++     N_("Max memory plus swap in kilobytes")},
+     {"min-guarantee", VSH_OT_INT, VSH_OFLAG_NONE,
+      N_("Min guaranteed memory in kilobytes")},
+     {NULL, 0, 0, NULL}
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 22f4fc5..a4b6b00 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -607,12 +607,42 @@ use the virsh B<edit> command instead to update its XML <memory> element.
+ 
+ =item B<memtune> I<domain-id> optional I<--hard-limit> B<kilobytes>
+ optional I<--soft-limit> B<kilobytes> optional I<--swap-hard-limit>
+-B<kilobytes> -I<--min-guarantee> B<kilobytes>
++B<kilobytes> optional I<--min-guarantee> B<kilobytes>
+ 
+ Allows you to display or set the domain memory parameters. Without
+ flags, the current settings are displayed; with a flag, the
+ appropriate limit is adjusted if supported by the hypervisor.  LXC and
+-QEMU/KVM supports I<--hard-limit>, I<--soft-limit>, and I<--swap-hard-limit>.
++QEMU/KVM support I<--hard-limit>, I<--soft-limit>, and I<--swap-hard-limit>.
++
++For QEMU/KVM, the parameters are applied to the QEMU process as a whole.
++Thus, when counting them, one needs to add up guest RAM, guest video RAM, and
++some memory overhead of QEMU itself.  The last piece is hard to determine so
++one needs guess and try.
++
++=over 4
++
++=item I<--hard-limit>
++
++The maximum memory the guest can use.  The units for this value are kilobytes
++(i.e. blocks of 1024 bytes).
++
++=item I<--soft-limit>
++
++The memory limit to enforce during memory contention.  The units for this
++value are kilobytes (i.e. blocks of 1024 bytes).
++
++=item I<--swap-hard-limit>
++
++The maximum memory plus swap the guest can use.  The units for this value are
++kilobytes (i.e. blocks of 1024 bytes).  This has to be more than hard-limit
++value provided.
++
++=item I<--min-guarantee>
++
++The guaranteed minimum memory allocation for the guest.  The units for this
++value are kilobytes (i.e. blocks of 1024 bytes).
++
++=back
+ 
+ =item B<setvcpus> I<domain-id> I<count> optional I<--maximum> I<--config>
+ I<--live>
+-- 
+1.7.4.1
+

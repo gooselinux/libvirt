@@ -1,0 +1,73 @@
+From 7280ad8926c66fba7f7d95746c250bf572f4549a Mon Sep 17 00:00:00 2001
+Message-Id: <7280ad8926c66fba7f7d95746c250bf572f4549a.1296819815.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Tue, 1 Feb 2011 16:16:07 +0000
+Subject: [PATCH] Don't sleep in poll() if there is existing SASL decoded data
+
+For the problem in:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=672226
+
+    In the SASL codepath we typically read far more data off the
+    wire than we immediately need. When using a connection from a
+    single thread this isn't a problem, since only our reply will
+    be pending (or an event we can handle directly). When using a
+    connection from multiple threads though, we may read the data
+    from replies from other threads. If those replies occur after
+    our own reply, they'll not be processed. The other thread will
+    then go into poll() and wait for its reply which has already
+    been received and decoded. The solution is to set poll() timeout
+    to 0 if there is pending SASL data.
+
+    * src/remote/remote_driver.c: Don't sleep in poll() if SASL
+      data exists
+
+(cherry picked from commit 68d2c3482fa16801f8e6ca5c42698319bb87f385)
+---
+ src/remote/remote_driver.c |   16 +++++++++++++++-
+ 1 files changed, 15 insertions(+), 1 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index 840e481..f99f564 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -10180,6 +10180,14 @@ remoteIOEventLoop(virConnectPtr conn,
+ #ifdef HAVE_PTHREAD_SIGMASK
+         sigset_t oldmask, blockedsigs;
+ #endif
++        int timeout = -1;
++
++        /* If we have existing SASL decoded data we
++         * don't want to sleep in the poll(), just
++         * check if any other FDs are also ready
++         */
++        if (priv->saslDecoded)
++            timeout = 0;
+ 
+         fds[0].events = fds[0].revents = 0;
+         fds[1].events = fds[1].revents = 0;
+@@ -10215,7 +10223,7 @@ remoteIOEventLoop(virConnectPtr conn,
+ #endif
+ 
+     repoll:
+-        ret = poll(fds, ARRAY_CARDINALITY(fds), -1);
++        ret = poll(fds, ARRAY_CARDINALITY(fds), timeout);
+         if (ret < 0 && errno == EAGAIN)
+             goto repoll;
+ 
+@@ -10225,6 +10233,12 @@ remoteIOEventLoop(virConnectPtr conn,
+ 
+         remoteDriverLock(priv);
+ 
++        /* If we have existing SASL decoded data, pretend
++         * the socket became readable so we consume it
++         */
++        if (priv->saslDecoded)
++            fds[0].revents |= POLLIN;
++
+         if (fds[1].revents) {
+             ssize_t s;
+             DEBUG0("Woken up from poll by other thread");
+-- 
+1.7.4
+

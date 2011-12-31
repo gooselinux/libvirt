@@ -1,0 +1,79 @@
+From 9f15f7ac6f7ba3b07727f6d7d9de51eb912021f2 Mon Sep 17 00:00:00 2001
+Message-Id: <9f15f7ac6f7ba3b07727f6d7d9de51eb912021f2.1300791642.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Fri, 18 Mar 2011 15:09:44 -0400
+Subject: [PATCH] macvtap: log an error if on failure to connect to netlink socket
+
+This resolves:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=689001
+
+and is a direct cherry-pick from upstream:
+
+  commit 12775d9491f0d98de6eb4593be4cacfaff1c4e47
+  Author: Laine Stump <laine@laine.org>
+  Date:   Tue Mar 15 16:22:25 2011 -0400
+
+  macvtap: log an error if on failure to connect to netlink socket
+
+A bug in libnl (see https://bugzilla.redhat.com/show_bug.cgi?id=677724
+and https://bugzilla.redhat.com/show_bug.cgi?id=677725) makes it very
+easy to create a failure to connect to the netlink socket when trying
+to open a macvtap network device ("type='direct'" in domain interface
+XML). When that error occurred (during a call to libnl's nl_connect()
+from libvirt's nlComm(), there was no log message, leading virsh (for
+example) to report "unknown error".
+
+There were two other cases in nlComm where an error in a libnl
+function might return with failure but no error reported. In all three
+cases, this patch logs a message which will hopefully be more useful.
+
+Note that more detailed information about the failure might be
+available from libnl's nl_geterror() function, but it calls
+strerror(), which is not threadsafe, so we can't use it.
+---
+ src/util/macvtap.c |   15 +++++++++++----
+ 1 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/src/util/macvtap.c b/src/util/macvtap.c
+index 76910e1..066e962 100644
+--- a/src/util/macvtap.c
++++ b/src/util/macvtap.c
+@@ -120,13 +120,18 @@ int nlComm(struct nl_msg *nl_msg,
+     fd_set readfds;
+     int fd;
+     int n;
+-    struct nl_handle *nlhandle = nl_handle_alloc();
+     struct nlmsghdr *nlmsg = nlmsg_hdr(nl_msg);
++    struct nl_handle *nlhandle = nl_handle_alloc();
+ 
+-    if (!nlhandle)
++    if (!nlhandle) {
++        virReportSystemError(errno,
++                             "%s", _("cannot allocate nlhandle for netlink"));
+         return -1;
++    }
+ 
+     if (nl_connect(nlhandle, NETLINK_ROUTE) < 0) {
++        virReportSystemError(errno,
++                             "%s", _("cannot connect to netlink socket"));
+         rc = -1;
+         goto err_exit;
+     }
+@@ -161,9 +166,11 @@ int nlComm(struct nl_msg *nl_msg,
+     }
+ 
+     *respbuflen = nl_recv(nlhandle, &nladdr, respbuf, NULL);
+-    if (*respbuflen <= 0)
++    if (*respbuflen <= 0) {
++        virReportSystemError(errno,
++                             "%s", _("nl_recv failed"));
+         rc = -1;
+-
++    }
+ err_exit:
+     if (rc == -1) {
+         VIR_FREE(*respbuf);
+-- 
+1.7.4.1
+

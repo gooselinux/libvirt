@@ -1,0 +1,262 @@
+From f5cabfbad67d39a12b68dc3fa6321c2d4356b1d3 Mon Sep 17 00:00:00 2001
+Message-Id: <f5cabfbad67d39a12b68dc3fa6321c2d4356b1d3.1296166858.git.jdenemar@redhat.com>
+From: Osier Yang <jyang@redhat.com>
+Date: Thu, 27 Jan 2011 17:10:49 +0800
+Subject: [PATCH] remote: Add extra parameter pkipath for URI
+
+This new parameter allows user specifies where the client
+cerficate, client key, CA certificate of x509 is, instead of
+hardcoding it. If 'pkipath' is not specified, and the user
+is not root, try to find files in $HOME/.pki/libvirt, as long
+as one of client cerficate, client key, CA certificate can
+not be found, use default global location (LIBVIRT_CACERT,
+LIBVIRT_CLIENTCERT, LIBVIRT_CLIENTKEY, see
+src/remote/remote_driver.h)
+
+Example of use:
+
+[root@Osier client]# virsh -c qemu+tls://10.66.93.111/system?pkipath=/tmp/pki/client
+error: Cannot access CA certificate '/tmp/pki/client/cacert.pem': No such file
+or directory
+error: failed to connect to the hypervisor
+[root@Osier client]# ls -l
+total 24
+-rwxrwxr-x. 1 root root 6424 Jan 24 21:35 a.out
+-rw-r--r--. 1 root root 1245 Jan 23 19:04 clientcert.pem
+-rw-r--r--. 1 root root  132 Jan 23 19:04 client.info
+-rw-r--r--. 1 root root 1679 Jan 23 19:04 clientkey.pem
+
+[root@Osier client]# cp /tmp/cacert.pem .
+[root@Osier client]# virsh -c qemu+tls://10.66.93.111/system?pkipath=/tmp/pki/client
+Welcome to virsh, the virtualization interactive terminal.
+
+Type:  'help' for help with commands
+'quit' to quit
+
+virsh #
+
+BZ# 629510
+
+https://bugzilla.redhat.com/show_bug.cgi?id=629510
+
+* src/remote/remote_driver.c: adds support for the new pkipath URI parameter
+(cherry picked from commit 31242565ae9a9217fb790baf89da56f5a35dc0f6)
+---
+ src/remote/remote_driver.c |  130 ++++++++++++++++++++++++++++++++++++++------
+ 1 files changed, 112 insertions(+), 18 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index ea119c6..840e481 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -268,7 +268,7 @@ void remoteDomainEventQueueFlush(int timer, void *opaque);
+ static char *get_transport_from_scheme (char *scheme);
+ 
+ /* GnuTLS functions used by remoteOpen. */
+-static int initialize_gnutls(void);
++static int initialize_gnutls(char *pkipath, int flags);
+ static gnutls_session_t negotiate_gnutls_on_connection (virConnectPtr conn, struct private_data *priv, int no_verify);
+ 
+ #ifdef WITH_LIBVIRTD
+@@ -430,6 +430,7 @@ doRemoteOpen (virConnectPtr conn,
+     char *port = NULL, *authtype = NULL, *username = NULL;
+     int no_verify = 0, no_tty = 0;
+     char **cmd_argv = NULL;
++    char *pkipath = NULL;
+ 
+     /* Return code from this function, and the private data. */
+     int retcode = VIR_DRV_OPEN_ERROR;
+@@ -509,9 +510,14 @@ doRemoteOpen (virConnectPtr conn,
+                     priv->debugLog = stdout;
+                 else
+                     priv->debugLog = stderr;
+-            } else
++            } else if (STRCASEEQ(var->name, "pkipath")) {
++                pkipath = strdup(var->value);
++                if (!pkipath) goto out_of_memory;
++                var->ignore = 1;
++            } else {
+                 DEBUG("passing through variable '%s' ('%s') to remote end",
+                       var->name, var->value);
++            }
+         }
+ 
+         /* Construct the original name. */
+@@ -577,7 +583,7 @@ doRemoteOpen (virConnectPtr conn,
+     /* Connect to the remote service. */
+     switch (transport) {
+     case trans_tls:
+-        if (initialize_gnutls() == -1) goto failed;
++        if (initialize_gnutls(pkipath, flags) == -1) goto failed;
+         priv->uses_tls = 1;
+         priv->is_secure = 1;
+ 
+@@ -947,6 +953,7 @@ doRemoteOpen (virConnectPtr conn,
+         }
+         VIR_FREE(cmd_argv);
+     }
++    VIR_FREE(pkipath);
+ 
+     return retcode;
+ 
+@@ -1139,11 +1146,17 @@ static void remote_debug_gnutls_log(int level, const char* str) {
+ }
+ 
+ static int
+-initialize_gnutls(void)
++initialize_gnutls(char *pkipath, int flags)
+ {
+     static int initialized = 0;
+     int err;
+     char *gnutlsdebug;
++    char *libvirt_cacert = NULL;
++    char *libvirt_clientkey = NULL;
++    char *libvirt_clientcert = NULL;
++    int ret = -1;
++    char *userdir = NULL;
++    char *user_pki_path = NULL;
+ 
+     if (initialized) return 0;
+ 
+@@ -1166,43 +1179,124 @@ initialize_gnutls(void)
+         return -1;
+     }
+ 
++    if (pkipath) {
++        if ((virAsprintf(&libvirt_cacert, "%s/%s", pkipath,
++                        "cacert.pem")) < 0)
++            goto out_of_memory;
+ 
+-    if (check_cert_file("CA certificate", LIBVIRT_CACERT) < 0)
+-        return -1;
+-    if (check_cert_file("client key", LIBVIRT_CLIENTKEY) < 0)
+-        return -1;
+-    if (check_cert_file("client certificate", LIBVIRT_CLIENTCERT) < 0)
+-        return -1;
++        if ((virAsprintf(&libvirt_clientkey, "%s/%s", pkipath,
++                        "clientkey.pem")) < 0)
++            goto out_of_memory;
++
++        if ((virAsprintf(&libvirt_clientcert, "%s/%s", pkipath,
++                        "clientcert.pem")) < 0)
++             goto out_of_memory;
++    } else if (flags & VIR_DRV_OPEN_REMOTE_USER) {
++        userdir = virGetUserDirectory(getuid());
++
++        if (!userdir)
++            goto out_of_memory;
++
++        if (virAsprintf(&user_pki_path, "%s/.pki/libvirt", userdir) < 0)
++            goto out_of_memory;
++
++        if ((virAsprintf(&libvirt_cacert, "%s/%s", user_pki_path,
++                        "cacert.pem")) < 0)
++            goto out_of_memory;
++
++        if ((virAsprintf(&libvirt_clientkey, "%s/%s", user_pki_path,
++                        "clientkey.pem")) < 0)
++            goto out_of_memory;
++
++        if ((virAsprintf(&libvirt_clientcert, "%s/%s", user_pki_path,
++                        "clientcert.pem")) < 0)
++            goto out_of_memory;
++
++        /* Use default location as long as one of CA certificate,
++         * client key, and client certificate can not be found in
++         * $HOME/.pki/libvirt, we don't want to make user confused
++         * with one file is here, the other is there.
++         */
++        if (!virFileExists(libvirt_cacert) ||
++            !virFileExists(libvirt_clientkey) ||
++            !virFileExists(libvirt_clientcert)) {
++            VIR_FREE(libvirt_cacert);
++            VIR_FREE(libvirt_clientkey);
++            VIR_FREE(libvirt_clientcert);
++
++            libvirt_cacert = strdup(LIBVIRT_CACERT);
++            if (!libvirt_cacert) goto out_of_memory;
++
++            libvirt_clientkey = strdup(LIBVIRT_CLIENTKEY);
++            if (!libvirt_clientkey) goto out_of_memory;
++
++            libvirt_clientcert = strdup(LIBVIRT_CLIENTCERT);
++            if (!libvirt_clientcert) goto out_of_memory;
++        }
++    } else {
++        libvirt_cacert = strdup(LIBVIRT_CACERT);
++        if (!libvirt_cacert) goto out_of_memory;
++
++        libvirt_clientkey = strdup(LIBVIRT_CLIENTKEY);
++        if (!libvirt_clientkey) goto out_of_memory;
++
++        libvirt_clientcert = strdup(LIBVIRT_CLIENTCERT);
++        if (!libvirt_clientcert) goto out_of_memory;
++    }
++
++    if (check_cert_file("CA certificate", libvirt_cacert) < 0)
++        goto error;
++    if (check_cert_file("client key", libvirt_clientkey) < 0)
++        goto error;
++    if (check_cert_file("client certificate", libvirt_clientcert) < 0)
++        goto error;
+ 
+     /* Set the trusted CA cert. */
+-    DEBUG("loading CA file %s", LIBVIRT_CACERT);
++    DEBUG("loading CA file %s", libvirt_cacert);
+     err =
+-        gnutls_certificate_set_x509_trust_file (x509_cred, LIBVIRT_CACERT,
++        gnutls_certificate_set_x509_trust_file (x509_cred, libvirt_cacert,
+                                                 GNUTLS_X509_FMT_PEM);
+     if (err < 0) {
+         remoteError(VIR_ERR_GNUTLS_ERROR,
+                     _("unable to load CA certificate: %s"),
+                     gnutls_strerror (err));
+-        return -1;
++        goto error;
+     }
+ 
+     /* Set the client certificate and private key. */
+     DEBUG("loading client cert and key from files %s and %s",
+-          LIBVIRT_CLIENTCERT, LIBVIRT_CLIENTKEY);
++          libvirt_clientcert, libvirt_clientkey);
+     err =
+         gnutls_certificate_set_x509_key_file (x509_cred,
+-                                              LIBVIRT_CLIENTCERT,
+-                                              LIBVIRT_CLIENTKEY,
++                                              libvirt_clientcert,
++                                              libvirt_clientkey,
+                                               GNUTLS_X509_FMT_PEM);
+     if (err < 0) {
+         remoteError(VIR_ERR_GNUTLS_ERROR,
+                     _("unable to load private key/certificate: %s"),
+                     gnutls_strerror (err));
+-        return -1;
++        goto error;
+     }
+ 
+     initialized = 1;
+-    return 0;
++    ret = 0;
++
++cleanup:
++    VIR_FREE(libvirt_cacert);
++    VIR_FREE(libvirt_clientkey);
++    VIR_FREE(libvirt_clientcert);
++    VIR_FREE(userdir);
++    VIR_FREE(user_pki_path);
++    return ret;
++
++error:
++    ret = -1;
++    goto cleanup;
++
++out_of_memory:
++    ret = -1;
++    virReportOOMError();
++    goto cleanup;
+ }
+ 
+ static int verify_certificate (virConnectPtr conn, struct private_data *priv, gnutls_session_t session);
+-- 
+1.7.4.rc3
+

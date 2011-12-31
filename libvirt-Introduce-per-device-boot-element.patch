@@ -1,0 +1,480 @@
+From ed6c14b1bf8c8dcfc93ebafc83c9d318531fb083 Mon Sep 17 00:00:00 2001
+Message-Id: <ed6c14b1bf8c8dcfc93ebafc83c9d318531fb083.1295285119.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 12 Jan 2011 15:19:34 +0100
+Subject: [PATCH] Introduce per-device boot element
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=646895
+
+Currently, boot order can be specified per device class but there is no
+way to specify exact disk/NIC device to boot from.
+
+This patch adds <boot order='N'/> element which can be used inside
+<disk/> and <interface/>. This is incompatible with the older os/boot
+element. Since not all hypervisors support per-device boot
+specification, new deviceboot flag is included in capabilities XML for
+hypervisors which understand the new boot element. Presence of the flag
+allows (but doesn't require) users to use the new style boot order
+specification.
+(cherry picked from commit 94234fa2f84e496344a81b9f8a3d5089149efc6a)
+---
+ docs/formatcaps.html.in   |    1 +
+ docs/formatdomain.html.in |   41 ++++++++++++++++-
+ docs/schemas/domain.rng   |   20 ++++++++-
+ src/conf/capabilities.c   |    3 +-
+ src/conf/domain_conf.c    |  107 +++++++++++++++++++++++++++++++++++++++++----
+ src/conf/domain_conf.h    |    2 +
+ 6 files changed, 160 insertions(+), 14 deletions(-)
+
+diff --git a/docs/formatcaps.html.in b/docs/formatcaps.html.in
+index dcbf35a..a4297ce 100644
+--- a/docs/formatcaps.html.in
++++ b/docs/formatcaps.html.in
+@@ -55,6 +55,7 @@ BIOS you will see</p>
+     &lt;/arch&gt;
+     &lt;features&gt;
+       &lt;cpuselection/&gt;
++      &lt;deviceboot/&gt;
+     &lt;/features&gt;
+   &lt;/guest&gt;</span>
+   ...
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index e9fcea1..44e4902 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -103,8 +103,11 @@
+       <dd>The <code>dev</code> attribute takes one of the values "fd", "hd",
+         "cdrom" or "network" and is used to specify the next boot device
+         to consider. The <code>boot</code> element can be repeated multiple
+-        times to setup a priority list of boot devices to try in turn.
+-        <span class="since">Since 0.1.3</span>
++        times to setup a priority list of boot devices to try in turn. The
++        <code>boot</code> element cannot be used if per-device boot elements
++        are used (see <a href="#elementsDisks">disks</a> and
++        <a href="#elementsNICS">network interfaces</a> sections below.
++        <span class="since">Since 0.1.3, per-device boot since 0.8.8</span>
+       </dd>
+       <dt><code>bootmenu</code></dt>
+       <dd> Whether or not to enable an interactive boot menu prompt on guest
+@@ -620,6 +623,7 @@
+       &lt;driver name="tap" type="aio" cache="default"/&gt;
+       &lt;source file='/var/lib/xen/images/fv0'/&gt;
+       &lt;target dev='hda' bus='ide'/&gt;
++      &lt;boot order='2'/&gt;
+       &lt;encryption type='...'&gt;
+         ...
+       &lt;/encryption&gt;
+@@ -635,6 +639,7 @@
+         &lt;host name="hostname" port="7000"/&gt;
+       &lt;/source&gt;
+       &lt;target dev="hdb" bus="ide"/&gt;
++      &lt;boot order='1'/&gt;
+     &lt;/disk&gt;
+   &lt;/devices&gt;
+   ...</pre>
+@@ -687,6 +692,14 @@
+         controls the cache mechanism, possible values are "default", "none",
+         "writethrough" and "writeback". <span class="since">Since 0.1.8</span>
+       </dd>
++      <dt><code>boot</code></dt>
++      <dd>Specifies that the disk is bootable. The <code>order</code>
++        attribute determines the order in which devices will be tried during
++        boot sequence. The per-device <code>boot</code> elements cannot be
++        used together with general boot elements in
++        <a href="#elementsOSBIOS">BIOS bootloader</a> section.
++        <span class="since">Since 0.8.8</span>
++      </dd>
+       <dt><code>encryption</code></dt>
+       <dd>If present, specifies how the volume is encrypted.  See
+         the <a href="formatstorageencryption.html">Storage Encryption</a> page
+@@ -808,6 +821,7 @@
+       &lt;source bridge='xenbr0'/&gt;
+       &lt;mac address='00:16:3e:5d:c7:9e'/&gt;
+       &lt;script path='vif-bridge'/&gt;
++      &lt;boot order='1'/&gt;
+     &lt;/interface&gt;
+   &lt;/devices&gt;
+   ...</pre>
+@@ -1085,6 +1099,29 @@ qemu-kvm -net nic,model=? /dev/null
+         ignored.
+     </p>
+ 
++    <h5><a name="elementsNICSBoot">Specifying boot order</a></h5>
++
++<pre>
++  ...
++  &lt;devices&gt;
++    &lt;interface type='network'&gt;
++      &lt;source network='default'/&gt;
++      &lt;target dev='vnet1'/&gt;
++      <b>&lt;boot order='1'/&gt;</b>
++    &lt;/interface&gt;
++  &lt;/devices&gt;
++  ...</pre>
++
++    <p>
++      For hypervisors which support this, you can set exact NIC which should
++      be used for network boot. The <code>order</code> attribute determines
++      the order in which devices will be tried during boot sequence. The
++      per-device <code>boot</code> elements cannot be used together with
++      general boot elements in
++      <a href="#elementsOSBIOS">BIOS bootloader</a> section.
++      <span class="since">Since 0.8.8</span>
++    </p>
++
+     <h4><a name="elementsInput">Input devices</a></h4>
+ 
+     <p>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 0bcfdfc..901328a 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -121,9 +121,9 @@
+         </optional>
+         <choice>
+           <ref name="osbootkernel"/>
+-          <oneOrMore>
++          <zeroOrMore>
+             <ref name="osbootdev"/>
+-          </oneOrMore>
++          </zeroOrMore>
+         </choice>
+         <optional>
+           <element name="bootmenu">
+@@ -526,6 +526,9 @@
+     </optional>
+     <ref name="target"/>
+     <optional>
++      <ref name="deviceBoot"/>
++    </optional>
++    <optional>
+       <element name="readonly">
+         <empty/>
+       </element>
+@@ -963,6 +966,7 @@
+         - the IP address bound to the interface
+         - the name of the script used to set up the binding
+         - the target device used
++        - boot order
+     -->
+   <define name="interface-options">
+     <interleave>
+@@ -1035,6 +1039,9 @@
+           </optional>
+         </element>
+       </optional>
++      <optional>
++        <ref name="deviceBoot"/>
++      </optional>
+     </interleave>
+   </define>
+   <define name="virtualPortProfile">
+@@ -1997,6 +2004,15 @@
+     </optional>
+   </define>
+ 
++  <define name="deviceBoot">
++    <element name="boot">
++      <attribute name="order">
++        <ref name="positiveInteger"/>
++      </attribute>
++      <empty/>
++    </element>
++  </define>
++
+   <!--
+        Optional hypervisor extensions in their own namespace:
+          QEmu
+diff --git a/src/conf/capabilities.c b/src/conf/capabilities.c
+index 99d5a56..cb9113c 100644
+--- a/src/conf/capabilities.c
++++ b/src/conf/capabilities.c
+@@ -782,7 +782,8 @@ virCapabilitiesFormatXML(virCapsPtr caps)
+                 if (STREQ(caps->guests[i]->features[j]->name, "pae") ||
+                     STREQ(caps->guests[i]->features[j]->name, "nonpae") ||
+                     STREQ(caps->guests[i]->features[j]->name, "ia64_be") ||
+-                    STREQ(caps->guests[i]->features[j]->name, "cpuselection")) {
++                    STREQ(caps->guests[i]->features[j]->name, "cpuselection") ||
++                    STREQ(caps->guests[i]->features[j]->name, "deviceboot")) {
+                     virBufferVSprintf(&xml, "      <%s/>\n",
+                                       caps->guests[i]->features[j]->name);
+                 } else {
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index e26c464..13716ec 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -46,6 +46,7 @@
+ #include "ignore-value.h"
+ #include "storage_file.h"
+ #include "files.h"
++#include "bitmap.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_DOMAIN
+ 
+@@ -1516,6 +1517,50 @@ cleanup:
+ }
+ 
+ static int
++virDomainDeviceBootParseXML(xmlNodePtr node,
++                            int *bootIndex,
++                            virBitmapPtr bootMap)
++{
++    char *order;
++    int boot;
++    int ret = -1;
++
++    order = virXMLPropString(node, "order");
++    if (!order) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                            "%s", _("missing boot order attribute"));
++        goto cleanup;
++    } else if (virStrToLong_i(order, NULL, 10, &boot) < 0 ||
++               boot <= 0) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                _("incorrect boot order '%s', expecting positive integer"),
++                order);
++        goto cleanup;
++    }
++
++    if (bootMap) {
++        bool set;
++        if (virBitmapGetBit(bootMap, boot - 1, &set) < 0) {
++            virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                    _("boot orders have to be contiguous and starting from 1"));
++            goto cleanup;
++        } else if (set) {
++            virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                    _("boot order %d used for more than one device"), boot);
++            goto cleanup;
++        }
++        ignore_value(virBitmapSetBit(bootMap, boot - 1));
++    }
++
++    *bootIndex = boot;
++    ret = 0;
++
++cleanup:
++    VIR_FREE(order);
++    return ret;
++}
++
++static int
+ virDomainParseLegacyDeviceAddress(char *devaddr,
+                                   virDomainDevicePCIAddressPtr pci)
+ {
+@@ -1600,7 +1645,9 @@ virDomainDiskDefAssignAddress(virCapsPtr caps, virDomainDiskDefPtr def)
+ static virDomainDiskDefPtr
+ virDomainDiskDefParseXML(virCapsPtr caps,
+                          xmlNodePtr node,
+-                         int flags) {
++                         virBitmapPtr bootMap,
++                         int flags)
++{
+     virDomainDiskDefPtr def;
+     xmlNodePtr cur, host;
+     char *type = NULL;
+@@ -1746,6 +1793,10 @@ virDomainDiskDefParseXML(virCapsPtr caps,
+             } else if ((serial == NULL) &&
+                        (xmlStrEqual(cur->name, BAD_CAST "serial"))) {
+                 serial = (char *)xmlNodeGetContent(cur);
++            } else if (xmlStrEqual(cur->name, BAD_CAST "boot")) {
++                if (virDomainDeviceBootParseXML(cur, &def->bootIndex,
++                                                bootMap))
++                    goto error;
+             }
+         }
+         cur = cur->next;
+@@ -2283,7 +2334,9 @@ static virDomainNetDefPtr
+ virDomainNetDefParseXML(virCapsPtr caps,
+                         xmlNodePtr node,
+                         xmlXPathContextPtr ctxt,
+-                        int flags ATTRIBUTE_UNUSED) {
++                        virBitmapPtr bootMap,
++                        int flags ATTRIBUTE_UNUSED)
++{
+     virDomainNetDefPtr def;
+     xmlNodePtr cur;
+     char *macaddr = NULL;
+@@ -2393,6 +2446,10 @@ virDomainNetDefParseXML(virCapsPtr caps,
+                        xmlStrEqual(cur->name, BAD_CAST "state")) {
+                 /* Legacy back-compat. Don't add any more attributes here */
+                 devaddr = virXMLPropString(cur, "devaddr");
++            } else if (xmlStrEqual(cur->name, BAD_CAST "boot")) {
++                if (virDomainDeviceBootParseXML(cur, &def->bootIndex,
++                                                bootMap))
++                    goto error;
+             }
+         }
+         cur = cur->next;
+@@ -4355,7 +4412,8 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+ 
+     if (xmlStrEqual(node->name, BAD_CAST "disk")) {
+         dev->type = VIR_DOMAIN_DEVICE_DISK;
+-        if (!(dev->data.disk = virDomainDiskDefParseXML(caps, node, flags)))
++        if (!(dev->data.disk = virDomainDiskDefParseXML(caps, node,
++                                                        NULL, flags)))
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "filesystem")) {
+         dev->type = VIR_DOMAIN_DEVICE_FS;
+@@ -4363,7 +4421,8 @@ virDomainDeviceDefPtr virDomainDeviceDefParse(virCapsPtr caps,
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "interface")) {
+         dev->type = VIR_DOMAIN_DEVICE_NET;
+-        if (!(dev->data.net = virDomainNetDefParseXML(caps, node, ctxt, flags)))
++        if (!(dev->data.net = virDomainNetDefParseXML(caps, node, ctxt,
++                                                      NULL, flags)))
+             goto error;
+     } else if (xmlStrEqual(node->name, BAD_CAST "input")) {
+         dev->type = VIR_DOMAIN_DEVICE_INPUT;
+@@ -4634,12 +4693,21 @@ static char *virDomainDefDefaultEmulator(virDomainDefPtr def,
+ 
+ static int
+ virDomainDefParseBootXML(xmlXPathContextPtr ctxt,
+-                         virDomainDefPtr def)
++                         virDomainDefPtr def,
++                         unsigned long *bootCount)
+ {
+     xmlNodePtr *nodes = NULL;
+     int i, n;
+     char *bootstr;
+     int ret = -1;
++    unsigned long deviceBoot;
++
++    if (virXPathULong("count(./devices/disk[boot]"
++                      "|./devices/interface[boot])", ctxt, &deviceBoot) < 0) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                             _("cannot count boot devices"));
++        goto cleanup;
++    }
+ 
+     /* analysis of the boot devices */
+     if ((n = virXPathNodeSet("./os/boot", ctxt, &nodes)) < 0) {
+@@ -4648,6 +4716,13 @@ virDomainDefParseBootXML(xmlXPathContextPtr ctxt,
+         goto cleanup;
+     }
+ 
++    if (n > 0 && deviceBoot) {
++        virDomainReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                             _("per-device boot elements cannot be used"
++                               " together with os/boot elements"));
++        goto cleanup;
++    }
++
+     for (i = 0 ; i < n && i < VIR_DOMAIN_BOOT_LAST ; i++) {
+         int val;
+         char *dev = virXMLPropString(nodes[i], "dev");
+@@ -4666,7 +4741,7 @@ virDomainDefParseBootXML(xmlXPathContextPtr ctxt,
+         VIR_FREE(dev);
+         def->os.bootDevs[def->os.nBootDevs++] = val;
+     }
+-    if (def->os.nBootDevs == 0) {
++    if (def->os.nBootDevs == 0 && !deviceBoot) {
+         def->os.nBootDevs = 1;
+         def->os.bootDevs[0] = VIR_DOMAIN_BOOT_DISK;
+     }
+@@ -4680,6 +4755,7 @@ virDomainDefParseBootXML(xmlXPathContextPtr ctxt,
+         VIR_FREE(bootstr);
+     }
+ 
++    *bootCount = deviceBoot;
+     ret = 0;
+ 
+ cleanup:
+@@ -4700,6 +4776,8 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     virDomainDefPtr def;
+     unsigned long count;
+     bool uuid_generated = false;
++    virBitmapPtr bootMap = NULL;
++    unsigned long bootMapSize = 0;
+ 
+     if (VIR_ALLOC(def) < 0) {
+         virReportOOMError();
+@@ -5016,9 +5094,11 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+         def->os.loader = virXPathString("string(./os/loader[1])", ctxt);
+     }
+ 
+-    if (STREQ(def->os.type, "hvm") &&
+-        virDomainDefParseBootXML(ctxt, def) < 0) {
+-        goto error;
++    if (STREQ(def->os.type, "hvm")) {
++        if (virDomainDefParseBootXML(ctxt, def, &bootMapSize) < 0)
++            goto error;
++        if (bootMapSize && !(bootMap = virBitmapAlloc(bootMapSize)))
++            goto no_memory;
+     }
+ 
+     def->emulator = virXPathString("string(./devices/emulator[1])", ctxt);
+@@ -5039,6 +5119,7 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     for (i = 0 ; i < n ; i++) {
+         virDomainDiskDefPtr disk = virDomainDiskDefParseXML(caps,
+                                                             nodes[i],
++                                                            bootMap,
+                                                             flags);
+         if (!disk)
+             goto error;
+@@ -5095,6 +5176,7 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+         virDomainNetDefPtr net = virDomainNetDefParseXML(caps,
+                                                          nodes[i],
+                                                          ctxt,
++                                                         bootMap,
+                                                          flags);
+         if (!net)
+             goto error;
+@@ -5494,6 +5576,8 @@ static virDomainDefPtr virDomainDefParseXML(virCapsPtr caps,
+     if (virDomainDefAddImplicitControllers(def) < 0)
+         goto error;
+ 
++    virBitmapFree(bootMap);
++
+     return def;
+ 
+ no_memory:
+@@ -5503,6 +5587,7 @@ no_memory:
+  error:
+     VIR_FREE(tmp);
+     VIR_FREE(nodes);
++    virBitmapFree(bootMap);
+     virDomainDefFree(def);
+     return NULL;
+ }
+@@ -6118,6 +6203,8 @@ virDomainDiskDefFormat(virBufferPtr buf,
+     virBufferVSprintf(buf, "      <target dev='%s' bus='%s'/>\n",
+                       def->dst, bus);
+ 
++    if (def->bootIndex)
++        virBufferVSprintf(buf, "      <boot order='%d'/>\n", def->bootIndex);
+     if (def->readonly)
+         virBufferAddLit(buf, "      <readonly/>\n");
+     if (def->shared)
+@@ -6362,6 +6449,8 @@ virDomainNetDefFormat(virBufferPtr buf,
+             virBufferVSprintf(buf, ">\n%s      </filterref>\n", attrs);
+         VIR_FREE(attrs);
+     }
++    if (def->bootIndex)
++        virBufferVSprintf(buf, "      <boot order='%d'/>\n", def->bootIndex);
+ 
+     if (def->tune.sndbuf_specified) {
+         virBufferAddLit(buf,   "      <tune>\n");
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index f612fb6..d985ea2 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -197,6 +197,7 @@ struct _virDomainDiskDef {
+     char *serial;
+     int cachemode;
+     int error_policy;
++    int bootIndex;
+     unsigned int readonly : 1;
+     unsigned int shared : 1;
+     virDomainDeviceInfo info;
+@@ -351,6 +352,7 @@ struct _virDomainNetDef {
+         unsigned long sndbuf;
+     } tune;
+     char *ifname;
++    int bootIndex;
+     virDomainDeviceInfo info;
+     char *filter;
+     virNWFilterHashTablePtr filterparams;
+-- 
+1.7.4.rc2
+

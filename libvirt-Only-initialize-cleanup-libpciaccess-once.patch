@@ -1,0 +1,82 @@
+From e93be7466433379bcf9fdff5999fccaa73a2c876 Mon Sep 17 00:00:00 2001
+Message-Id: <e93be7466433379bcf9fdff5999fccaa73a2c876.1297440281.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Mon, 7 Feb 2011 17:04:35 +0000
+Subject: [PATCH] Only initialize/cleanup libpciaccess once
+
+https://bugzilla.redhat.com/show_bug.cgi?id=675698
+
+libpciaccess has many bugs in its pci_system_init/cleanup
+functions that makes calling them multiple times unwise.
+eg it will double close() FDs, and leak other FDs.
+
+* src/node_device/node_device_udev.c: Only initialize
+  libpciaccess once
+(cherry picked from commit 2215050edd8adefbf0ff21c5cbf09685877492d6)
+---
+ src/node_device/node_device_udev.c |   25 +++++++++++++------------
+ 1 files changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/src/node_device/node_device_udev.c b/src/node_device/node_device_udev.c
+index 4f33591..93390af 100644
+--- a/src/node_device/node_device_udev.c
++++ b/src/node_device/node_device_udev.c
+@@ -367,18 +367,10 @@ static int udevTranslatePCIIds(unsigned int vendor,
+                                char **vendor_string,
+                                char **product_string)
+ {
+-    int ret = -1, pciret;
++    int ret = -1;
+     struct pci_id_match m;
+     const char *vendor_name = NULL, *device_name = NULL;
+ 
+-    if ((pciret = pci_system_init()) != 0) {
+-        char ebuf[256];
+-        VIR_INFO("Failed to initialize libpciaccess: %s",
+-                 virStrerror(pciret, ebuf, sizeof ebuf));
+-        ret = 0;
+-        goto out;
+-    }
+-
+     m.vendor_id = vendor;
+     m.device_id = product;
+     m.subvendor_id = PCI_MATCH_ANY;
+@@ -410,9 +402,6 @@ static int udevTranslatePCIIds(unsigned int vendor,
+         }
+     }
+ 
+-    /* pci_system_cleanup returns void */
+-    pci_system_cleanup();
+-
+     ret = 0;
+ 
+ out:
+@@ -1435,6 +1424,9 @@ static int udevDeviceMonitorShutdown(void)
+         ret = -1;
+     }
+ 
++    /* pci_system_cleanup returns void */
++    pci_system_cleanup();
++
+     return ret;
+ }
+ 
+@@ -1602,6 +1594,15 @@ static int udevDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
+     udevPrivate *priv = NULL;
+     struct udev *udev = NULL;
+     int ret = 0;
++    int pciret;
++
++    if ((pciret = pci_system_init()) != 0) {
++        char ebuf[256];
++        VIR_INFO("Failed to initialize libpciaccess: %s",
++                 virStrerror(pciret, ebuf, sizeof ebuf));
++        ret = -1;
++        goto out;
++    }
+ 
+     if (VIR_ALLOC(priv) < 0) {
+         virReportOOMError();
+-- 
+1.7.4
+

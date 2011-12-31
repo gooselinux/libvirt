@@ -1,0 +1,264 @@
+From ca3bb8e07e4274027548d45cfadcb86c5d7c26ce Mon Sep 17 00:00:00 2001
+Message-Id: <ca3bb8e07e4274027548d45cfadcb86c5d7c26ce.1296819816.git.jdenemar@redhat.com>
+From: Matthias Dahl <mdvirt@designassembly.de>
+Date: Fri, 28 Jan 2011 10:29:06 -0700
+Subject: [PATCH] qemu aio: add XML parsing
+
+https://bugzilla.redhat.com/show_bug.cgi?id=591703
+
+Allows io={threads|native} as an optional attribute to <driver>.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 91ef4e05eac546f8ffdb18979cd21e4aee3dcbfd)
+
+Conflicts:
+
+	AUTHORS
+---
+ AUTHORS                   |    1 +
+ docs/formatdomain.html.in |   40 +++++++++++++++++++++++++++++++++-------
+ docs/schemas/domain.rng   |   11 +++++++++++
+ src/conf/domain_conf.c    |   25 +++++++++++++++++++++++++
+ src/conf/domain_conf.h    |   10 ++++++++++
+ src/libvirt_private.syms  |    3 +++
+ 6 files changed, 83 insertions(+), 7 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 721b8f8..23fb4ab 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -143,6 +143,7 @@ Patches have also been contributed by:
+   Roopa Prabhu         <roprabhu@cisco.com>
+   Paweł Krześniak      <pawel.krzesniak@gmail.com>
+   Kay Schubert         <kayegypt@web.de>
++  Matthias Dahl        <mdvirt@designassembly.de>
+ 
+   [....send patches to get your name here....]
+ 
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index ed0eab1..8af34e7 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -634,7 +634,7 @@
+     &lt;/disk&gt;
+       ...
+     &lt;disk type='network'&gt;
+-      &lt;driver name="qemu" type="raw"/&gt;
++      &lt;driver name="qemu" type="raw" io="threads"/&gt;
+       &lt;source protocol="sheepdog" name="image_name"&gt;
+         &lt;host name="hostname" port="7000"/&gt;
+       &lt;/source&gt;
+@@ -685,12 +685,38 @@
+         <span class="since">Since 0.0.3; <code>bus</code> attribute since 0.4.3;
+         "usb" attribute value since after 0.4.4</span></dd>
+       <dt><code>driver</code></dt>
+-      <dd>If the hypervisor supports multiple backend drivers, then the optional
+-        <code>driver</code> element allows them to be selected. The <code>name</code>
+-        attribute is the primary backend driver name, while the optional <code>type</code>
+-        attribute provides the sub-type. The optional <code>cache</code> attribute
+-        controls the cache mechanism, possible values are "default", "none",
+-        "writethrough" and "writeback". <span class="since">Since 0.1.8</span>
++      <dd>
++        The optional driver element allows specifying further details
++        related to the hypervisor driver used to provide the disk.
++        <span class="since">Since 0.1.8; <code>io</code> attribute
++        since 0.8.8</span>
++        <ul>
++          <li>
++            If the hypervisor supports multiple backend drivers, then
++            the <code>name</code> attribute selects the primary
++            backend driver name, while the optional <code>type</code>
++            attribute provides the sub-type.  For example, xen
++            supports a name of "tap", "tap2", "phy", or "file", with a
++            type of "aio", while qemu only supports a name of "qemu",
++            but multiple types including "raw", "bochs", "qcow2", and
++            "qed".
++          </li>
++          <li>
++            The optional <code>cache</code> attribute controls the
++            cache mechanism, possible values are "default", "none",
++            "writethrough" and "writeback".
++          </li>
++          <li>
++            The optional <code>error_policy</code> attribute controls
++            how the hypervisor will behave on an error, possible
++            values are "stop", "ignore", and "enospace".
++          </li>
++          <li>
++            The optional <code>io</code> attribute controls specific
++            policies on I/O; qemu guests support "threads" and
++            "native".
++          </li>
++        </ul>
+       </dd>
+       <dt><code>boot</code></dt>
+       <dd>Specifies that the disk is bootable. The <code>order</code>
+diff --git a/docs/schemas/domain.rng b/docs/schemas/domain.rng
+index 8585533..f265860 100644
+--- a/docs/schemas/domain.rng
++++ b/docs/schemas/domain.rng
+@@ -696,6 +696,9 @@
+       <optional>
+         <ref name="driverErrorPolicy"/>
+       </optional>
++      <optional>
++        <ref name="driverIO"/>
++      </optional>
+       <empty/>
+     </element>
+   </define>
+@@ -727,6 +730,14 @@
+       </choice>
+     </attribute>
+   </define>
++  <define name="driverIO">
++    <attribute name="io">
++      <choice>
++        <value>threads</value>
++        <value>native</value>
++      </choice>
++    </attribute>
++  </define>
+   <define name="controller">
+     <element name="controller">
+       <choice>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 23a6c2b..30b6dec 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -148,6 +148,11 @@ VIR_ENUM_IMPL(virDomainDiskProtocol, VIR_DOMAIN_DISK_PROTOCOL_LAST,
+               "rbd",
+               "sheepdog")
+ 
++VIR_ENUM_IMPL(virDomainDiskIo, VIR_DOMAIN_DISK_IO_LAST,
++              "default",
++              "native",
++              "threads")
++
+ VIR_ENUM_IMPL(virDomainController, VIR_DOMAIN_CONTROLLER_TYPE_LAST,
+               "ide",
+               "fdc",
+@@ -1669,6 +1674,7 @@ virDomainDiskDefParseXML(virCapsPtr caps,
+     char *bus = NULL;
+     char *cachetag = NULL;
+     char *error_policy = NULL;
++    char *iotag = NULL;
+     char *devaddr = NULL;
+     virStorageEncryptionPtr encryption = NULL;
+     char *serial = NULL;
+@@ -1783,6 +1789,7 @@ virDomainDiskDefParseXML(virCapsPtr caps,
+                 driverType = virXMLPropString(cur, "type");
+                 cachetag = virXMLPropString(cur, "cache");
+                 error_policy = virXMLPropString(cur, "error_policy");
++                iotag = virXMLPropString(cur, "io");
+             } else if (xmlStrEqual(cur->name, BAD_CAST "readonly")) {
+                 def->readonly = 1;
+             } else if (xmlStrEqual(cur->name, BAD_CAST "shareable")) {
+@@ -1910,6 +1917,15 @@ virDomainDiskDefParseXML(virCapsPtr caps,
+         goto error;
+     }
+ 
++    if (iotag) {
++        if ((def->iomode = virDomainDiskIoTypeFromString(iotag)) < 0 ||
++            def->iomode == VIR_DOMAIN_DISK_IO_DEFAULT) {
++            virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                                 _("unknown disk io mode '%s'"), iotag);
++            goto error;
++        }
++    }
++
+     if (devaddr) {
+         if (virDomainParseLegacyDeviceAddress(devaddr,
+                                               &def->info.addr.pci) < 0) {
+@@ -1971,6 +1987,7 @@ cleanup:
+     VIR_FREE(driverName);
+     VIR_FREE(cachetag);
+     VIR_FREE(error_policy);
++    VIR_FREE(iotag);
+     VIR_FREE(devaddr);
+     VIR_FREE(serial);
+     virStorageEncryptionFree(encryption);
+@@ -6130,6 +6147,7 @@ virDomainDiskDefFormat(virBufferPtr buf,
+     const char *bus = virDomainDiskBusTypeToString(def->bus);
+     const char *cachemode = virDomainDiskCacheTypeToString(def->cachemode);
+     const char *error_policy = virDomainDiskErrorPolicyTypeToString(def->error_policy);
++    const char *iomode = virDomainDiskIoTypeToString(def->iomode);
+ 
+     if (!type) {
+         virDomainReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -6151,6 +6169,11 @@ virDomainDiskDefFormat(virBufferPtr buf,
+                              _("unexpected disk cache mode %d"), def->cachemode);
+         return -1;
+     }
++    if (!iomode) {
++        virDomainReportError(VIR_ERR_INTERNAL_ERROR,
++                             _("unexpected disk io mode %d"), def->iomode);
++        return -1;
++    }
+ 
+     virBufferVSprintf(buf,
+                       "    <disk type='%s' device='%s'>\n",
+@@ -6166,6 +6189,8 @@ virDomainDiskDefFormat(virBufferPtr buf,
+             virBufferVSprintf(buf, " cache='%s'", cachemode);
+         if (def->error_policy)
+             virBufferVSprintf(buf, " error_policy='%s'", error_policy);
++        if (def->iomode)
++            virBufferVSprintf(buf, " io='%s'", iomode);
+         virBufferVSprintf(buf, "/>\n");
+     }
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index ce790a5..3b06afa 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -180,6 +180,14 @@ struct _virDomainDiskHostDef {
+     char *port;
+ };
+ 
++enum  virDomainDiskIo {
++    VIR_DOMAIN_DISK_IO_DEFAULT,
++    VIR_DOMAIN_DISK_IO_NATIVE,
++    VIR_DOMAIN_DISK_IO_THREADS,
++
++    VIR_DOMAIN_DISK_IO_LAST
++};
++
+ /* Stores the virtual disk configuration */
+ typedef struct _virDomainDiskDef virDomainDiskDef;
+ typedef virDomainDiskDef *virDomainDiskDefPtr;
+@@ -198,6 +206,7 @@ struct _virDomainDiskDef {
+     int cachemode;
+     int error_policy;
+     int bootIndex;
++    int iomode;
+     unsigned int readonly : 1;
+     unsigned int shared : 1;
+     virDomainDeviceInfo info;
+@@ -1278,6 +1287,7 @@ VIR_ENUM_DECL(virDomainDiskBus)
+ VIR_ENUM_DECL(virDomainDiskCache)
+ VIR_ENUM_DECL(virDomainDiskErrorPolicy)
+ VIR_ENUM_DECL(virDomainDiskProtocol)
++VIR_ENUM_DECL(virDomainDiskIo)
+ VIR_ENUM_DECL(virDomainController)
+ VIR_ENUM_DECL(virDomainControllerModel)
+ VIR_ENUM_DECL(virDomainFS)
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index a4aca01..707ebd8 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -231,9 +231,12 @@ virDomainDiskDefAssignAddress;
+ virDomainDiskDefForeachPath;
+ virDomainDiskDefFree;
+ virDomainDiskDeviceTypeToString;
++virDomainDiskErrorPolicyTypeFromString;
+ virDomainDiskErrorPolicyTypeToString;
+ virDomainDiskInsert;
+ virDomainDiskInsertPreAlloced;
++virDomainDiskIoTypeFromString;
++virDomainDiskIoTypeToString;
+ virDomainDiskRemove;
+ virDomainDiskTypeFromString;
+ virDomainDiskTypeToString;
+-- 
+1.7.4
+

@@ -1,0 +1,263 @@
+From 64004fda993c75bfbe4f418ac08f4f27a5987b4d Mon Sep 17 00:00:00 2001
+Message-Id: <64004fda993c75bfbe4f418ac08f4f27a5987b4d.1303134272.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 15 Apr 2011 13:15:37 +0200
+Subject: [PATCH] tests: Unit tests for internal hash APIs
+
+https://bugzilla.redhat.com/show_bug.cgi?id=693385
+
+This is a basic set of tests for testing removals of hash entries during
+iteration.
+(cherry picked from commit b0d28307c84772ad98747ed1cd7884f546f853df)
+
+Conflicts:
+
+	tests/Makefile.am -- context, RHEL is missing seclabeltest
+        tests/hashtest.c -- RHEL is missing deallocator move from
+        Free,Steal,Remove to Create
+---
+ tests/Makefile.am |    7 ++-
+ tests/hashdata.h  |   33 +++++++++++
+ tests/hashtest.c  |  158 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 197 insertions(+), 1 deletions(-)
+ create mode 100644 tests/hashdata.h
+ create mode 100644 tests/hashtest.c
+
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 0401556..a7b588b 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -77,7 +77,7 @@ EXTRA_DIST =		\
+ 
+ check_PROGRAMS = virshtest conftest sockettest \
+ 	nodeinfotest qparamtest virbuftest \
+-	commandtest commandhelper
++	commandtest commandhelper hashtest
+ 
+ if WITH_XEN
+ check_PROGRAMS += xml2sexprtest sexpr2xmltest \
+@@ -167,6 +167,7 @@ TESTS = virshtest \
+ 	virbuftest \
+ 	sockettest \
+ 	commandtest \
++	hashtest \
+ 	$(test_scripts)
+ 
+ if WITH_XEN
+@@ -401,6 +402,10 @@ virbuftest_SOURCES = \
+ 	virbuftest.c testutils.h testutils.c
+ virbuftest_LDADD = $(LDADDS)
+ 
++hashtest_SOURCES = \
++	hashtest.c hashdata.h testutils.h testutils.c
++hashtest_LDADD = $(LDADDS)
++
+ if WITH_LIBVIRTD
+ eventtest_SOURCES = \
+ 	eventtest.c testutils.h testutils.c ../daemon/event.c
+diff --git a/tests/hashdata.h b/tests/hashdata.h
+new file mode 100644
+index 0000000..2782255
+--- /dev/null
++++ b/tests/hashdata.h
+@@ -0,0 +1,33 @@
++const char *uuids[] = {
++/* [ 46] */ "f17494ba-2353-4af0-b1ba-13680858edcc",
++            "64ab4e78-1b6e-4b88-b47f-2def46c79a86",
++            "f99b0d59-ecff-4cc6-a9d3-20159536edc8",
++/* [ 75] */ "e1bfa30f-bc0b-4a24-99ae-bed7f3f21a7b",
++            "acda5fa0-58de-4e1e-aa65-2124d1e29c54",
++/* [ 76] */ "5f476c28-8f26-48e0-98de-85745fe2f304",
++/* [123] */ "8be1d21c-cd35-4c7c-8fee-4b5046c7a62b",
++            "830f0d57-9f21-40e8-bb86-cbf41de23fd6",
++            "57044958-1b8a-4c02-ab75-2298c6e44263",
++            "d526cd6c-4a99-4d5f-abfb-fc9419edd9d0",
++/* [237] */ "3ab39f7f-4613-4da6-a216-c2d6acc441bb",
++            "ae20cf3c-38b8-483c-baea-6fb0994dc30c",
++            "cd204d90-2414-4b9e-9d4f-fed09c9a816f",
++/* [240] */ "ed2cc723-db4b-43aa-ab02-0e3161087499",
++/* [246] */ "8ada85bc-9bdf-4507-8334-849635ea0a01",
++            "8a7d5deb-615f-4cd3-8977-b5fab8ec4d05",
++/* [247] */ "dc2173b0-48fe-4555-b190-8052be1120eb",
++            "040e434d-68d8-41a9-b3a1-1bee239914c1",
++            "d1a564b2-c7f3-4b76-8712-3b8f5aae6ded",
++            "0e614f33-c1da-4cfe-b6d5-65ecd2d066f2"
++};
++
++const char *uuids_subset[] = {
++    "64ab4e78-1b6e-4b88-b47f-2def46c79a86",
++    "acda5fa0-58de-4e1e-aa65-2124d1e29c54",
++    "830f0d57-9f21-40e8-bb86-cbf41de23fd6",
++    "57044958-1b8a-4c02-ab75-2298c6e44263",
++    "ae20cf3c-38b8-483c-baea-6fb0994dc30c",
++    "040e434d-68d8-41a9-b3a1-1bee239914c1",
++    "d1a564b2-c7f3-4b76-8712-3b8f5aae6ded",
++    "8ada85bc-9bdf-4507-8334-849635ea0a01"
++};
+diff --git a/tests/hashtest.c b/tests/hashtest.c
+new file mode 100644
+index 0000000..a1a1e83
+--- /dev/null
++++ b/tests/hashtest.c
+@@ -0,0 +1,158 @@
++#include <config.h>
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "internal.h"
++#include "hash.h"
++#include "hashdata.h"
++#include "testutils.h"
++
++
++#define testError(...)                                          \
++    do {                                                        \
++        fprintf(stderr, __VA_ARGS__);                           \
++        /* Pad to line up with test name ... in virTestRun */   \
++        fprintf(stderr, "%74s", "... ");                        \
++    } while (0)
++
++
++static virHashTablePtr
++testHashInit(int size)
++{
++    virHashTablePtr hash;
++    int i;
++
++    if (!(hash = virHashCreate(size)))
++        return NULL;
++
++    /* entires are added in reverse order so that they will be linked in
++     * collision list in the same order as in the uuids array
++     */
++    for (i = ARRAY_CARDINALITY(uuids) - 1; i >= 0; i--) {
++        if (virHashAddEntry(hash, uuids[i], (void *) uuids[i]) < 0) {
++            virHashFree(hash, NULL);
++            return NULL;
++        }
++    }
++
++    return hash;
++}
++
++
++static int
++testHashCheckCount(virHashTablePtr hash, int count)
++{
++    if (virHashSize(hash) != count) {
++        testError("\nhash contains %d instead of %d elements\n",
++                  virHashSize(hash), count);
++        return -1;
++    }
++
++    return 0;
++}
++
++
++struct testInfo {
++    void *data;
++    int count;
++};
++
++
++const int testHashCountRemoveForEachSome =
++    ARRAY_CARDINALITY(uuids) - ARRAY_CARDINALITY(uuids_subset);
++
++static void
++testHashRemoveForEachSome(void *payload ATTRIBUTE_UNUSED,
++                          const void *name,
++                          void *data)
++{
++    virHashTablePtr hash = data;
++    int i;
++
++    for (i = 0; i < ARRAY_CARDINALITY(uuids_subset); i++) {
++        if (STREQ(uuids_subset[i], name)) {
++            if (virHashRemoveEntry(hash, name, NULL) < 0 &&
++                virTestGetVerbose()) {
++                fprintf(stderr, "\nentry \"%s\" could not be removed",
++                        uuids_subset[i]);
++            }
++            break;
++        }
++    }
++}
++
++
++const int testHashCountRemoveForEachAll = 0;
++
++static void
++testHashRemoveForEachAll(void *payload ATTRIBUTE_UNUSED,
++                         const void *name,
++                         void *data)
++{
++    virHashTablePtr hash = data;
++
++    virHashRemoveEntry(hash, name, NULL);
++}
++
++
++static int
++testHashRemoveForEach(const void *data)
++{
++    const struct testInfo *info = data;
++    virHashTablePtr hash;
++    int count;
++    int ret = -1;
++
++    if (!(hash = testHashInit(0)))
++        return -1;
++
++    count = virHashForEach(hash, (virHashIterator) info->data, hash);
++
++    if (count != ARRAY_CARDINALITY(uuids)) {
++        if (virTestGetVerbose()) {
++            testError("\nvirHashForEach didn't go through all entries,"
++                      " %d != %lu\n",
++                      count, ARRAY_CARDINALITY(uuids));
++        }
++        goto cleanup;
++    }
++
++    if (testHashCheckCount(hash, info->count) < 0)
++        goto cleanup;
++
++    ret = 0;
++
++cleanup:
++    virHashFree(hash, NULL);
++    return ret;
++}
++
++
++static int
++mymain(int argc ATTRIBUTE_UNUSED,
++       char **argv ATTRIBUTE_UNUSED)
++{
++    int ret = 0;
++
++#define DO_TEST_FULL(name, cmd, data, count)                        \
++    do {                                                            \
++        struct testInfo info = { data, count };                     \
++        if (virtTestRun(name, 1, testHash ## cmd, &info) < 0)       \
++            ret = -1;                                               \
++    } while (0)
++
++#define DO_TEST_DATA(name, cmd, data)                               \
++    DO_TEST_FULL(name "(" #data ")",                                \
++                 cmd,                                               \
++                 testHash ## cmd ## data,                           \
++                 testHashCount ## cmd ## data)
++
++    DO_TEST_DATA("Remove in ForEach", RemoveForEach, Some);
++    DO_TEST_DATA("Remove in ForEach", RemoveForEach, All);
++
++    return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
++}
++
++VIRT_TEST_MAIN(mymain)
+-- 
+1.7.5.rc1
+

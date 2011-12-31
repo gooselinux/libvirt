@@ -1,0 +1,86 @@
+From ab8cea145d89bfc871d2906b7b1e12d0092a86cd Mon Sep 17 00:00:00 2001
+Message-Id: <ab8cea145d89bfc871d2906b7b1e12d0092a86cd.1300791642.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 21 Mar 2011 11:34:45 -0600
+Subject: [PATCH] qemu: simplify monitor fd error handling
+
+https://bugzilla.redhat.com/show_bug.cgi?id=687993
+
+qemu_monitor was already returning -1 and setting errno to EINVAL
+on any attempt to send an fd without a unix socket, but this was
+a silent failure in the case of qemuDomainAttachHostPciDevice.
+Meanwhile, qemuDomainAttachNetDevice was doing some sanity checking
+for a better error message; it's better to consolidate that to a
+central point in the API.
+
+* src/qemu/qemu_hotplug.c (qemuDomainAttachNetDevice): Move sanity
+checking...
+* src/qemu/qemu_monitor.c (qemuMonitorSendFileHandle): ...into
+central location.
+Suggested by Chris Wright.
+(cherry picked from commit 058d4efa5839003e7952aac45618b282c4129e35)
+---
+ src/qemu/qemu_hotplug.c |   16 ----------------
+ src/qemu/qemu_monitor.c |   13 +++++++++++++
+ 2 files changed, 13 insertions(+), 16 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 1d57ba2..566e998 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -586,28 +586,12 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+ 
+     if (net->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
+         net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+-        if (priv->monConfig->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
+-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                            _("network device type '%s' cannot be attached: "
+-                              "qemu is not using a unix socket monitor"),
+-                            virDomainNetTypeToString(net->type));
+-            return -1;
+-        }
+-
+         if ((tapfd = qemuNetworkIfaceConnect(vm->def, conn, driver, net,
+                                              qemuCmdFlags)) < 0)
+             return -1;
+         if (qemuOpenVhostNet(vm->def, net, qemuCmdFlags, &vhostfd) < 0)
+             goto cleanup;
+     } else if (net->type == VIR_DOMAIN_NET_TYPE_DIRECT) {
+-        if (priv->monConfig->type != VIR_DOMAIN_CHR_TYPE_UNIX) {
+-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                            _("network device type '%s' cannot be attached: "
+-                            "qemu is not using a unix socket monitor"),
+-                            virDomainNetTypeToString(net->type));
+-            return -1;
+-        }
+-
+         if ((tapfd = qemuPhysIfaceConnect(vm->def, conn, driver, net,
+                                           qemuCmdFlags,
+                                           VIR_VM_OP_CREATE)) < 0)
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 6d0f176..fd629b8 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1651,6 +1651,19 @@ int qemuMonitorSendFileHandle(qemuMonitorPtr mon,
+         return -1;
+     }
+ 
++    if (fd < 0) {
++        qemuReportError(VIR_ERR_INVALID_ARG, "%s",
++                        _("fd must be valid"));
++        return -1;
++    }
++
++    if (!mon->hasSendFD) {
++        qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                        _("qemu is not using a unix socket monitor, "
++                          "cannot send fd %s"), fdname);
++        return -1;
++    }
++
+     if (mon->json)
+         ret = qemuMonitorJSONSendFileHandle(mon, fdname, fd);
+     else
+-- 
+1.7.4.1
+

@@ -1,0 +1,68 @@
+From 57eeac0ba76a1f9ae59a4ea5162248a454172442 Mon Sep 17 00:00:00 2001
+Message-Id: <57eeac0ba76a1f9ae59a4ea5162248a454172442.1300791642.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 18 Mar 2011 12:02:33 -0600
+Subject: [PATCH] Fix delayed event delivery when SASL is active
+
+https://bugzilla.redhat.com/show_bug.cgi?id=624252
+
+When SASL is active, it was possible that we read and decoded
+more data off the wire than we initially wanted. The loop
+processing this data terminated after only one message to
+avoid delaying the calling thread, but this could delay
+event delivery. As long as there is decoded SASL data in
+memory, we must process it, before returning to the poll()
+event loop.
+
+This is a counterpart to the same kind of issue solved in
+
+  commit 68d2c3482fa16801f8e6ca5c42698319bb87f385
+
+in a different area of the code
+
+* src/remote/remote_driver.c: Process all pending SASL data
+(cherry picked from commit 635523f74a81c6277f3a6d6f57b48f654ee4833a)
+---
+ src/remote/remote_driver.c |   25 ++++++++++++++++++++-----
+ 1 files changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index a7265b5..ac62730 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -10151,12 +10151,27 @@ remoteIOHandleInput(virConnectPtr conn, struct private_data *priv,
+                 ret = processCallDispatch(conn, priv, flags);
+                 priv->bufferOffset = priv->bufferLength = 0;
+                 /*
+-                 * We've completed one call, so return even
+-                 * though there might still be more data on
+-                 * the wire. We need to actually let the caller
+-                 * deal with this arrived message to keep good
+-                 * response, and also to correctly handle EOF.
++                 * We've completed one call, but we don't want to
++                 * spin around the loop forever if there are many
++                 * incoming async events, or replies for other
++                 * thread's RPC calls. We want to get out & let
++                 * any other thread take over as soon as we've
++                 * got our reply. When SASL is active though, we
++                 * may have read more data off the wire than we
++                 * initially wanted & cached it in memory. In this
++                 * case, poll() would not detect that there is more
++                 * ready todo.
++                 *
++                 * So if SASL is active *and* some SASL data is
++                 * already cached, then we'll process that now,
++                 * before returning.
+                  */
++#if HAVE_SASL
++                if (ret == 0 &&
++                    priv->saslconn &&
++                    priv->saslDecoded)
++                    continue;
++#endif
+                 return ret;
+             }
+         }
+-- 
+1.7.4.1
+

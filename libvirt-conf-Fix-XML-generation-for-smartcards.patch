@@ -1,0 +1,32 @@
+From 033716cadeb46353fd6edc20a3fd0089619e642f Mon Sep 17 00:00:00 2001
+Message-Id: <033716cadeb46353fd6edc20a3fd0089619e642f.1297957055.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Mon, 14 Feb 2011 11:49:28 +0100
+Subject: [PATCH] conf: Fix XML generation for smartcards
+
+https://bugzilla.redhat.com/show_bug.cgi?id=677308
+
+When formatting XML for smartcard device with mode=host, libvirt
+generates invalid XML if the device has address info associated:
+
+<smartcard mode='host' <address type='ccid' controller='0' slot='1'/>
+(cherry picked from commit f7bec64913d47bab458631f4a186c7f5605ae660)
+---
+ src/conf/domain_conf.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index b87507b..712c198 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -7061,6 +7061,7 @@ virDomainSmartcardDefFormat(virBufferPtr buf,
+             virBufferAddLit(buf, "/>\n");
+             return 0;
+         }
++        virBufferAddLit(buf, ">\n");
+         break;
+ 
+     case VIR_DOMAIN_SMARTCARD_TYPE_HOST_CERTIFICATES:
+-- 
+1.7.4.1
+

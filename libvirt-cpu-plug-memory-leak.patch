@@ -1,0 +1,38 @@
+From 004543d60a3c10bfbc93946c869406d6dbd26598 Mon Sep 17 00:00:00 2001
+Message-Id: <004543d60a3c10bfbc93946c869406d6dbd26598.1298580377.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 21 Feb 2011 12:30:43 -0700
+Subject: [PATCH] cpu: plug memory leak
+
+https://bugzilla.redhat.com/show_bug.cgi?id=679164
+
+* src/cpu/cpu_x86.c (x86ModelLoad): Free data before overwriting.
+(cherry picked from commit fae1b8aac47ea5009b11f5d562e1eaa0ec925c6a)
+---
+ src/cpu/cpu_x86.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/src/cpu/cpu_x86.c b/src/cpu/cpu_x86.c
+index df1e431..ae8e5e7 100644
+--- a/src/cpu/cpu_x86.c
++++ b/src/cpu/cpu_x86.c
+@@ -1,7 +1,7 @@
+ /*
+  * cpu_x86.c: CPU driver for CPUs with x86 compatible CPUID instruction
+  *
+- * Copyright (C) 2009-2010 Red Hat, Inc.
++ * Copyright (C) 2009-2011 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -973,6 +973,7 @@ x86ModelLoad(xmlXPathContextPtr ctxt,
+         VIR_FREE(name);
+ 
+         model->vendor = ancestor->vendor;
++        x86DataFree(model->data);
+         if (!(model->data = x86DataCopy(ancestor->data)))
+             goto no_memory;
+     }
+-- 
+1.7.4.1
+

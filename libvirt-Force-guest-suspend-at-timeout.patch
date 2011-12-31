@@ -1,0 +1,135 @@
+From bdc7b65b031f9a199002ab35499298ad9c95699d Mon Sep 17 00:00:00 2001
+Message-Id: <bdc7b65b031f9a199002ab35499298ad9c95699d.1296819815.git.jdenemar@redhat.com>
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Thu, 27 Jan 2011 17:24:07 -0700
+Subject: [PATCH] Force guest suspend at timeout
+
+https://bugzilla.redhat.com/show_bug.cgi?id=619039
+
+If the memory of guest OS is changed constantly, the live migration
+can not be ended ever for ever.
+
+We can use the command 'virsh migrate-setmaxdowntime' to control the
+live migration. But the value of maxdowntime is diffcult to calculate
+because it depends on the transfer speed of network and constantly
+changing memroy size. We need a easy way to control the live migration.
+
+This patch adds the support of forcing guest to suspend at timeout.
+With this patch, when we migrate the guest OS, we can specify a
+timeout. If the live migration timeouts, auto-suspend the guest OS,
+where the migration will complete offline.
+(cherry picked from commit f15cad2916f0ac80a2f3659c3ba8294857283ed1)
+---
+ tools/virsh.c   |   38 ++++++++++++++++++++++++++++++++++++++
+ tools/virsh.pod |    5 ++++-
+ 2 files changed, 42 insertions(+), 1 deletions(-)
+
+diff --git a/tools/virsh.c b/tools/virsh.c
+index 2aba4ba..b0f10c4 100644
+--- a/tools/virsh.c
++++ b/tools/virsh.c
+@@ -3390,6 +3390,7 @@ static const vshCmdOptDef opts_migrate[] = {
+     {"desturi", VSH_OT_DATA, VSH_OFLAG_REQ, N_("connection URI of the destination host as seen from the client(normal migration) or source(p2p migration)")},
+     {"migrateuri", VSH_OT_DATA, 0, N_("migration URI, usually can be omitted")},
+     {"dname", VSH_OT_DATA, 0, N_("rename to new name during migration (if supported)")},
++    {"timeout", VSH_OT_INT, 0, N_("force guest to suspend if live migration exceeds timeout (in seconds)")},
+     {NULL, 0, 0, NULL}
+ };
+ 
+@@ -3520,12 +3521,16 @@ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+     int ret = -1;
+     virThread workerThread;
+     struct pollfd pollfd;
++    int found;
+     char retchar;
+     struct sigaction sig_action;
+     struct sigaction old_sig_action;
+     virDomainJobInfo jobinfo;
+     bool verbose = false;
+     sigset_t sigmask, oldsigmask;
++    int timeout;
++    struct timeval start, curr;
++    bool live_flag = false;
+ 
+     vshCtrlData data;
+ 
+@@ -3535,6 +3540,29 @@ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+     if (vshCommandOptBool (cmd, "verbose"))
+         verbose = true;
+ 
++    if (vshCommandOptBool (cmd, "live"))
++        live_flag = TRUE;
++    timeout = vshCommandOptInt(cmd, "timeout", &found);
++    if (found) {
++        if (! live_flag) {
++            vshError(ctl, "%s", _("migrate: Unexpected timeout for offline migration"));
++            goto cleanup;
++        }
++
++        if (timeout < 1) {
++            vshError(ctl, "%s", _("migrate: Invalid timeout"));
++            goto cleanup;
++        }
++
++        /* Ensure that we can multiply by 1000 without overflowing. */
++        if (timeout > INT_MAX / 1000) {
++            vshError(ctl, "%s", _("migrate: Timeout is too big"));
++            goto cleanup;
++        }
++    } else {
++        timeout = 0;
++    }
++
+     if (pipe(p) < 0)
+         goto cleanup;
+ 
+@@ -3560,6 +3588,7 @@ cmdMigrate (vshControl *ctl, const vshCmd *cmd)
+     sigemptyset(&sigmask);
+     sigaddset(&sigmask, SIGINT);
+ 
++    GETTIMEOFDAY(&start);
+     while (1) {
+ repoll:
+         ret = poll(&pollfd, 1, 500);
+@@ -3590,6 +3619,15 @@ repoll:
+             break;
+         }
+ 
++        GETTIMEOFDAY(&curr);
++        if ( timeout && ((int)(curr.tv_sec - start.tv_sec)  * 1000 + \
++                         (int)(curr.tv_usec - start.tv_usec) / 1000) > timeout * 1000 ) {
++            /* suspend the domain when migration timeouts. */
++            vshDebug(ctl, 5, "suspend the domain when migration timeouts\n");
++            virDomainSuspend(dom);
++            timeout = 0;
++        }
++
+         if (verbose) {
+             pthread_sigmask(SIG_BLOCK, &sigmask, &oldsigmask);
+             ret = virDomainGetJobInfo(dom, &jobinfo);
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 17152d9..34a1c3d 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -490,7 +490,7 @@ type attribute for the <domain> element of XML.
+ =item B<migrate> optional I<--live> I<--p2p> I<--direct> I<--tunnelled>
+ I<--persistent> I<--undefinesource> I<--suspend> I<--copy-storage-all>
+ I<--copy-storage-inc> I<--verbose> I<domain-id> I<desturi> I<migrateuri>
+-I<dname>
++I<dname> I<--timeout>
+ 
+ Migrate domain to another host.  Add I<--live> for live migration; I<--p2p>
+ for peer-2-peer migration; I<--direct> for direct migration; or I<--tunnelled>
+@@ -507,6 +507,9 @@ I<migrateuri> is the migration URI, which usually can be omitted.
+ I<dname> is used for renaming the domain to new name during migration, which
+ also usually can be omitted.
+ 
++I<--timeout> forces guest to suspend when live migration exceeds timeout, and
++then the migration will complete offline. It can only be used with I<--live>.
++
+ B<Note>: The I<desturi> parameter for normal migration and peer2peer migration
+ has different semantics:
+ 
+-- 
+1.7.4
+

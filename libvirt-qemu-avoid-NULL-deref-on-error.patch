@@ -1,0 +1,35 @@
+From 362e12224515c2cba94e9a65436a8b59840bc53f Mon Sep 17 00:00:00 2001
+Message-Id: <362e12224515c2cba94e9a65436a8b59840bc53f.1297957056.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 15 Feb 2011 11:32:07 -0700
+Subject: [PATCH] qemu: avoid NULL deref on error
+
+https://bugzilla.redhat.com/show_bug.cgi?id=677493
+
+* src/qemu/qemu_command.c (qemuParseCommandLineDisk): Report error
+before cleaning def.
+(cherry picked from commit 0cca53921d133d51cb4f8f11ae85b1eac4f9b9da)
+---
+ src/qemu/qemu_command.c |    5 +++--
+ 1 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 55afdb4..e5357c7 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4614,9 +4614,10 @@ qemuParseCommandLineDisk(virCapsPtr caps,
+                     host = def->src + strlen("nbd:");
+                     port = strchr(host, ':');
+                     if (!port) {
+-                        def = NULL;
+                         qemuReportError(VIR_ERR_INTERNAL_ERROR,
+-                                        _("cannot parse nbd filename '%s'"), def->src);
++                                        _("cannot parse nbd filename '%s'"),
++                                        def->src);
++                        def = NULL;
+                         goto cleanup;
+                     }
+                     *port++ = '\0';
+-- 
+1.7.4.1
+

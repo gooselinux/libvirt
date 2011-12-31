@@ -1,0 +1,983 @@
+From ffc5236d10d78ce416829ad10e66dc60bce0d1b8 Mon Sep 17 00:00:00 2001
+Message-Id: <ffc5236d10d78ce416829ad10e66dc60bce0d1b8.1294615754.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Fri, 17 Dec 2010 14:55:29 +0100
+Subject: [PATCH] Support seemless migration of SPICE graphics clients
+
+RHEL-6 only, no upstream
+
+This is a *full* refresh of the patch for
+
+ https://bugzilla.redhat.com/show_bug.cgi?id=589989
+
+Which makes it work with PEER2PEER migration mode too. This
+fixes the crash identified in this bug:
+
+ https://bugzilla.redhat.com/show_bug.cgi?id=591551
+
+NB, in fixing this I discovered that the virDomainMigratePrepareTunnel
+method is missing the cookie/cookielen commands. This means that
+seemless migration will *NOT* be possible when the TUNNELLED
+migration flag is set. Fortunately VDSM only set PEER2PEER
+flag which now works fine.
+
+QEMU supports a command that allows a connected SPICE client to
+be told to reconnect to an alternative host when migration
+completes. This makes migration "seemless" for clients. This
+command needs to be run on the source QEMU, and give details
+about the hostname, port number(s) and TLS x509 subject of
+the destination QEMU.
+
+The QEMU migration data channel is unidirectional, so this info
+needs to be passed from the dest libvirtd to the src libvirtd.
+Fortunately libvirt's migration protocol has a unused parameter
+that is suitable for passing this data
+
+   unsigned char *cookie;
+   int cookielen;
+
+This patch defines a QEMU driver specific XML format that is
+used for the cookie data. This XML is made to include the SPICE
+graphics data looking like this:
+
+  <qemu-migration id='1'>
+    <name>f12x86_64-copy1</name>
+    <uuid>1d9d99a4-f774-efed-a4e6-0987ab5f98cf</uuid>
+    <hostname>dhcp-111.gsslab.fab.redhat.com</hostname>
+    <graphics type='spice' port='5900' listen='0.0.0.0' tlsPort='5901'>
+      <cert info='subject' value='O=Red Hat (FAB virt),CN=dhcp-111.gsslab.fab.redhat.com'/>
+    </graphics>
+  </qemu-migration>
+
+NB, this is technically more info than is required, but it is
+designed to be extendable & flexible so we can port it to VNC
+and include it upstream without changing the schema from that
+proposed for RHEL6.
+
+To accomodate this data we increase the REMOTE_MIGRATE_COOKIE_MAX
+from 250 to 4096 in the wire protocol. This is not a wire ABI
+change, since this limit is something that's only used at the
+encode/decode stage. The wire protocol itself is not limited.
+
+Changes since V1 of the patch
+
+ - Make daemon always initialize GNUTLS at startup to
+   ensure x509 cert parsing code is available
+ - Handle cookies correctly in peer2peer migration
+
+* src/libvirt_private.syms: Export virXMLParseStrHelper
+* src/qemu/qemu_driver.c: Add a private qemuDomainObjMigrationPtr
+  object for storing migration data. Add XML formatters/parsers
+  for this data. Pass migration data in cookie parameter for
+  SPICE
+* src/qemu/qemu_monitor.c, src/qemu/qemu_monitor.h,
+  src/qemu/qemu_monitor_json.c, src/qemu/qemu_monitor_json.h,
+  src/qemu/qemu_monitor_text.c, src/qemu/qemu_monitor_text.h: Add
+  qemuMonitorGraphicsRelocate() method for relocating graphics
+  client. Overly flexible to allow potential for VNC relocation
+  in future.
+* src/remote/remote_protocol.h, src/remote/remote_protocol.x: Increase
+  allowed length of cookie from 250 to 4096 bytes.
+* daemon/libvirtd.c: Always initialize gnutls even if not listening
+  on a TLS socket
+---
+ daemon/libvirtd.c            |    8 +-
+ src/libvirt_private.syms     |    1 +
+ src/qemu/qemu_driver.c       |  507 +++++++++++++++++++++++++++++++++++++++++-
+ src/qemu/qemu_monitor.c      |   31 +++
+ src/qemu/qemu_monitor.h      |    6 +
+ src/qemu/qemu_monitor_json.c |   37 +++
+ src/qemu/qemu_monitor_json.h |    7 +
+ src/qemu/qemu_monitor_text.c |   34 +++
+ src/qemu/qemu_monitor_text.h |    7 +
+ src/remote/remote_protocol.h |    2 +-
+ src/remote/remote_protocol.x |    2 +-
+ 11 files changed, 628 insertions(+), 14 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 2df9337..c3fdfec 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -296,9 +296,6 @@ remoteInitializeGnuTLS (void)
+ {
+     int err;
+ 
+-    /* Initialise GnuTLS. */
+-    gnutls_global_init ();
+-
+     err = gnutls_certificate_allocate_credentials (&x509_cred);
+     if (err) {
+         VIR_ERROR(_("gnutls_certificate_allocate_credentials: %s"),
+@@ -3229,6 +3226,11 @@ int main(int argc, char **argv) {
+         goto error;
+     }
+ 
++    /* Initialise GnuTLS. This is required event if not
++     * listening on TLS sockes, so that we can parse x509
++     * certificates in drivers */
++    gnutls_global_init ();
++
+     if (!(server = qemudInitialize())) {
+         ret = VIR_DAEMON_ERR_INIT;
+         goto error;
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 19e581c..dd28d33 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -903,6 +903,7 @@ virStrerror;
+ 
+ 
+ # xml.h
++virXMLParseStrHelper;
+ virXMLPropString;
+ virXPathBoolean;
+ virXPathLong;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 071afdb..ca7ddfa 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -44,6 +44,8 @@
+ #include <sys/wait.h>
+ #include <sys/ioctl.h>
+ #include <sys/un.h>
++#include <gnutls/gnutls.h>
++#include <gnutls/x509.h>
+ 
+ 
+ #include "virterror_internal.h"
+@@ -98,6 +100,26 @@
+ 
+ #define timeval_to_ms(tv)       (((tv).tv_sec * 1000ull) + ((tv).tv_usec / 1000))
+ 
++typedef struct _qemuDomainObjMigrationGraphics qemuDomainObjMigrationGraphics;
++typedef qemuDomainObjMigrationGraphics *qemuDomainObjMigrationGraphicsPtr;
++struct _qemuDomainObjMigrationGraphics {
++    int type;
++    int port;
++    int tlsPort;
++    char *listen;
++    char *tlsSubject;
++};
++
++typedef struct _qemuDomainObjMigration qemuDomainObjMigration;
++typedef qemuDomainObjMigration *qemuDomainObjMigrationPtr;
++struct _qemuDomainObjMigration {
++    int id;
++    unsigned char uuid[VIR_UUID_BUFLEN];
++    char *name;
++    char *hostname;
++    qemuDomainObjMigrationGraphicsPtr graphics;
++};
++
+ struct watchdogEvent
+ {
+     virDomainObjPtr vm;
+@@ -141,6 +163,364 @@ static int qemudVMFiltersInstantiate(virConnectPtr conn,
+ static struct qemud_driver *qemu_driver = NULL;
+ 
+ 
++static void qemuDomainObjMigrationGraphicsFree(qemuDomainObjMigrationGraphicsPtr grap)
++{
++    if (!grap)
++        return;
++    VIR_FREE(grap->listen);
++    VIR_FREE(grap->tlsSubject);
++    VIR_FREE(grap);
++}
++
++
++static void qemuDomainObjMigrationFree(qemuDomainObjMigrationPtr mig)
++{
++    if (!mig)
++        return;
++
++    qemuDomainObjMigrationGraphicsFree(mig->graphics);
++    VIR_FREE(mig->hostname);
++    VIR_FREE(mig->name);
++    VIR_FREE(mig);
++}
++
++
++static char *
++qemuDomainExtractTLSSubject(const char *certdir)
++{
++    char *certfile = NULL;
++    char *subject = NULL;
++    char *pemdata = NULL;
++    gnutls_datum_t pemdatum;
++    gnutls_x509_crt_t cert;
++    int ret;
++    size_t subjectlen;
++
++    if (virAsprintf(&certfile, "%s/server-cert.pem", certdir) < 0)
++        goto no_memory;
++
++    if (virFileReadAll(certfile, 8192, &pemdata) < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("unable to read server cert %s"), certfile);
++        goto error;
++    }
++
++    ret = gnutls_x509_crt_init(&cert);
++    if (ret < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("cannot initialize cert object: %s"),
++                        gnutls_strerror(ret));
++        goto error;
++    }
++
++    pemdatum.data = (unsigned char *)pemdata;
++    pemdatum.size = strlen(pemdata);
++
++    ret = gnutls_x509_crt_import(cert, &pemdatum, GNUTLS_X509_FMT_PEM);
++    if (ret < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("cannot load cert data from %s: %s"),
++                        certfile, gnutls_strerror(ret));
++        goto error;
++    }
++
++    subjectlen = 1024;
++    if (VIR_ALLOC_N(subject, subjectlen+1) < 0)
++        goto no_memory;
++
++    gnutls_x509_crt_get_dn(cert, subject, &subjectlen);
++    subject[subjectlen] = '\0';
++
++    VIR_FREE(certfile);
++    VIR_FREE(pemdata);
++
++    return subject;
++
++no_memory:
++    virReportOOMError();
++error:
++    VIR_FREE(certfile);
++    VIR_FREE(pemdata);
++    return NULL;
++}
++
++
++static qemuDomainObjMigrationGraphicsPtr
++qemuDomainObjMigrationGraphicsAlloc(struct qemud_driver *driver,
++                                    virDomainGraphicsDefPtr def)
++{
++    qemuDomainObjMigrationGraphicsPtr mig = NULL;
++    const char *listenAddr;
++
++    if (VIR_ALLOC(mig) < 0)
++        goto no_memory;
++
++    mig->type = def->type;
++    if (mig->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC) {
++        mig->port = def->data.vnc.port;
++        listenAddr = def->data.vnc.listenAddr;
++        if (!listenAddr)
++            listenAddr = driver->vncListen;
++
++        if (driver->vncTLS &&
++            !(mig->tlsSubject = qemuDomainExtractTLSSubject(driver->vncTLSx509certdir)))
++            goto error;
++    } else {
++        mig->port = def->data.spice.port;
++        if (driver->spiceTLS)
++            mig->tlsPort = def->data.spice.tlsPort;
++        else
++            mig->tlsPort = -1;
++        listenAddr = def->data.spice.listenAddr;
++        if (!listenAddr)
++            listenAddr = driver->spiceListen;
++
++        if (driver->spiceTLS &&
++            !(mig->tlsSubject = qemuDomainExtractTLSSubject(driver->spiceTLSx509certdir)))
++            goto error;
++    }
++    if (!(mig->listen = strdup(listenAddr)))
++        goto no_memory;
++
++    return mig;
++
++no_memory:
++    virReportOOMError();
++error:
++    qemuDomainObjMigrationGraphicsFree(mig);
++    return NULL;
++}
++
++
++static qemuDomainObjMigrationPtr
++qemuDomainObjMigrationAlloc(struct qemud_driver *driver,
++                            virDomainObjPtr dom)
++{
++    qemuDomainObjMigrationPtr mig = NULL;
++
++    if (VIR_ALLOC(mig) < 0)
++        goto no_memory;
++
++    mig->id = dom->def->id;
++    if (!(mig->name = strdup(dom->def->name)))
++        goto no_memory;
++    memcpy(mig->uuid, dom->def->uuid, VIR_UUID_BUFLEN);
++
++    if (!(mig->hostname = virGetHostname(NULL)))
++        goto error;
++
++    if (dom->def->ngraphics == 1 &&
++        (dom->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC ||
++         dom->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) &&
++        !(mig->graphics = qemuDomainObjMigrationGraphicsAlloc(driver, dom->def->graphics[0])))
++        goto no_memory;
++
++    return mig;
++
++no_memory:
++    virReportOOMError();
++error:
++    qemuDomainObjMigrationFree(mig);
++    return NULL;
++}
++
++
++static void qemuDomainObjMigrationGraphicsXMLFormat(virBufferPtr buf,
++                                                    qemuDomainObjMigrationGraphicsPtr grap)
++{
++    virBufferVSprintf(buf, "  <graphics type='%s' port='%d' listen='%s'",
++                      virDomainGraphicsTypeToString(grap->type),
++                      grap->port, grap->listen);
++    if (grap->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE)
++        virBufferVSprintf(buf, " tlsPort='%d'", grap->tlsPort);
++    if (grap->tlsSubject) {
++        virBufferVSprintf(buf, ">\n");
++        virBufferEscapeString(buf, "    <cert info='subject' value='%s'/>\n", grap->tlsSubject);
++        virBufferVSprintf(buf, "  </graphics>\n");
++    } else {
++        virBufferVSprintf(buf, "/>\n");
++    }
++}
++
++
++static void qemuDomainObjMigrationXMLFormat(virBufferPtr buf,
++                                            qemuDomainObjMigrationPtr mig)
++{
++    char uuidstr[VIR_UUID_STRING_BUFLEN];
++
++    virUUIDFormat(mig->uuid, uuidstr);
++
++    virBufferVSprintf(buf, "<qemu-migration id='%d'>\n", mig->id);
++    virBufferEscapeString(buf, "  <name>%s</name>\n", mig->name);
++    virBufferVSprintf(buf, "  <uuid>%s</uuid>\n", uuidstr);
++    virBufferEscapeString(buf, "  <hostname>%s</hostname>\n", mig->hostname);
++
++    if (mig->graphics)
++        qemuDomainObjMigrationGraphicsXMLFormat(buf, mig->graphics);
++
++    virBufferAddLit(buf, "</qemu-migration>\n");
++}
++
++
++static char *qemuDomainObjMigrationXMLFormatStr(qemuDomainObjMigrationPtr mig)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++
++    qemuDomainObjMigrationXMLFormat(&buf, mig);
++
++    if (virBufferError(&buf)) {
++        virReportOOMError();
++        return NULL;
++    }
++
++    return virBufferContentAndReset(&buf);
++}
++
++
++static qemuDomainObjMigrationGraphicsPtr
++qemuDomainObjMigrationGraphicsXMLParse(xmlXPathContextPtr ctxt)
++{
++    qemuDomainObjMigrationGraphicsPtr grap;
++    long port;
++    char *tmp;
++
++    if (VIR_ALLOC(grap) < 0)
++        goto no_memory;
++
++    if (!(tmp = virXPathString("string(./graphics/@type)", ctxt))) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing type attribute in migration data"));
++        goto error;
++    }
++    if ((grap->type = virDomainGraphicsTypeFromString(tmp)) < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        _("unknown graphics type %s"), tmp);
++        VIR_FREE(tmp);
++        goto error;
++    }
++    if (virXPathLong("string(./graphics/@port)", ctxt, &port) < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing port attribute in migration data"));
++        goto error;
++    }
++    grap->port = (int)port;
++    if (grap->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        if (virXPathLong("string(./graphics/@tlsPort)", ctxt, &port) < 0) {
++            qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                            "%s", _("missing port attribute in migration data"));
++            goto error;
++        }
++        grap->tlsPort = (int)port;
++    }
++    if (!(grap->listen = virXPathString("string(./graphics/@listen)", ctxt))) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing listen attribute in migration data"));
++        goto error;
++    }
++    /* Optional */
++    grap->tlsSubject = virXPathString("string(./graphics/cert[ info='subject']/@value)", ctxt);
++
++
++    return grap;
++
++no_memory:
++    virReportOOMError();
++error:
++    qemuDomainObjMigrationGraphicsFree(grap);
++    return NULL;
++}
++
++
++static qemuDomainObjMigrationPtr
++qemuDomainObjMigrationXMLParse(xmlXPathContextPtr ctxt)
++{
++    qemuDomainObjMigrationPtr mig;
++    long id;
++    char *tmp;
++
++    if (VIR_ALLOC(mig) < 0)
++        goto no_memory;
++
++    if ((virXPathLong("string(./@id)", ctxt, &id)) < 0) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing ID attribute in migration data"));
++        goto error;
++    }
++    mig->id = (int)id;
++
++    /* Extract domain name */
++    if (!(mig->name = virXPathString("string(./name[1])", ctxt))) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing name element in migration data"));
++        goto error;
++    }
++
++    /* Extract domain uuid */
++    tmp = virXPathString("string(./uuid[1])", ctxt);
++    if (!tmp) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing uuid element in migration data"));
++        goto error;
++    }
++    if (virUUIDParse(tmp, mig->uuid) < 0) {
++        VIR_FREE(tmp);
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("malformed uuid element"));
++        goto error;
++    }
++    VIR_FREE(tmp);
++
++    /* Extract domain name */
++    if (!(mig->hostname = virXPathString("string(./hostname[1])", ctxt))) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("missing hostname element in migration data"));
++        goto error;
++    }
++
++
++    if (virXPathBoolean("count(./graphics) > 0", ctxt) &&
++        (!(mig->graphics = qemuDomainObjMigrationGraphicsXMLParse(ctxt))))
++        goto error;
++
++    return mig;
++
++no_memory:
++    virReportOOMError();
++error:
++    qemuDomainObjMigrationFree(mig);
++    return NULL;
++}
++
++
++static qemuDomainObjMigrationPtr
++qemuDomainObjMigrationXMLParseStr(const char *xml)
++{
++    xmlDocPtr doc = NULL;
++    xmlXPathContextPtr ctxt = NULL;
++    qemuDomainObjMigrationPtr mig = NULL;
++
++    VIR_DEBUG("xml=%s", NULLSTR(xml));
++
++    if (!(doc = virXMLParseString(xml, "qemumigration.xml")))
++        goto cleanup;
++
++    if ((ctxt = xmlXPathNewContext(doc)) == NULL) {
++        virReportOOMError();
++        goto cleanup;
++    }
++
++    ctxt->node = xmlDocGetRootElement(doc);
++
++    mig = qemuDomainObjMigrationXMLParse(ctxt);
++
++cleanup:
++    xmlXPathFreeContext(ctxt);
++    xmlFreeDoc(doc);
++
++    return mig;
++}
++
++
+ static int doStartCPUs(struct qemud_driver *driver, virDomainObjPtr vm, virConnectPtr conn)
+ {
+     int ret;
+@@ -7955,6 +8335,68 @@ qemuDomainIsMigratable(virDomainDefPtr def)
+     return true;
+ }
+ 
++
++static int
++qemuDomainMigrateEncodeCookie(struct qemud_driver *driver,
++                              virDomainObjPtr vm,
++                              char **cookie,
++                              int *cookielen,
++                              unsigned long flags ATTRIBUTE_UNUSED)
++{
++    qemuDomainObjMigrationPtr mig = NULL;
++
++    if (!cookie || !cookielen) {
++        qemuReportError(VIR_ERR_INVALID_ARG, "missing cookie");
++        return -1;
++    }
++
++    *cookie = NULL;
++    *cookielen = 0;
++
++    if (!(mig = qemuDomainObjMigrationAlloc(driver, vm)))
++        return -1;
++    *cookie = qemuDomainObjMigrationXMLFormatStr(mig);
++    qemuDomainObjMigrationFree(mig);
++
++    if (!*cookie)
++        return -1;
++    *cookielen = strlen(*cookie) + 1;
++
++    return 0;
++}
++
++
++static int
++qemuDomainMigrateGraphicsRelocate(struct qemud_driver *driver,
++                                  virDomainObjPtr vm,
++                                  qemuDomainObjMigrationPtr mig)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    int ret;
++
++    if (!mig)
++        return 0;
++
++    if (!mig->graphics)
++        return 0;
++
++    if (mig->graphics->type != VIR_DOMAIN_GRAPHICS_TYPE_SPICE)
++        return 0;
++
++    qemuDomainObjEnterMonitorWithDriver(driver, vm);
++    /* XXX listen param vs hostname ? */
++    ret = qemuMonitorGraphicsRelocate(priv->mon,
++                                      mig->graphics->type,
++                                      mig->hostname,
++                                      mig->graphics->port,
++                                      mig->graphics->tlsPort,
++                                      mig->graphics->tlsSubject);
++    qemuDomainObjExitMonitorWithDriver(driver, vm);
++
++    return ret;
++}
++
++
+ /* Prepare is the first step, and it runs on the destination host.
+  *
+  * This version starts an empty VM listening on a localhost TCP port, and
+@@ -8145,8 +8587,8 @@ cleanup:
+  */
+ static int ATTRIBUTE_NONNULL (5)
+ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+-                            char **cookie ATTRIBUTE_UNUSED,
+-                            int *cookielen ATTRIBUTE_UNUSED,
++                            char **cookie,
++                            int *cookielen,
+                             const char *uri_in,
+                             char **uri_out,
+                             unsigned long flags,
+@@ -8331,6 +8773,15 @@ qemudDomainMigratePrepare2 (virConnectPtr dconn,
+         goto endjob;
+     }
+ 
++    VIR_DEBUG("Try Encode cookie %p %p", cookie, cookielen);
++    if (qemuDomainMigrateEncodeCookie(driver, vm, cookie, cookielen, flags) < 0) {
++        /* We could tear down the whole guest here, but
++         * cookie data is (so far) non-critical, so that
++         * seems  little harsh. We'll just warn for now..
++         */
++        VIR_WARN0("Unable to encode migration cookie");
++    }
++
+     qemuDomainStartAudit(vm, "migrated", true);
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STARTED,
+@@ -8375,6 +8826,8 @@ cleanup:
+ static int doNativeMigrate(struct qemud_driver *driver,
+                            virDomainObjPtr vm,
+                            const char *uri,
++                           const char *cookie,
++                           int cookielen,
+                            unsigned int flags,
+                            const char *dname ATTRIBUTE_UNUSED,
+                            unsigned long resource)
+@@ -8383,6 +8836,24 @@ static int doNativeMigrate(struct qemud_driver *driver,
+     xmlURIPtr uribits = NULL;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     unsigned int background_flags = QEMU_MONITOR_MIGRATE_BACKGROUND;
++    qemuDomainObjMigrationPtr mig = NULL;
++
++    VIR_DEBUG("Cookie='%s' len=%d'", cookie, cookielen);
++
++    if (cookie && cookielen &&
++        cookie[cookielen-1] != '\0') {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("cookie is not NULL terminated"));
++        return -1;
++    }
++
++    if (!(mig = qemuDomainObjMigrationXMLParseStr(cookie))) {
++        VIR_WARN("failed to parse migration data %s", cookie);
++        /* ignore, not fatal */
++    }
++
++    if (qemuDomainMigrateGraphicsRelocate(driver, vm, mig) < 0)
++        VIR_WARN0("unable to provide data for graphics client relocation");
+ 
+     /* Issue the migrate command. */
+     if (STRPREFIX(uri, "tcp:") && !STRPREFIX(uri, "tcp://")) {
+@@ -8429,6 +8900,7 @@ static int doNativeMigrate(struct qemud_driver *driver,
+     ret = 0;
+ 
+ cleanup:
++    qemuDomainObjMigrationFree(mig);
+     xmlFreeURI(uribits);
+     return ret;
+ }
+@@ -8586,6 +9058,12 @@ static int doTunnelMigrate(virDomainPtr dom,
+         goto cleanup;
+ 
+     qemuDomainObjEnterRemoteWithDriver(driver, vm);
++
++    /* XXX this is missing the cookie arg. Will need
++     * to add a domainMigratePrepareTunnel2 in future
++     * to support seemless migration with tunnelled
++     * migration
++     */
+     internalret = dconn->driver->domainMigratePrepareTunnel(dconn, st,
+                                                             flags, dname,
+                                                             resource, dom_xml);
+@@ -8716,14 +9194,16 @@ static int doNonTunnelMigrate(virDomainPtr dom,
+     virDomainPtr ddomain = NULL;
+     int retval = -1;
+     char *uri_out = NULL;
++    char *cookie = NULL;
++    int cookielen = 0;
+     int rc;
+ 
+     qemuDomainObjEnterRemoteWithDriver(driver, vm);
+     /* NB we don't pass 'uri' into this, since that's the libvirtd
+      * URI in this context - so we let dest pick it */
+     rc = dconn->driver->domainMigratePrepare2(dconn,
+-                                              NULL, /* cookie */
+-                                              0, /* cookielen */
++                                              &cookie,
++                                              &cookielen,
+                                               NULL, /* uri */
+                                               &uri_out,
+                                               flags, dname,
+@@ -8748,7 +9228,8 @@ static int doNonTunnelMigrate(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (doNativeMigrate(driver, vm, uri_out, flags, dname, resource) < 0)
++    if (doNativeMigrate(driver, vm, uri_out, cookie, cookielen,
++                        flags, dname, resource) < 0)
+         goto finish;
+ 
+     retval = 0;
+@@ -8757,13 +9238,14 @@ finish:
+     dname = dname ? dname : dom->name;
+     qemuDomainObjEnterRemoteWithDriver(driver, vm);
+     ddomain = dconn->driver->domainMigrateFinish2
+-        (dconn, dname, NULL, 0, uri_out, flags, retval);
++        (dconn, dname, cookie, cookielen, uri_out, flags, retval);
+     qemuDomainObjExitRemoteWithDriver(driver, vm);
+ 
+     if (ddomain)
+         virUnrefDomain(ddomain);
+ 
+ cleanup:
++    VIR_FREE(cookie);
+     return retval;
+ }
+ 
+@@ -8837,8 +9319,8 @@ cleanup:
+ /* Perform is the second step, and it runs on the source host. */
+ static int
+ qemudDomainMigratePerform (virDomainPtr dom,
+-                           const char *cookie ATTRIBUTE_UNUSED,
+-                           int cookielen ATTRIBUTE_UNUSED,
++                           const char *cookie,
++                           int cookielen,
+                            const char *uri,
+                            unsigned long flags,
+                            const char *dname,
+@@ -8891,11 +9373,18 @@ qemudDomainMigratePerform (virDomainPtr dom,
+     }
+ 
+     if ((flags & (VIR_MIGRATE_TUNNELLED | VIR_MIGRATE_PEER2PEER))) {
++        if (cookielen) {
++            qemuReportError(VIR_ERR_OPERATION_INVALID,
++                            "%s", _("received unexpected cookie with P2P migration"));
++            goto endjob;
++        }
++
+         if (doPeer2PeerMigrate(dom, driver, vm, uri, flags, dname, resource) < 0)
+             /* doPeer2PeerMigrate already set the error, so just get out */
+             goto endjob;
+     } else {
+-        if (doNativeMigrate(driver, vm, uri, flags, dname, resource) < 0)
++        if (doNativeMigrate(driver, vm, uri, cookie, cookielen,
++                            flags, dname, resource) < 0)
+             goto endjob;
+     }
+ 
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 6c0a94e..5758e87 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1431,6 +1431,37 @@ int qemuMonitorMigrateCancel(qemuMonitorPtr mon)
+     return ret;
+ }
+ 
++
++int qemuMonitorGraphicsRelocate(qemuMonitorPtr mon,
++                                int type,
++                                const char *hostname,
++                                int port,
++                                int tlsPort,
++                                const char *tlsSubject)
++{
++    int ret;
++    DEBUG("mon=%p type=%d hostname=%s port=%d tlsPort=%d tlsSubject=%s",
++          mon, type, hostname, port, tlsPort, NULLSTR(tlsSubject));
++
++    if (mon->json)
++        ret = qemuMonitorJSONGraphicsRelocate(mon,
++                                              type,
++                                              hostname,
++                                              port,
++                                              tlsPort,
++                                              tlsSubject);
++    else
++        ret = qemuMonitorTextGraphicsRelocate(mon,
++                                              type,
++                                              hostname,
++                                              port,
++                                              tlsPort,
++                                              tlsSubject);
++
++    return ret;
++}
++
++
+ int qemuMonitorAddUSBDisk(qemuMonitorPtr mon,
+                           const char *path)
+ {
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index bf467d0..204a04e 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -290,6 +290,12 @@ int qemuMonitorMigrateToUnix(qemuMonitorPtr mon,
+ 
+ int qemuMonitorMigrateCancel(qemuMonitorPtr mon);
+ 
++int qemuMonitorGraphicsRelocate(qemuMonitorPtr mon,
++                                int type,
++                                const char *hostname,
++                                int port,
++                                int tlsPort,
++                                const char *tlsSubject);
+ 
+ /* XXX disk driver type eg,  qcow/etc.
+  * XXX cache mode
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index dbc9a35..a7a4679 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1828,6 +1828,43 @@ int qemuMonitorJSONMigrateCancel(qemuMonitorPtr mon)
+ }
+ 
+ 
++int qemuMonitorJSONGraphicsRelocate(qemuMonitorPtr mon,
++                                    int type,
++                                    const char *hostname,
++                                    int port,
++                                    int tlsPort,
++                                    const char *tlsSubject)
++{
++    int ret = -1;
++    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("__com.redhat_spice_migrate_info",
++                                                     "s:hostname", hostname,
++                                                     "i:port", port,
++                                                     "i:tls-port", tlsPort,
++                                                     (tlsSubject ? "s:cert-subject" : NULL),
++                                                     (tlsSubject ? tlsSubject : NULL),
++                                                     NULL);
++    virJSONValuePtr reply = NULL;
++    if (!cmd)
++        return -1;
++
++    if (type != VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        virJSONValueFree(cmd);
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("only spice graphics support client relocation"));
++        return -1;
++    }
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0)
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
+ int qemuMonitorJSONAddUSBDisk(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                               const char *path ATTRIBUTE_UNUSED)
+ {
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 48b2e07..dc725cb 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -122,6 +122,13 @@ int qemuMonitorJSONMigrateToUnix(qemuMonitorPtr mon,
+ 
+ int qemuMonitorJSONMigrateCancel(qemuMonitorPtr mon);
+ 
++int qemuMonitorJSONGraphicsRelocate(qemuMonitorPtr mon,
++                                    int type,
++                                    const char *hostname,
++                                    int port,
++                                    int tlsPort,
++                                    const char *tlsSubject);
++
+ int qemuMonitorJSONAddUSBDisk(qemuMonitorPtr mon,
+                               const char *path);
+ 
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index 11a9391..4d2719b 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -1331,6 +1331,40 @@ int qemuMonitorTextMigrateCancel(qemuMonitorPtr mon)
+     return 0;
+ }
+ 
++int qemuMonitorTextGraphicsRelocate(qemuMonitorPtr mon,
++                                    int type,
++                                    const char *hostname,
++                                    int port,
++                                    int tlsPort,
++                                    const char *tlsSubject)
++{
++    char *cmd;
++    char *info = NULL;
++
++    if (type != VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("only spice graphics support client relocation"));
++        return -1;
++    }
++
++    if (virAsprintf(&cmd, "__com.redhat_spice_migrate_info %s %d %d %s",
++                    hostname, port, tlsPort, tlsSubject ? tlsSubject : "") < 0) {
++        virReportOOMError();
++        return -1;
++    }
++
++    if (qemuMonitorCommand(mon, cmd, &info) < 0) {
++        VIR_FREE(cmd);
++        qemuReportError(VIR_ERR_INTERNAL_ERROR,
++                        "%s", _("cannot run monitor command to relocate graphics client"));
++        return -1;
++    }
++    VIR_FREE(cmd);
++    VIR_FREE(info);
++
++    return 0;
++}
++
+ int qemuMonitorTextAddUSBDisk(qemuMonitorPtr mon,
+                               const char *path)
+ {
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 57d6e9b..9a2d3f0 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -116,6 +116,13 @@ int qemuMonitorTextMigrateToUnix(qemuMonitorPtr mon,
+ 
+ int qemuMonitorTextMigrateCancel(qemuMonitorPtr mon);
+ 
++int qemuMonitorTextGraphicsRelocate(qemuMonitorPtr mon,
++                                    int type,
++                                    const char *hostname,
++                                    int port,
++                                    int tlsPort,
++                                    const char *tlsSubject);
++
+ int qemuMonitorTextAddUSBDisk(qemuMonitorPtr mon,
+                               const char *path);
+ 
+diff --git a/src/remote/remote_protocol.h b/src/remote/remote_protocol.h
+index 4240963..e327925 100644
+--- a/src/remote/remote_protocol.h
++++ b/src/remote/remote_protocol.h
+@@ -43,7 +43,7 @@ typedef remote_nonnull_string *remote_string;
+ #define REMOTE_CPUMAP_MAX 256
+ #define REMOTE_VCPUINFO_MAX 2048
+ #define REMOTE_CPUMAPS_MAX 16384
+-#define REMOTE_MIGRATE_COOKIE_MAX 256
++#define REMOTE_MIGRATE_COOKIE_MAX 4096
+ #define REMOTE_NETWORK_NAME_LIST_MAX 256
+ #define REMOTE_INTERFACE_NAME_LIST_MAX 256
+ #define REMOTE_DEFINED_INTERFACE_NAME_LIST_MAX 256
+diff --git a/src/remote/remote_protocol.x b/src/remote/remote_protocol.x
+index e1981fd..fcd38f4 100644
+--- a/src/remote/remote_protocol.x
++++ b/src/remote/remote_protocol.x
+@@ -99,7 +99,7 @@ const REMOTE_VCPUINFO_MAX = 2048;
+ const REMOTE_CPUMAPS_MAX = 16384;
+ 
+ /* Upper limit on migrate cookie. */
+-const REMOTE_MIGRATE_COOKIE_MAX = 256;
++const REMOTE_MIGRATE_COOKIE_MAX = 4096;
+ 
+ /* Upper limit on lists of network names. */
+ const REMOTE_NETWORK_NAME_LIST_MAX = 256;
+-- 
+1.7.4.rc1
+

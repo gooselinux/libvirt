@@ -1,0 +1,43 @@
+From 2a00a23e0931520331a585b976fc64970002592a Mon Sep 17 00:00:00 2001
+Message-Id: <2a00a23e0931520331a585b976fc64970002592a.1295285119.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 14 Jan 2011 14:20:33 +0100
+Subject: [PATCH] cpu: Add support for Westmere CPU model
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=656248
+
+(cherry picked from commit d4d5cccdf2e0ee277a1fae738f9a4423150509f8)
+---
+ src/cpu/cpu_map.xml |    9 +++++++++
+ 1 files changed, 9 insertions(+), 0 deletions(-)
+
+diff --git a/src/cpu/cpu_map.xml b/src/cpu/cpu_map.xml
+index 75c6522..35dca20 100644
+--- a/src/cpu/cpu_map.xml
++++ b/src/cpu/cpu_map.xml
+@@ -142,6 +142,9 @@
+     <feature name='popcnt'> <!-- CPUID_EXT_POPCNT -->
+       <cpuid function='0x00000001' ecx='0x00800000'/>
+     </feature>
++    <feature name='aes'>
++      <cpuid function='0x00000001' ecx='0x02000000'/>
++    </feature>
+     <feature name='hypervisor'> <!-- CPUID_EXT_HYPERVISOR -->
+       <cpuid function='0x00000001' ecx='0x80000000'/>
+     </feature>
+@@ -453,6 +456,12 @@
+       <feature name='lahf_lm'/>
+     </model>
+ 
++    <model name='Westmere'>
++      <vendor name='Intel'/>
++      <model name='Nehalem'/>
++      <feature name='aes'/>
++    </model>
++
+     <model name='Opteron_G1'>
+       <vendor name='AMD'/>
+       <feature name='sse2'/>
+-- 
+1.7.4.rc2
+
