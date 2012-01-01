@@ -204,7 +204,7 @@
 Summary: Library providing a simple virtualization API
 Name: libvirt
 Version: 0.8.7
-Release: 18%{?dist}%{?extra_release}
+Release: 18%{?dist}%{?extra_release}.goose.1
 License: LGPLv2+
 Group: Development/Libraries
 Source: http://libvirt.org/sources/libvirt-%{version}.tar.gz
@@ -435,6 +435,10 @@ Patch222: libvirt-tests-test-recent-virsh-option-parsing-changes.patch
 Patch223: libvirt-util-Fix-crash-when-removing-entries-during-hash-iteration.patch
 Patch224: libvirt-tests-Unit-tests-for-internal-hash-APIs.patch
 Patch225: libvirt-Experimental-libvirtd-upstart-job.patch
+
+# patch to fix commandtest failure per https://bugzilla.redhat.com/show_bug.cgi?format=multiple&id=732931
+%global _default_patch_fuzz 1
+Patch226: libvirt-fix-failed-commandtest.patch
 
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 URL: http://libvirt.org/
@@ -930,6 +934,7 @@ of recent versions of Linux (and other OSes).
 %patch223 -p1
 %patch224 -p1
 %patch225 -p1
+%patch226 -p1
 
 chmod 0755 tests/virsh-optparse
 
@@ -1492,6 +1497,10 @@ fi
 %endif
 
 %changelog
+
+* Sat Dec 31 2011 Clint Savage <herlo@gooseproject.org> - 0.8.7-18.goose.1
+- Attempt to fix commandtest failures
+
 * Mon Apr 18 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.7-18.el6
 - network: Fix NULL dereference during error recovery (rhbz#696660)
 - virsh: Fix regression in parsing optional integer (rhbz#693963)

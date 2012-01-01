@@ -1,0 +1,32 @@
+From f0e9dfeca967d05f23409c838619d9357d4f7d7f Mon Sep 17 00:00:00 2001
+From: "Daniel P. Berrange" <berrange@redhat.com>
+Date: Thu, 24 Feb 2011 12:12:27 +0000
+Subject: [PATCH] Make commandtest more robust wrt its execution environment
+
+When executed from cron, commandtest would fail to correctly
+identify daemon processes. Set session ID and process group
+IDs at startup to ensure we have a consistent environment to
+run in.
+
+* tests/commandtest.c: Call setsid() and setpgid()
+---
+ tests/commandtest.c |    3 +++
+ 1 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/tests/commandtest.c b/tests/commandtest.c
+index 7157c51..dc2f8a1 100644
+--- a/tests/commandtest.c
++++ b/tests/commandtest.c
+@@ -730,6 +730,9 @@ mymain(int argc, char **argv)
+     if (chdir("/tmp") < 0)
+         return(EXIT_FAILURE);
+ 
++    setpgid(0, 0);
++    setsid();
++
+     /* Kill off any inherited fds that might interfere with our
+      * testing.  */
+     fd = 3;
+-- 
+1.7.6
+
