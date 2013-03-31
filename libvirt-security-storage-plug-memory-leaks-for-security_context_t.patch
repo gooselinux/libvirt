@@ -1,0 +1,93 @@
+From cc3b93bb98f9523fcadeb7b6dbf5bf6f11d09f9d Mon Sep 17 00:00:00 2001
+Message-Id: <cc3b93bb98f9523fcadeb7b6dbf5bf6f11d09f9d.1296065735.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 13 Dec 2010 17:26:13 -0700
+Subject: [PATCH] security, storage: plug memory leaks for security_context_t
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+security_context_t happens to be a typedef for char*, and happens to
+begin with a string usable as a raw context string.  But in reality,
+it is an opaque type that may or may not have additional information
+after the first NUL byte, where that additional information can
+include pointers that can only be freed via freecon().
+
+Proof is from this valgrind run of daemon/libvirtd:
+
+==6028== 839,169 (40 direct, 839,129 indirect) bytes in 1 blocks are definitely lost in loss record 274 of 274
+==6028==    at 0x4A0515D: malloc (vg_replace_malloc.c:195)
+==6028==    by 0x3022E0D48C: selabel_open (label.c:165)
+==6028==    by 0x3022E11646: matchpathcon_init_prefix (matchpathcon.c:296)
+==6028==    by 0x3022E1190D: matchpathcon (matchpathcon.c:317)
+==6028==    by 0x4F9D842: SELinuxRestoreSecurityFileLabel (security_selinux.c:382)
+
+800k is a lot of memory to be leaking.
+
+* src/storage/storage_backend.c
+(virStorageBackendUpdateVolTargetInfoFD): Avoid leak on error.
+* src/security/security_selinux.c
+(SELinuxReserveSecurityLabel, SELinuxGetSecurityProcessLabel)
+(SELinuxRestoreSecurityFileLabel): Use correct function to free
+security_context_t.
+(cherry picked from commit d95488dce58f1266fa35e3144bb674055a04287e)
+---
+ src/security/security_selinux.c |    7 ++++---
+ src/storage/storage_backend.c   |    2 +-
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/security/security_selinux.c b/src/security/security_selinux.c
+index a9dd836..97c1ceb 100644
+--- a/src/security/security_selinux.c
++++ b/src/security/security_selinux.c
+@@ -238,7 +238,7 @@ SELinuxReserveSecurityLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
+     }
+ 
+     ctx = context_new(pctx);
+-    VIR_FREE(pctx);
++    freecon(pctx);
+     if (!ctx)
+         goto err;
+ 
+@@ -297,11 +297,12 @@ SELinuxGetSecurityProcessLabel(virSecurityDriverPtr drv ATTRIBUTE_UNUSED,
+                                _("security label exceeds "
+                                  "maximum length: %d"),
+                                VIR_SECURITY_LABEL_BUFLEN - 1);
++        freecon(ctx);
+         return -1;
+     }
+ 
+     strcpy(sec->label, (char *) ctx);
+-    VIR_FREE(ctx);
++    freecon(ctx);
+ 
+     sec->enforcing = security_getenforce();
+     if (sec->enforcing == -1) {
+@@ -386,7 +387,7 @@ SELinuxRestoreSecurityFileLabel(const char *path)
+     }
+ 
+ err:
+-    VIR_FREE(fcon);
++    freecon(fcon);
+     VIR_FREE(newpath);
+     return rc;
+ }
+diff --git a/src/storage/storage_backend.c b/src/storage/storage_backend.c
+index 0e51609..85a13b1 100644
+--- a/src/storage/storage_backend.c
++++ b/src/storage/storage_backend.c
+@@ -1094,11 +1094,11 @@ virStorageBackendUpdateVolTargetInfoFD(virStorageVolTargetPtr target,
+         }
+     } else {
+         target->perms.label = strdup(filecon);
++        freecon(filecon);
+         if (target->perms.label == NULL) {
+             virReportOOMError();
+             return -1;
+         }
+-        freecon(filecon);
+     }
+ #else
+     target->perms.label = NULL;
+-- 
+1.7.4.rc3
+

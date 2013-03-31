@@ -1,0 +1,31 @@
+From 09690c5033b7080b760497c4c4b4ab945a1f0a80 Mon Sep 17 00:00:00 2001
+Message-Id: <09690c5033b7080b760497c4c4b4ab945a1f0a80.1296065735.git.jdenemar@redhat.com>
+From: Anthony Liguori <aliguori@us.ibm.com>
+Date: Mon, 13 Dec 2010 17:26:17 -0700
+Subject: [PATCH] qemud: fix memory leak in io error events
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+The extra data isn't being free()'d for IO error events that have a reason.
+
+Signed-off-by: Anthony Liguori <aliguori@us.ibm.com>
+(cherry picked from commit 560ed3eb786542529ef86c2a37b5db9ee984b074)
+---
+ src/conf/domain_event.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/conf/domain_event.c b/src/conf/domain_event.c
+index e88aafe..5f086bd 100644
+--- a/src/conf/domain_event.c
++++ b/src/conf/domain_event.c
+@@ -472,6 +472,7 @@ void virDomainEventFree(virDomainEventPtr event)
+         return;
+ 
+     switch (event->eventID) {
++    case VIR_DOMAIN_EVENT_ID_IO_ERROR_REASON:
+     case VIR_DOMAIN_EVENT_ID_IO_ERROR:
+         VIR_FREE(event->data.ioError.srcPath);
+         VIR_FREE(event->data.ioError.devAlias);
+-- 
+1.7.4.rc3
+

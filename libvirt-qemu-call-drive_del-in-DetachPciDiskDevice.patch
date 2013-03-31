@@ -1,0 +1,294 @@
+From d6971b9164911c33ac3910445db6b56f848d9e70 Mon Sep 17 00:00:00 2001
+Message-Id: <d6971b9164911c33ac3910445db6b56f848d9e70.1296065735.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 8 Dec 2010 15:15:48 -0700
+Subject: [PATCH] qemu: call drive_del in DetachPciDiskDevice
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=662041
+
+[This is two patches to accurately reflect an upstream botch where
+v3 instead of v5 of the patch was originally applied.]
+
+Currently libvirt doesn't confirm whether the guest has responded to the
+disk removal request.  In some cases this can leave the guest with
+continued access to the device while the mgmt layer believes that it has
+been removed.  With a recent qemu monitor command[1] we can
+deterministically revoke a guests access to the disk (on the QEMU side)
+to ensure no futher access is permitted.
+
+This patch adds support for the drive_del() command and introduces it
+in the disk removal paths.  If the guest is running in a QEMU without this
+command we currently explicitly check for unknown command/CommandNotFound
+and log the issue.
+
+If QEMU supports the command we issue the drive_del command after we attempt
+to remove the device.  The guest may respond and remove the block device
+before we get to attempt to call drive_del.  In that case, we explicitly check
+for 'Device not found' from the monitor indicating that the target drive
+was auto-deleted upon guest responds to the device removal notification.
+
+1. http://thread.gmane.org/gmane.comp.emulators.qemu/84745
+
+Signed-off-by: Ryan Harper <ryanh@us.ibm.com>
+(cherry picked from commit aefaeb3d483da41ee0e7601ec798b992d0297ed4)
+
+Conflicts:
+
+	src/qemu/qemu_driver.c
+---
+ src/qemu/qemu_driver.c       |   24 ++++++++----------------
+ src/qemu/qemu_monitor.c      |    8 ++++----
+ src/qemu/qemu_monitor.h      |    2 +-
+ src/qemu/qemu_monitor_json.c |   19 ++++++++++++-------
+ src/qemu/qemu_monitor_json.h |    2 +-
+ src/qemu/qemu_monitor_text.c |   26 +++++++++++++++++---------
+ src/qemu/qemu_monitor_text.h |    2 +-
+ 7 files changed, 44 insertions(+), 39 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e912d41..8ddb757 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8882,7 +8882,7 @@ static int qemudDomainDetachPciDiskDevice(struct qemud_driver *driver,
+     virDomainDiskDefPtr detach = NULL;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     virCgroupPtr cgroup = NULL;
+-    char drivestr[PATH_MAX];
++    char *drivestr = NULL;
+ 
+     for (i = 0 ; i < vm->def->ndisks ; i++) {
+         if (STREQ(vm->def->disks[i]->dst, dev->data.disk->dst)) {
+@@ -8915,26 +8915,13 @@ static int qemudDomainDetachPciDiskDevice(struct qemud_driver *driver,
+ 
+     /* build the actual drive id string as the disk->info.alias doesn't
+      * contain the QEMU_DRIVE_HOST_PREFIX that is passed to qemu */
+-    if ((ret = snprintf(drivestr, sizeof(drivestr), "%s%s",
+-                   QEMU_DRIVE_HOST_PREFIX,
+-                   detach->info.alias))
+-        < 0 || ret >= sizeof(drivestr)) {
++    if (virAsprintf(&drivestr, "%s%s",
++                    QEMU_DRIVE_HOST_PREFIX, detach->info.alias) < 0) {
+         virReportOOMError();
+         goto cleanup;
+     }
+ 
+     qemuDomainObjEnterMonitorWithDriver(driver, vm);
+-    /* ret > 0 indicates unplug isn't supported, issue will be logged */
+-    if (qemuMonitorDriveUnplug(priv->mon, drivestr) < 0) {
+-        qemuDomainObjExitMonitor(vm);
+-        goto cleanup;
+-    }
+-    if (qemuMonitorDelDevice(priv->mon, detach->info.alias) < 0) {
+-        qemuDomainObjExitMonitor(vm);
+-        goto cleanup;
+-    }
+-
+-    qemuDomainObjEnterMonitorWithDriver(driver, vm);
+     if (qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) {
+         if (qemuMonitorDelDevice(priv->mon, detach->info.alias) < 0) {
+             qemuDomainObjExitMonitor(vm);
+@@ -8947,6 +8934,10 @@ static int qemudDomainDetachPciDiskDevice(struct qemud_driver *driver,
+             goto cleanup;
+         }
+     }
++
++    /* disconnect guest from host device */
++    qemuMonitorDriveDel(priv->mon, drivestr);
++
+     qemuDomainObjExitMonitorWithDriver(driver, vm);
+ 
+     if ((qemuCmdFlags & QEMUD_CMD_FLAG_DEVICE) &&
+@@ -8983,6 +8974,7 @@ static int qemudDomainDetachPciDiskDevice(struct qemud_driver *driver,
+     ret = 0;
+ 
+ cleanup:
++    VIR_FREE(drivestr);
+     virCgroupFree(&cgroup);
+     return ret;
+ }
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index c3f1aab..35a6318 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1852,8 +1852,8 @@ int qemuMonitorGetAllPCIAddresses(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
+-int qemuMonitorDriveUnplug(qemuMonitorPtr mon,
+-                         const char *drivestr)
++int qemuMonitorDriveDel(qemuMonitorPtr mon,
++                        const char *drivestr)
+ {
+     DEBUG("mon=%p drivestr=%s", mon, drivestr);
+     int ret;
+@@ -1865,9 +1865,9 @@ int qemuMonitorDriveUnplug(qemuMonitorPtr mon,
+     }
+ 
+     if (mon->json)
+-        ret = qemuMonitorJSONDriveUnplug(mon, drivestr);
++        ret = qemuMonitorJSONDriveDel(mon, drivestr);
+     else
+-        ret = qemuMonitorTextDriveUnplug(mon, drivestr);
++        ret = qemuMonitorTextDriveDel(mon, drivestr);
+     return ret;
+ }
+ 
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 43057c5..4c88dae 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -385,7 +385,7 @@ int qemuMonitorDelDevice(qemuMonitorPtr mon,
+ int qemuMonitorAddDrive(qemuMonitorPtr mon,
+                         const char *drivestr);
+ 
+-int qemuMonitorDriveUnplug(qemuMonitorPtr mon,
++int qemuMonitorDriveDel(qemuMonitorPtr mon,
+                         const char *drivestr);
+ 
+ int qemuMonitorSetDrivePassphrase(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 05ad319..2a97450 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2362,15 +2362,15 @@ cleanup:
+ }
+ 
+ 
+-int qemuMonitorJSONDriveUnplug(qemuMonitorPtr mon,
+-                             const char *drivestr)
++int qemuMonitorJSONDriveDel(qemuMonitorPtr mon,
++                            const char *drivestr)
+ {
+     int ret;
+     virJSONValuePtr cmd;
+     virJSONValuePtr reply = NULL;
+ 
+-    DEBUG("JSONDriveUnplug drivestr=%s", drivestr);
+-    cmd = qemuMonitorJSONMakeCommand("drive_unplug",
++    DEBUG("JSONDriveDel drivestr=%s", drivestr);
++    cmd = qemuMonitorJSONMakeCommand("drive_del",
+                                      "s:id", drivestr,
+                                      NULL);
+     if (!cmd)
+@@ -2379,14 +2379,19 @@ int qemuMonitorJSONDriveUnplug(qemuMonitorPtr mon,
+     ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+     if (ret == 0) {
+-        /* See if drive_unplug isn't supported */
++        /* See if drive_del isn't supported */
+         if (qemuMonitorJSONHasError(reply, "CommandNotFound")) {
+-            VIR_ERROR0(_("unplugging disk is not supported.  "
++            VIR_ERROR0(_("deleting disk is not supported.  "
+                         "This may leak data if disk is reassigned"));
+             ret = 1;
+             goto cleanup;
++        } else if (qemuMonitorJSONHasError(reply, "DeviceNotFound")) {
++            /* NB: device not found errors mean the drive was
++             * auto-deleted and we ignore the error */
++            ret = 0;
++        } else {
++            ret = qemuMonitorJSONCheckError(cmd, reply);
+         }
+-        ret = qemuMonitorJSONCheckError(cmd, reply);
+     }
+ 
+ cleanup:
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index ead0845..35d8164 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -199,7 +199,7 @@ int qemuMonitorJSONDelDevice(qemuMonitorPtr mon,
+ int qemuMonitorJSONAddDrive(qemuMonitorPtr mon,
+                             const char *drivestr);
+ 
+-int qemuMonitorJSONDriveUnplug(qemuMonitorPtr mon,
++int qemuMonitorJSONDriveDel(qemuMonitorPtr mon,
+                             const char *drivestr);
+ 
+ int qemuMonitorJSONSetDrivePassphrase(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index 439fa25..fe02064 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -2303,6 +2303,7 @@ int qemuMonitorTextDelDevice(qemuMonitorPtr mon,
+         goto cleanup;
+     }
+ 
++    DEBUG("TextDelDevice devalias=%s", devalias);
+     if (qemuMonitorCommand(mon, cmd, &reply) < 0) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED,
+                         _("cannot detach %s device"), devalias);
+@@ -2404,41 +2405,48 @@ cleanup:
+     return ret;
+ }
+ 
+-/* Attempts to unplug a drive.  Returns 1 if unsupported, 0 if ok, and -1 on
+- * other failure */
+-int qemuMonitorTextDriveUnplug(qemuMonitorPtr mon,
+-                             const char *drivestr)
++/* Attempts to remove a host drive.
++ * Returns 1 if unsupported, 0 if ok, and -1 on other failure */
++int qemuMonitorTextDriveDel(qemuMonitorPtr mon,
++                            const char *drivestr)
+ {
+     char *cmd = NULL;
+     char *reply = NULL;
+     char *safedev;
+     int ret = -1;
+-    DEBUG("TextDriveUnplug drivestr=%s", drivestr);
++    DEBUG("TextDriveDel drivestr=%s", drivestr);
+ 
+     if (!(safedev = qemuMonitorEscapeArg(drivestr))) {
+         virReportOOMError();
+         goto cleanup;
+     }
+ 
+-    if (virAsprintf(&cmd, "drive_unplug %s", safedev) < 0) {
++    if (virAsprintf(&cmd, "drive_del %s", safedev) < 0) {
+         virReportOOMError();
+         goto cleanup;
+     }
+ 
+     if (qemuMonitorCommand(mon, cmd, &reply) < 0) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED,
+-                        _("cannot unplug %s drive"), drivestr);
++                        _("cannot delete %s drive"), drivestr);
+         goto cleanup;
+     }
+ 
+     if (strstr(reply, "unknown command:")) {
+-        VIR_ERROR0(_("unplugging disk is not supported.  "
++        VIR_ERROR0(_("deleting drive is not supported.  "
+                     "This may leak data if disk is reassigned"));
+         ret = 1;
+         goto cleanup;
++
++    /* (qemu) drive_del wark
++     * Device 'wark' not found */
++    } else if (STRPREFIX(reply, "Device '") && (strstr(reply, "not found"))) {
++        /* NB: device not found errors mean the drive was auto-deleted and we
++         * ignore the error */
++        ret = 0;
+     } else if (STRNEQ(reply, "")) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED,
+-                        _("unplugging %s drive failed: %s"), drivestr, reply);
++                        _("deleting %s drive failed: %s"), drivestr, reply);
+         goto cleanup;
+     }
+ 
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 3834b06..48b97f8 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -193,7 +193,7 @@ int qemuMonitorTextDelDevice(qemuMonitorPtr mon,
+ int qemuMonitorTextAddDrive(qemuMonitorPtr mon,
+                              const char *drivestr);
+ 
+-int qemuMonitorTextDriveUnplug(qemuMonitorPtr mon,
++int qemuMonitorTextDriveDel(qemuMonitorPtr mon,
+                              const char *drivestr);
+ 
+ int qemuMonitorTextSetDrivePassphrase(qemuMonitorPtr mon,
+-- 
+1.7.4.rc3
+

@@ -1,0 +1,68 @@
+From 3a455369450f3e51442544bffa01b18bbd74fd67 Mon Sep 17 00:00:00 2001
+Message-Id: <3a455369450f3e51442544bffa01b18bbd74fd67.1291987033.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 3 Dec 2010 09:31:48 +0100
+Subject: [PATCH] Change return value of VIR_DRV_SUPPORTS_FEATURE to bool
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=662043
+
+virDrvSupportsFeature API is allowed to return -1 on error while all but
+one uses of VIR_DRV_SUPPORTS_FEATURE only check for (non)zero return
+value. Let's make this macro return zero on error, which is what
+everyone expects anyway.
+(cherry picked from commit 4186f92935e6bb5057b2db14f47dfd817ab0ab84)
+---
+ src/driver.h  |   15 +++++++++------
+ src/libvirt.c |    5 ++++-
+ 2 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/src/driver.h b/src/driver.h
+index 0975b59..367024f 100644
+--- a/src/driver.h
++++ b/src/driver.h
+@@ -47,17 +47,20 @@ typedef enum {
+ 
+ 
+ /* Internal feature-detection macro.  Don't call drv->supports_feature
+- * directly, because it may be NULL, use this macro instead.
++ * directly if you don't have to, because it may be NULL, use this macro
++ * instead.
+  *
+- * Note that you must check for errors.
++ * Note that this treats a possible error returned by drv->supports_feature
++ * the same as not supported. If you care about the error, call
++ * drv->supports_feature directly.
+  *
+  * Returns:
+- *   >= 1  Feature is supported.
++ *   != 0  Feature is supported.
+  *   0     Feature is not supported.
+- *   -1    Error.
+  */
+-# define VIR_DRV_SUPPORTS_FEATURE(drv,conn,feature)                      \
+-    ((drv)->supports_feature ? (drv)->supports_feature((conn),(feature)) : 0)
++# define VIR_DRV_SUPPORTS_FEATURE(drv,conn,feature)                         \
++    ((drv)->supports_feature ?                                              \
++        (drv)->supports_feature((conn), (feature)) > 0 : 0)
+ 
+ typedef virDrvOpenStatus
+         (*virDrvOpen)			(virConnectPtr conn,
+diff --git a/src/libvirt.c b/src/libvirt.c
+index e124bcc..4a769fc 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -1563,7 +1563,10 @@ virDrvSupportsFeature (virConnectPtr conn, int feature)
+         return (-1);
+     }
+ 
+-    ret = VIR_DRV_SUPPORTS_FEATURE (conn->driver, conn, feature);
++    if (!conn->driver->supports_feature)
++        ret = 0;
++    else
++        ret = conn->driver->supports_feature(conn, feature);
+ 
+     if (ret < 0)
+         virDispatchError(conn);
+-- 
+1.7.3.3
+

@@ -1,0 +1,36 @@
+From a5c7f0aea013078cebd44bb01f78c6a565618561 Mon Sep 17 00:00:00 2001
+Message-Id: <a5c7f0aea013078cebd44bb01f78c6a565618561.1296065735.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 13 Dec 2010 17:26:14 -0700
+Subject: [PATCH] libvirtd: avoid memory leak on shutdown
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+* daemon/libvirtd.c (qemudRunLoop): Free any remaining client data.
+(cherry picked from commit 6d0df648213dddea5658a89f02f2bcebd3122415)
+
+Conflicts:
+
+    daemon/libvirtd.c
+---
+ daemon/libvirtd.c |    4 ++++
+ 1 files changed, 4 insertions(+), 0 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 99b16e7..91811a7 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -2382,6 +2382,10 @@ cleanup:
+         server->workers[i].hasThread = 0;
+     }
+     VIR_FREE(server->workers);
++    for (i = 0; i < server->nclients; i++)
++        qemudFreeClient(server->clients[i]);
++    server->nclients = 0;
++    VIR_FREE(server->clients);
+ 
+     virMutexUnlock(&server->lock);
+     return NULL;
+-- 
+1.7.4.rc3
+

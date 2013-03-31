@@ -1,0 +1,94 @@
+From 82388522943c7609afbfdafffda936fdd34664ee Mon Sep 17 00:00:00 2001
+Message-Id: <82388522943c7609afbfdafffda936fdd34664ee.1291071954.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Tue, 14 Sep 2010 19:17:25 +0100
+Subject: [PATCH] Make SASL work over UNIX domain sockets
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=658144
+
+The addrToString methods were not coping with UNIX domain sockets
+which have no normal host+port address. Hardcode special handling
+for these so that SASL routines can work over UNIX sockets. Also
+fix up SSF logic in remote client so that it presumes that a UNIX
+socket is secure
+
+* daemon/remote.c: Fix addrToString for UNIX sockets.
+* src/remote/remote_driver.c: Fix addrToString for UNIX sockets
+  and fix SSF logic to work for TLS + UNIX sockets in the same
+  manner
+(cherry picked from commit 3a73eaeb61b59b5ab5f293f55a5d7d5449fe333d)
+---
+ daemon/remote.c            |    8 ++++++++
+ src/remote/remote_driver.c |   22 +++++++++++++++-------
+ 2 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/daemon/remote.c b/daemon/remote.c
+index 4132938..51131b8 100644
+--- a/daemon/remote.c
++++ b/daemon/remote.c
+@@ -3219,6 +3219,14 @@ static char *addrToString(remote_error *rerr,
+     int err;
+     struct sockaddr *sa = (struct sockaddr *)ss;
+ 
++    if (sa->sa_family == AF_UNIX) {
++        if (!(addr = strdup("127.0.0.1;0"))) {
++            virReportOOMError();
++            return NULL;
++        }
++        return addr;
++    }
++
+     if ((err = getnameinfo(sa, salen,
+                            host, sizeof(host),
+                            port, sizeof(port),
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index bc45712..8612377 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -6614,6 +6614,14 @@ static char *addrToString(struct sockaddr_storage *ss, socklen_t salen)
+     int err;
+     struct sockaddr *sa = (struct sockaddr *)ss;
+ 
++    if (sa->sa_family == AF_UNIX) {
++        if (!(addr = strdup("127.0.0.1;0"))) {
++            virReportOOMError();
++            return NULL;
++        }
++        return addr;
++    }
++
+     if ((err = getnameinfo(sa, salen,
+                            host, sizeof(host),
+                            port, sizeof(port),
+@@ -6915,12 +6923,12 @@ remoteAuthSASL (virConnectPtr conn, struct private_data *priv, int in_open,
+     }
+ 
+     memset (&secprops, 0, sizeof secprops);
+-    /* If we've got TLS, we don't care about SSF */
+-    secprops.min_ssf = priv->uses_tls ? 0 : 56; /* Equiv to DES supported by all Kerberos */
+-    secprops.max_ssf = priv->uses_tls ? 0 : 100000; /* Very strong ! AES == 256 */
++    /* If we've got a secure channel (TLS or UNIX sock), we don't care about SSF */
++    secprops.min_ssf = priv->is_secure ? 0 : 56; /* Equiv to DES supported by all Kerberos */
++    secprops.max_ssf = priv->is_secure ? 0 : 100000; /* Very strong ! AES == 256 */
+     secprops.maxbufsize = 100000;
+-    /* If we're not TLS, then forbid any anonymous or trivially crackable auth */
+-    secprops.security_flags = priv->uses_tls ? 0 :
++    /* If we're not secure, then forbid any anonymous or trivially crackable auth */
++    secprops.security_flags = priv->is_secure ? 0 :
+         SASL_SEC_NOANONYMOUS | SASL_SEC_NOPLAINTEXT;
+ 
+     err = sasl_setprop(saslconn, SASL_SEC_PROPS, &secprops);
+@@ -7102,8 +7110,8 @@ remoteAuthSASL (virConnectPtr conn, struct private_data *priv, int in_open,
+         }
+     }
+ 
+-    /* Check for suitable SSF if non-TLS */
+-    if (!priv->uses_tls) {
++    /* Check for suitable SSF if not already secure (TLS or UNIX sock) */
++    if (!priv->is_secure) {
+         err = sasl_getprop(saslconn, SASL_SSF, &val);
+         if (err != SASL_OK) {
+             remoteError(VIR_ERR_AUTH_FAILED,
+-- 
+1.7.3.2
+

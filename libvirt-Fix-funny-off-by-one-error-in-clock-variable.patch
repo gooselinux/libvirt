@@ -1,0 +1,36 @@
+From 0176e4604933fcae99749306fadd77cc5778d0cb Mon Sep 17 00:00:00 2001
+Message-Id: <0176e4604933fcae99749306fadd77cc5778d0cb.1296065735.git.jdenemar@redhat.com>
+From: Dan Kenigsberg <danken@redhat.com>
+Date: Mon, 6 Dec 2010 09:59:30 +0200
+Subject: [PATCH] Fix funny off-by-one error in clock-variable
+
+Humans consider January as month #1, while gmtime_r(3) calls it month #0.
+
+While fixing it, render qemu's rtc parameter with leading zeros, as is more
+commonplace.
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=662046
+(cherry picked from commit e37ff2004a891f31016ee747030b88050a83b479)
+---
+ src/qemu/qemu_conf.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index 268ad78..a9db09b 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -3493,9 +3493,9 @@ qemuBuildClockArgStr(virDomainClockDefPtr def)
+         now += def->data.adjustment;
+         gmtime_r(&now, &nowbits);
+ 
+-        virBufferVSprintf(&buf, "base=%d-%d-%dT%d:%d:%d",
++        virBufferVSprintf(&buf, "base=%d-%02d-%02dT%02d:%02d:%02d",
+                           nowbits.tm_year + 1900,
+-                          nowbits.tm_mon,
++                          nowbits.tm_mon + 1,
+                           nowbits.tm_mday,
+                           nowbits.tm_hour,
+                           nowbits.tm_min,
+-- 
+1.7.4.rc3
+

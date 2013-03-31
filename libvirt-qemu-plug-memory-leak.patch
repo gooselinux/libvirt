@@ -1,0 +1,29 @@
+From 284cbc0d7f5db70d84b31dfbe6ad5e440272f20e Mon Sep 17 00:00:00 2001
+Message-Id: <284cbc0d7f5db70d84b31dfbe6ad5e440272f20e.1296065735.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 13 Dec 2010 17:26:12 -0700
+Subject: [PATCH] qemu: plug memory leak
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+* src/qemu/qemu_monitor.c (qemuMonitorFree): Also free the buffer.
+(cherry picked from commit 117246e0f77b27131d91334726ce3b718ed79590)
+---
+ src/qemu/qemu_monitor.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 35a6318..faff96a 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -203,6 +203,7 @@ static void qemuMonitorFree(qemuMonitorPtr mon)
+     if (virCondDestroy(&mon->notify) < 0)
+     {}
+     virMutexDestroy(&mon->lock);
++    VIR_FREE(mon->buffer);
+     VIR_FREE(mon);
+ }
+ 
+-- 
+1.7.4.rc3
+

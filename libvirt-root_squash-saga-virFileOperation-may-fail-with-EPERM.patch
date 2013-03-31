@@ -1,0 +1,44 @@
+From b592049b713014068a760461f6853d79d005ee06 Mon Sep 17 00:00:00 2001
+Message-Id: <b592049b713014068a760461f6853d79d005ee06.1291071954.git.jdenemar@redhat.com>
+From: Dan Kenigsberg <danken@redhat.com>
+Date: Tue, 19 Oct 2010 17:13:07 +0200
+Subject: [PATCH] root_squash saga: virFileOperation may fail with EPERM
+
+Over root-squashing nfs, when virFileOperation() is called as uid==0, it
+may fail with EACCES, but also with EPERM, due to
+virFileOperationNoFork()'s failed attemp to chown a writable file.
+
+qemudDomainSaveFlag() should expect this case, too.
+
+This is a backport of upstream commit b2c9a879408aec382611b1d2a817b83b9a8b344a
+with errnos negated.
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=656355
+---
+ src/qemu/qemu_driver.c |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index d5c27c3..a386f02 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5623,13 +5623,13 @@ static int qemudDomainSaveFlag(virDomainPtr dom, const char *path,
+                                   qemudDomainSaveFileOpHook, &hdata,
+                                   0)) != 0) {
+             /* If we failed as root, and the error was permission-denied
+-               (EACCES), assume it's on a network-connected share where
+-               root access is restricted (eg, root-squashed NFS). If the
++               (EACCES or EPERM), assume it's on a network-connected share
++               where root access is restricted (eg, root-squashed NFS). If the
+                qemu user (driver->user) is non-root, just set a flag to
+                bypass security driver shenanigans, and retry the operation
+                after doing setuid to qemu user */
+ 
+-            if ((rc != EACCES) ||
++            if (((rc != EACCES) && (rc != EPERM)) ||
+                 driver->user == getuid()) {
+                 virReportSystemError(rc, _("Failed to create domain save file '%s'"),
+                                      path);
+-- 
+1.7.3.2
+

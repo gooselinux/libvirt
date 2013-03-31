@@ -1,42 +1,67 @@
-From b23f94326f6d4b3a03afa28a095893d81f863ad9 Mon Sep 17 00:00:00 2001
-Message-Id: <b23f94326f6d4b3a03afa28a095893d81f863ad9.1296819815.git.jdenemar@redhat.com>
-From: Wen Congyang <wency@cn.fujitsu.com>
-Date: Fri, 21 Jan 2011 16:28:07 +0800
+From 48e5380c5d40c8c191b2558356b73e4c8352e34a Mon Sep 17 00:00:00 2001
+Message-Id: <48e5380c5d40c8c191b2558356b73e4c8352e34a.1296065734.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 3 Dec 2010 10:48:31 +0100
 Subject: [PATCH] qemu: Fix a possible deadlock in p2p migration
 
-https://bugzilla.redhat.com/show_bug.cgi?id=673434
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=662043
 
-The function virUnrefConnect() may call virReleaseConnect() to release
-the dest connection, and the function virReleaseConnect() will call
-conn->driver->close().
-
-So the function virUnrefConnect() should be surrounded by
+Two more calls to remote libvirtd have to be surrounded by
 qemuDomainObjEnterRemoteWithDriver() and
 qemuDomainObjExitRemoteWithDriver() to prevent possible deadlock between
 two communicating libvirt daemons.
 
 See commit f0c8e1cb3774d6f09e2681ca1988bf235a343007 for further details.
-
-Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
-(cherry picked from commit bda57661b8086b4d5858328afdfc28fe1b58f112)
+(cherry picked from commit 584c13f3560fca894c568db39b81a856db1387cb)
 ---
- src/qemu/qemu_driver.c |    2 ++
- 1 files changed, 2 insertions(+), 0 deletions(-)
+ src/qemu/qemu_driver.c |   18 ++++++++++++++++--
+ 1 files changed, 16 insertions(+), 2 deletions(-)
 
 diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
-index 3f409a6..0b9614d 100644
+index 10f8acc..acc84ef 100644
 --- a/src/qemu/qemu_driver.c
 +++ b/src/qemu/qemu_driver.c
-@@ -9354,7 +9354,9 @@ static int doPeer2PeerMigrate(virDomainPtr dom,
- cleanup:
-     VIR_FREE(dom_xml);
-     /* don't call virConnectClose(), because that resets any pending errors */
-+    qemuDomainObjEnterRemoteWithDriver(driver, vm);
-     virUnrefConnect(dconn);
-+    qemuDomainObjExitRemoteWithDriver(driver, vm);
+@@ -11522,24 +11522,38 @@ static int doPeer2PeerMigrate(virDomainPtr dom,
+     int ret = -1;
+     virConnectPtr dconn = NULL;
+     char *dom_xml;
++    bool p2p;
  
-     return ret;
- }
+     /* the order of operations is important here; we make sure the
+      * destination side is completely setup before we touch the source
+      */
+ 
++    qemuDomainObjEnterRemoteWithDriver(driver, vm);
+     dconn = virConnectOpen(uri);
++    qemuDomainObjExitRemoteWithDriver(driver, vm);
+     if (dconn == NULL) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED,
+                         _("Failed to connect to remote libvirt URI %s"), uri);
+         return -1;
+     }
+-    if (!VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+-                                  VIR_DRV_FEATURE_MIGRATION_P2P)) {
++
++    qemuDomainObjEnterRemoteWithDriver(driver, vm);
++    p2p = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
++                                   VIR_DRV_FEATURE_MIGRATION_P2P);
++    qemuDomainObjExitRemoteWithDriver(driver, vm);
++    if (!p2p) {
+         qemuReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                         _("Destination libvirt does not support peer-to-peer migration protocol"));
+         goto cleanup;
+     }
+ 
++    /* domain may have been stopped while we were talking to remote daemon */
++    if (!virDomainObjIsActive(vm)) {
++        qemuReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                        _("guest unexpectedly quit"));
++        goto cleanup;
++    }
++
+     dom_xml = qemudVMDumpXML(driver, vm,
+                              VIR_DOMAIN_XML_SECURE |
+                              VIR_DOMAIN_XML_UPDATE_CPU);
 -- 
-1.7.4
+1.7.4.rc3
 

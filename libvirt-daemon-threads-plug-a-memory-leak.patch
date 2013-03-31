@@ -1,0 +1,103 @@
+From f5c1c723a7e2b271a34cde155afe90c5d3f58222 Mon Sep 17 00:00:00 2001
+Message-Id: <f5c1c723a7e2b271a34cde155afe90c5d3f58222.1296065735.git.jdenemar@redhat.com>
+From: Eric Blake <eblake@redhat.com>
+Date: Mon, 13 Dec 2010 17:26:18 -0700
+Subject: [PATCH] daemon, threads: plug a memory leak
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+* daemon/libvirtd.c (qemudStartWorker, qemudStartEventLoop): Avoid
+leaking pthread_attr resources.
+* src/util/threads-pthread.c (virThreadCreate): Likewise.
+(cherry picked from commit 6e9a29c887a89663c5e76377b5985753efd2c80b)
+
+Conflicts:
+
+	src/util/threads-pthread.c
+[threads-pthread leak not present until upstream 64d67507]
+---
+ daemon/libvirtd.c |   36 ++++++++++++++++++++++++++----------
+ 1 files changed, 26 insertions(+), 10 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 91811a7..ec776b4 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -1578,15 +1578,20 @@ static void *qemudWorker(void *data)
+     }
+ }
+ 
+-static int qemudStartWorker(struct qemud_server *server,
+-                            struct qemud_worker *worker) {
++static int
++qemudStartWorker(struct qemud_server *server,
++                 struct qemud_worker *worker)
++{
+     pthread_attr_t attr;
+-    pthread_attr_init(&attr);
++    int ret = -1;
++
++    if (pthread_attr_init(&attr) != 0)
++        return -1;
+     /* We want to join workers, so don't detach them */
+     /*pthread_attr_setdetachstate(&attr, 1);*/
+ 
+     if (worker->hasThread)
+-        return -1;
++        goto cleanup;
+ 
+     worker->server = server;
+     worker->hasThread = 1;
+@@ -1599,10 +1604,13 @@ static int qemudStartWorker(struct qemud_server *server,
+                        worker) != 0) {
+         worker->hasThread = 0;
+         worker->server = NULL;
+-        return -1;
++        goto cleanup;
+     }
+ 
+-    return 0;
++    ret = 0;
++cleanup:
++    pthread_attr_destroy(&attr);
++    return ret;
+ }
+ 
+ 
+@@ -2392,9 +2400,14 @@ cleanup:
+ }
+ 
+ 
+-static int qemudStartEventLoop(struct qemud_server *server) {
++static int
++qemudStartEventLoop(struct qemud_server *server)
++{
+     pthread_attr_t attr;
+-    pthread_attr_init(&attr);
++    int ret = -1;
++
++    if (pthread_attr_init(&attr) != 0)
++        return -1;
+     /* We want to join the eventloop, so don't detach it */
+     /*pthread_attr_setdetachstate(&attr, 1);*/
+ 
+@@ -2402,11 +2415,14 @@ static int qemudStartEventLoop(struct qemud_server *server) {
+                        &attr,
+                        qemudRunLoop,
+                        server) != 0)
+-        return -1;
++        goto cleanup;
+ 
+     server->hasEventThread = 1;
+ 
+-    return 0;
++    ret = 0;
++cleanup:
++    pthread_attr_destroy(&attr);
++    return ret;
+ }
+ 
+ 
+-- 
+1.7.4.rc3
+

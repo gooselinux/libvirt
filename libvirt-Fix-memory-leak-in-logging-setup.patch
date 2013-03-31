@@ -1,0 +1,36 @@
+From 52dcbdd62068f9b9b62d01eece7a543e0585fc36 Mon Sep 17 00:00:00 2001
+Message-Id: <52dcbdd62068f9b9b62d01eece7a543e0585fc36.1296065735.git.jdenemar@redhat.com>
+From: Daniel P. Berrange <berrange@redhat.com>
+Date: Mon, 13 Dec 2010 17:26:16 -0700
+Subject: [PATCH] Fix memory leak in logging setup
+
+https://bugzilla.redhat.com/show_bug.cgi?id=672549
+
+The logging setup requires const char * strings, but the
+virLogSetFromEnv() strdup's the env variables, thus causing
+a memory leak
+
+* src/util/logging.c: Avoid strdup'ing env variables
+(cherry picked from commit c846bc9eb8aa891e4971968fefd2a00e2a25baae)
+---
+ src/util/logging.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/util/logging.c b/src/util/logging.c
+index 6bc2ccf..c72f052 100644
+--- a/src/util/logging.c
++++ b/src/util/logging.c
+@@ -978,8 +978,8 @@ void virLogSetFromEnv(void) {
+         virLogParseDefaultPriority(debugEnv);
+     debugEnv = getenv("LIBVIRT_LOG_FILTERS");
+     if (debugEnv && *debugEnv)
+-        virLogParseFilters(strdup(debugEnv));
++        virLogParseFilters(debugEnv);
+     debugEnv = getenv("LIBVIRT_LOG_OUTPUTS");
+     if (debugEnv && *debugEnv)
+-        virLogParseOutputs(strdup(debugEnv));
++        virLogParseOutputs(debugEnv);
+ }
+-- 
+1.7.4.rc3
+

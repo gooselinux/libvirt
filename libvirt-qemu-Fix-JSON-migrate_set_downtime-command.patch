@@ -1,0 +1,40 @@
+From 34830076e5cb2309e1be18579350ad16f05a1154 Mon Sep 17 00:00:00 2001
+Message-Id: <34830076e5cb2309e1be18579350ad16f05a1154.1291071954.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 19 Aug 2010 15:59:25 +0200
+Subject: [PATCH] qemu: Fix JSON migrate_set_downtime command
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=658143
+
+(cherry picked from commit 72c791e430baa2f6193e6f6a85f6a476587c72fe)
+---
+ src/qemu/qemu_monitor_json.c |    9 ++-------
+ 1 files changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 7961db5..0066d83 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1553,17 +1553,12 @@ int qemuMonitorJSONSetMigrationDowntime(qemuMonitorPtr mon,
+                                         unsigned long long downtime)
+ {
+     int ret;
+-    char *downtimestr;
+     virJSONValuePtr cmd;
+     virJSONValuePtr reply = NULL;
+-    if (virAsprintf(&downtimestr, "%llums", downtime) < 0) {
+-        virReportOOMError();
+-        return -1;
+-    }
++
+     cmd = qemuMonitorJSONMakeCommand("migrate_set_downtime",
+-                                     "s:value", downtimestr,
++                                     "d:value", downtime / 1000.0,
+                                      NULL);
+-    VIR_FREE(downtimestr);
+     if (!cmd)
+         return -1;
+ 
+-- 
+1.7.3.2
+

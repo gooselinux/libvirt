@@ -1,0 +1,89 @@
+From 3a3eacc3aa8c71e1ca2d01fb5a031bd8cfd34275 Mon Sep 17 00:00:00 2001
+Message-Id: <3a3eacc3aa8c71e1ca2d01fb5a031bd8cfd34275.1296065735.git.jdenemar@redhat.com>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 9 Dec 2010 11:18:32 +0100
+Subject: [PATCH] qemu: Distinguish between domain shutdown and crash
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=662042
+
+When we get an EOF event on monitor connection, it may be a result of
+either crash or graceful shutdown. QEMU which supports async events
+(i.e., we are talking to it using JSON monitor) emits SHUTDOWN event on
+graceful shutdown. In case we don't get this event by the time monitor
+connection is closed, we assume the associated domain crashed.
+
+(backported from c778fe967808eb2426ed4851db3ec49a0cdc76ca)
+---
+ src/qemu/qemu_driver.c |   24 ++++++++++++++++++++++++
+ 1 files changed, 24 insertions(+), 0 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 8ddb757..411e871 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -118,6 +118,7 @@ struct _qemuDomainObjPrivate {
+     qemuMonitorPtr mon;
+     virDomainChrDefPtr monConfig;
+     int monJSON;
++    bool gotShutdown;
+ 
+     int nvcpupids;
+     int *vcpupids;
+@@ -1115,10 +1116,18 @@ qemuHandleMonitorEOF(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                      int hasError) {
+     struct qemud_driver *driver = qemu_driver;
+     virDomainEventPtr event = NULL;
++    qemuDomainObjPrivatePtr priv;
+ 
+     VIR_DEBUG("Received EOF on %p '%s'", vm, vm->def->name);
+     virDomainObjLock(vm);
+ 
++    priv = vm->privateData;
++    if (!hasError && priv->monJSON && !priv->gotShutdown) {
++        VIR_DEBUG("Monitor connection to '%s' closed without SHUTDOWN event; "
++                  "assuming the domain crashed", vm->def->name);
++        hasError = 1;
++    }
++
+     event = virDomainEventNewFromObj(vm,
+                                      VIR_DOMAIN_EVENT_STOPPED,
+                                      hasError ?
+@@ -1313,6 +1322,18 @@ qemuHandleDomainReset(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ 
+ 
+ static int
++qemuHandleDomainShutdown(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
++                         virDomainObjPtr vm)
++{
++    virDomainObjLock(vm);
++    ((qemuDomainObjPrivatePtr) vm->privateData)->gotShutdown = true;
++    virDomainObjUnlock(vm);
++
++    return 0;
++}
++
++
++static int
+ qemuHandleDomainStop(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                      virDomainObjPtr vm)
+ {
+@@ -1575,6 +1596,7 @@ static qemuMonitorCallbacks monitorCallbacks = {
+     .destroy = qemuHandleMonitorDestroy,
+     .eofNotify = qemuHandleMonitorEOF,
+     .diskSecretLookup = findVolumeQcowPassphrase,
++    .domainShutdown = qemuHandleDomainShutdown,
+     .domainStop = qemuHandleDomainStop,
+     .domainReset = qemuHandleDomainReset,
+     .domainRTCChange = qemuHandleDomainRTCChange,
+@@ -3994,6 +4016,8 @@ static int qemudStartVMDaemon(virConnectPtr conn,
+ #endif
+         priv->monJSON = 0;
+ 
++    priv->gotShutdown = false;
++
+     if ((ret = virFileDeletePid(driver->stateDir, vm->def->name)) != 0) {
+         virReportSystemError(ret,
+                              _("Cannot remove stale PID file for %s"),
+-- 
+1.7.4.rc3
+
