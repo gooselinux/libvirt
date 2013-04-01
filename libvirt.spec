@@ -186,7 +186,7 @@
 Summary: Library providing a simple API virtualization
 Name: libvirt
 Version: 0.8.1
-Release: 27%{?dist}.5%{?extra_release}
+Release: 27%{?dist}.6%{?extra_release}
 License: LGPLv2+
 Group: Development/Libraries
 Source: http://libvirt.org/sources/libvirt-%{version}.tar.gz
@@ -678,6 +678,10 @@ Patch224: libvirt-qemud-fix-memory-leak-in-io-error-events.patch
 Patch225: libvirt-daemon-threads-plug-a-memory-leak.patch
 Patch226: libvirt-selinux-avoid-memory-overhead-of-matchpathcon.patch
 Patch227: libvirt-Add-missing-checks-for-read-only-connections.patch
+Patch228: libvirt-new-virSetUIDGID-utility-function.patch
+Patch229: libvirt-Replace-setuid-setgid-initgroups-with-virSetUIDGID.patch
+Patch230: libvirt-Make-error-reporting-in-libvirtd-thread-safe.patch
+Patch231: libvirt-daemon-Avoid-resetting-errors-before-they-are-reported.patch
 
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 URL: http://libvirt.org/
@@ -1131,6 +1135,10 @@ of recent versions of Linux (and other OSes).
 %patch225 -p1
 %patch226 -p1
 %patch227 -p1
+%patch228 -p1
+%patch229 -p1
+%patch230 -p1
+%patch231 -p1
 
 %build
 %if ! %{with_xen}
@@ -1623,6 +1631,10 @@ fi
 %endif
 
 %changelog
+* Tue Apr 19 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.1-27.el6_0.6
+- Properly initialize supplementary groups for qemu process (rhbz#668692)
+- Make error reporting in libvirtd thread safe (CVE-2011-1486)
+
 * Wed Mar 16 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.1-27.el6_0.5
 - Properly report error in virConnectDomainXMLToNative (CVE-2011-1146)
 

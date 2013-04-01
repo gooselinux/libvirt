@@ -1,10 +1,10 @@
-From 1e41a8978f5ccd981cdd50448a22013c11876965 Mon Sep 17 00:00:00 2001
-Message-Id: <1e41a8978f5ccd981cdd50448a22013c11876965.1301393957.git.jdenemar@redhat.com>
+From 4556798c9f6658a0cc66371fb6599c9b074336a7 Mon Sep 17 00:00:00 2001
+Message-Id: <4556798c9f6658a0cc66371fb6599c9b074336a7.1303219823.git.jdenemar@redhat.com>
 From: Jiri Denemark <jdenemar@redhat.com>
 Date: Fri, 25 Mar 2011 12:03:00 +0100
 Subject: [PATCH] daemon: Avoid resetting errors before they are reported
 
-https://bugzilla.redhat.com/show_bug.cgi?id=689374
+CVE-2011-1486
 
 Commit f44bfb7 was supposed to make sure no additional libvirt API (esp.
 *Free) is called before remoteDispatchConnError() is called on error.
@@ -15,10 +15,10 @@ However, the patch missed two instances.
  1 files changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/daemon/remote.c b/daemon/remote.c
-index 21c10f3..5217e13 100644
+index 9e2dff5..caa9003 100644
 --- a/daemon/remote.c
 +++ b/daemon/remote.c
-@@ -4845,12 +4845,13 @@ remoteDispatchStoragePoolListVolumes (struct qemud_server *server ATTRIBUTE_UNUS
+@@ -4511,12 +4511,13 @@ remoteDispatchStoragePoolListVolumes (struct qemud_server *server ATTRIBUTE_UNUS
      ret->names.names_len =
          virStoragePoolListVolumes (pool,
                                     ret->names.names_val, args->maxnames);
@@ -33,7 +33,7 @@ index 21c10f3..5217e13 100644
  
      return 0;
  }
-@@ -4874,11 +4875,12 @@ remoteDispatchStoragePoolNumOfVolumes (struct qemud_server *server ATTRIBUTE_UNU
+@@ -4540,11 +4541,12 @@ remoteDispatchStoragePoolNumOfVolumes (struct qemud_server *server ATTRIBUTE_UNU
      }
  
      ret->num = virStoragePoolNumOfVolumes (pool);
@@ -48,5 +48,5 @@ index 21c10f3..5217e13 100644
      return 0;
  }
 -- 
-1.7.4.1
+1.7.5.rc1
 

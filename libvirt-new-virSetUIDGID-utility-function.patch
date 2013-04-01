@@ -1,0 +1,151 @@
+From 7b343411a63ea9b06426c0752565c0f3d610fb61 Mon Sep 17 00:00:00 2001
+Message-Id: <7b343411a63ea9b06426c0752565c0f3d610fb61.1303219823.git.jdenemar@redhat.com>
+From: Laine Stump <laine@laine.org>
+Date: Thu, 27 Jan 2011 10:46:16 -0500
+Subject: [PATCH] new virSetUIDGID() utility function
+
+This patch is based on upstream commit
+d596c6dc9b64ca0c910a87127de72ed2ef47b692
+(with the minor printf typecast additions
+of commit c685993d71c1cf561af2cf34a5077781566aa0e0)
+and is a prerequisite of the fix for:
+
+    https://bugzilla.redhat.com/show_bug.cgi?id=668692
+
+virSetUIDGID() sets both the real and effective group and user of the
+process, and additionally calls initgroups() to assure that the
+process joins all the auxiliary groups that the given uid is a member
+of.
+---
+ configure.ac             |    2 +-
+ src/libvirt_private.syms |    1 +
+ src/util/util.c          |   67 ++++++++++++++++++++++++++++++++++++++++++++++
+ src/util/util.h          |    2 +
+ 4 files changed, 71 insertions(+), 1 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 523b644..8f04baa 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -108,7 +108,7 @@ dnl Use --disable-largefile if you don't want this.
+ AC_SYS_LARGEFILE
+ 
+ dnl Availability of various common functions (non-fatal if missing).
+-AC_CHECK_FUNCS([cfmakeraw regexec uname sched_getaffinity getuid getgid posix_fallocate mmap])
++AC_CHECK_FUNCS([cfmakeraw regexec uname sched_getaffinity getuid getgid initgroups posix_fallocate mmap])
+ 
+ dnl Availability of various not common threadsafe functions
+ AC_CHECK_FUNCS([strerror_r strtok_r getmntent_r getgrnam_r getpwuid_r])
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 536e14b..c83ddf1 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -688,6 +688,7 @@ virParseVersionString;
+ virPipeReadUntilEOF;
+ virAsprintf;
+ virRun;
++virSetUIDGID;
+ virSkipSpaces;
+ virKillProcess;
+ virGetUserDirectory;
+diff --git a/src/util/util.c b/src/util/util.c
+index 567520d..cdffe33 100644
+--- a/src/util/util.c
++++ b/src/util/util.c
+@@ -2736,6 +2736,64 @@ int virGetGroupID(const char *name,
+     return 0;
+ }
+ 
++
++/* Set the real and effective uid and gid to the given values, and call
++ * initgroups so that the process has all the assumed group membership of
++ * that uid. return 0 on success, -1 on failure.
++ */
++int
++virSetUIDGID(uid_t uid, gid_t gid)
++{
++    if (gid > 0) {
++        if (setregid(gid, gid) < 0) {
++            virReportSystemError(errno,
++                                 _("cannot change to '%d' group"),
++                                 (unsigned int ) gid);
++            return -1;
++        }
++    }
++
++    if (uid > 0) {
++# ifdef HAVE_INITGROUPS
++        struct passwd pwd, *pwd_result;
++        char *buf = NULL;
++        size_t bufsize;
++
++        bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
++        if (bufsize == -1)
++            bufsize = 16384;
++
++        if (VIR_ALLOC_N(buf, bufsize) < 0) {
++            virReportOOMError();
++            return -1;
++        }
++        getpwuid_r(uid, &pwd, buf, bufsize, &pwd_result);
++        if (!pwd_result) {
++            virReportSystemError(errno,
++                                 _("cannot getpwuid_r(%d)"),
++                                 (unsigned int) uid);
++            VIR_FREE(buf);
++            return -1;
++        }
++        if (initgroups(pwd.pw_name, pwd.pw_gid) < 0) {
++            virReportSystemError(errno,
++                                 _("cannot initgroups(\"%s\", %d)"),
++                                 pwd.pw_name, (unsigned int) pwd.pw_gid);
++            VIR_FREE(buf);
++            return -1;
++        }
++        VIR_FREE(buf);
++# endif
++        if (setreuid(uid, uid) < 0) {
++            virReportSystemError(errno,
++                                 _("cannot change to uid to '%d'"),
++                                 (unsigned int) uid);
++            return -1;
++        }
++    }
++    return 0;
++}
++
+ #else /* HAVE_GETPWUID_R */
+ 
+ char *
+@@ -2774,6 +2832,15 @@ int virGetGroupID(const char *name ATTRIBUTE_UNUSED,
+ 
+     return 0;
+ }
++
++int
++virSetUIDGID(uid_t uid ATTRIBUTE_UNUSED,
++             gid_t gid ATTRIBUTE_UNUSED)
++{
++    virUtilError(VIR_ERR_INTERNAL_ERROR,
++                 "%s", _("virSetUIDGID is not available"));
++    return -1;
++}
+ #endif /* HAVE_GETPWUID_R */
+ 
+ 
+diff --git a/src/util/util.h b/src/util/util.h
+index 476eac4..f746cce 100644
+--- a/src/util/util.h
++++ b/src/util/util.h
+@@ -92,6 +92,8 @@ int virPipeReadUntilEOF(int outfd, int errfd,
+                         char **outbuf, char **errbuf);
+ int virFork(pid_t *pid);
+ 
++int virSetUIDGID(uid_t uid, gid_t gid);
++
+ int virFileReadLimFD(int fd, int maxlen, char **buf) ATTRIBUTE_RETURN_CHECK;
+ 
+ int virFileReadAll(const char *path, int maxlen, char **buf) ATTRIBUTE_RETURN_CHECK;
+-- 
+1.7.5.rc1
+
