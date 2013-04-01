@@ -1,5 +1,5 @@
-From 9be2eaa42a563f80ae71ccd2bdee8314f413f735 Mon Sep 17 00:00:00 2001
-Message-Id: <9be2eaa42a563f80ae71ccd2bdee8314f413f735.1300282281.git.jdenemar@redhat.com>
+From 171c7803137f2041e51f13338451c8e9315cc503 Mon Sep 17 00:00:00 2001
+Message-Id: <171c7803137f2041e51f13338451c8e9315cc503.1300265482.git.jdenemar@redhat.com>
 From: Daniel Veillard <veillard@redhat.com>
 Date: Mon, 14 Mar 2011 17:38:06 +0800
 Subject: [PATCH] Add missing checks for read only connections
@@ -39,10 +39,10 @@ Daniel
  1 files changed, 27 insertions(+), 0 deletions(-)
 
 diff --git a/src/libvirt.c b/src/libvirt.c
-index fed246c..a676bc1 100644
+index 4a769fc..7c36949 100644
 --- a/src/libvirt.c
 +++ b/src/libvirt.c
-@@ -3368,6 +3368,10 @@ char *virConnectDomainXMLToNative(virConnectPtr conn,
+@@ -3153,6 +3153,10 @@ char *virConnectDomainXMLToNative(virConnectPtr conn,
          virDispatchError(NULL);
          return (NULL);
      }
@@ -53,7 +53,7 @@ index fed246c..a676bc1 100644
  
      if (nativeFormat == NULL || domainXml == NULL) {
          virLibConnError(conn, VIR_ERR_INVALID_ARG, __FUNCTION__);
-@@ -9788,6 +9792,11 @@ virNodeDeviceDettach(virNodeDevicePtr dev)
+@@ -9352,6 +9356,11 @@ virNodeDeviceDettach(virNodeDevicePtr dev)
          return (-1);
      }
  
@@ -65,7 +65,7 @@ index fed246c..a676bc1 100644
      if (dev->conn->driver->nodeDeviceDettach) {
          int ret;
          ret = dev->conn->driver->nodeDeviceDettach (dev);
-@@ -9831,6 +9840,11 @@ virNodeDeviceReAttach(virNodeDevicePtr dev)
+@@ -9395,6 +9404,11 @@ virNodeDeviceReAttach(virNodeDevicePtr dev)
          return (-1);
      }
  
@@ -77,7 +77,7 @@ index fed246c..a676bc1 100644
      if (dev->conn->driver->nodeDeviceReAttach) {
          int ret;
          ret = dev->conn->driver->nodeDeviceReAttach (dev);
-@@ -9876,6 +9890,11 @@ virNodeDeviceReset(virNodeDevicePtr dev)
+@@ -9440,6 +9454,11 @@ virNodeDeviceReset(virNodeDevicePtr dev)
          return (-1);
      }
  
@@ -89,7 +89,7 @@ index fed246c..a676bc1 100644
      if (dev->conn->driver->nodeDeviceReset) {
          int ret;
          ret = dev->conn->driver->nodeDeviceReset (dev);
-@@ -13171,6 +13190,10 @@ virDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+@@ -12695,6 +12714,10 @@ virDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
      }
  
      conn = snapshot->domain->conn;
@@ -100,7 +100,7 @@ index fed246c..a676bc1 100644
  
      if (conn->driver->domainRevertToSnapshot) {
          int ret = conn->driver->domainRevertToSnapshot(snapshot, flags);
-@@ -13217,6 +13240,10 @@ virDomainSnapshotDelete(virDomainSnapshotPtr snapshot,
+@@ -12741,6 +12764,10 @@ virDomainSnapshotDelete(virDomainSnapshotPtr snapshot,
      }
  
      conn = snapshot->domain->conn;

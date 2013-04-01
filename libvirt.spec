@@ -186,7 +186,7 @@
 Summary: Library providing a simple API virtualization
 Name: libvirt
 Version: 0.8.1
-Release: 27%{?dist}.3
+Release: 27%{?dist}.5%{?extra_release}
 License: LGPLv2+
 Group: Development/Libraries
 Source: http://libvirt.org/sources/libvirt-%{version}.tar.gz
@@ -677,6 +677,7 @@ Patch223: libvirt-Fix-memory-leak-in-logging-setup.patch
 Patch224: libvirt-qemud-fix-memory-leak-in-io-error-events.patch
 Patch225: libvirt-daemon-threads-plug-a-memory-leak.patch
 Patch226: libvirt-selinux-avoid-memory-overhead-of-matchpathcon.patch
+Patch227: libvirt-Add-missing-checks-for-read-only-connections.patch
 
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 URL: http://libvirt.org/
@@ -1129,6 +1130,7 @@ of recent versions of Linux (and other OSes).
 %patch224 -p1
 %patch225 -p1
 %patch226 -p1
+%patch227 -p1
 
 %build
 %if ! %{with_xen}
@@ -1621,6 +1623,12 @@ fi
 %endif
 
 %changelog
+* Wed Mar 16 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.1-27.el6_0.5
+- Properly report error in virConnectDomainXMLToNative (CVE-2011-1146)
+
+* Mon Mar 14 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.1-27.el6_0.4
+- Add missing checks for read-only connections (CVE-2011-1146)
+
 * Wed Jan 26 2011 Jiri Denemark <jdenemar@redhat.com> - 0.8.1-27.el6_0.3
 - Remove patches not suitable for proper Z-stream:
     - Export host information through SMBIOS to guests (rhbz#652678)
